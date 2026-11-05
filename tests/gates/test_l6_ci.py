@@ -34,6 +34,16 @@ class L6ContractTests(unittest.TestCase):
             with self.subTest(event=event, ref=ref, mode=mode), self.assertRaises(gate.GateError):
                 l6_ci.trigger(event, ref, ack, mode, expected, sha)
 
+    def test_l6_trigger_uses_shared_closed_mode_context(self):
+        sha = 'a' * 40
+        self.assertEqual('main-regression', l6_ci.trigger('schedule', 'refs/heads/main', '', 'main', '', sha))
+        self.assertEqual('main-regression', l6_ci.trigger(
+            'workflow_dispatch', 'refs/heads/main', 'RUN L6', 'main', sha, sha))
+        self.assertEqual('branch-regression-non-promotional', l6_ci.trigger(
+            'workflow_dispatch', 'refs/heads/topic', 'RUN L6', 'branch', sha, sha))
+        with self.assertRaises(l6_ci.gate.GateError):
+            l6_ci.trigger('workflow_dispatch', 'refs/heads/main', 'RUN L6', 'branch', sha, sha)
+
     def test_all_required_jobs_must_succeed(self):
         good = {role: {'result': 'success'} for role in l6_ci.ROLES}
         l6_ci.check_jobs(good)

@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 GATES = ROOT / "tests" / "gates"
 MANIFEST = GATES / "manifest.json"
 REPORT_DIR = ROOT / "knowledge" / "audits" / "test_architecture_cicd_2026-10-04" / "reports"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TOOL_VERSION = "fwrouter-test-gate/3"
 ROUTINE_SHARD_GROUPS = (
     "core-state",
@@ -144,6 +144,39 @@ ROUTINE_PROFILE_CARVEOUTS = {
     ("backend/tests/test_xray.py", "test_public_subscription_request_id_header_policy"),
     ("backend/tests/test_xray.py", "test_public_subscription_middleware_preserves_context_and_propagates_errors"),
 }
+
+# Exact, reviewed exclusions.  These policies are mirrored in manifest.json so
+# the plan digest binds them, but the source registry remains authoritative:
+# a manifest edit cannot authorize a new SKIP.
+RETIRED_QEMU_NODEIDS = {
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_checkout_source_mismatch_is_rejected",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_dirty_checkout_is_rejected_even_when_head_sha_matches",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_guest_backing_chain_or_disk_overrun_is_rejected_before_qemu",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_guest_boot_systemd_reboot_and_cleanup_failures_never_pass",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_missing_or_invalid_capability_pin_and_headroom_fail_closed",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_missing_pin_is_structured_admission_incomplete",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_qemu_guest_cleanup_reaps_only_its_owned_process_group",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_qemu_guest_reboot_rechecks_new_boot_and_required_readiness",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_qemu_guest_uuid_debian_identity_and_systemd_probes_are_pinned",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_qga_delimited_sync_frames_command_and_closes_descriptor",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_qga_partial_slow_drip_frame_cannot_extend_absolute_deadline",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_real_command_spec_is_tcg_and_user_network_without_host_passthrough",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_reboot_uses_one_deadline_instead_of_boot_timeout_per_retry",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_successful_controller_flow_is_nonpromotional_and_cleans_up",
+    "tests/gates/test_host_qualification.py::HostQualificationTests::test_timeouts_must_be_finite_and_bounded",
+}
+MANUAL_HOST_NODEID = "tests/gates/test_manual_host_smoke.py::HostSmokeTests::test_manual_live_readonly_host_smoke"
+SKIP_POLICY_REGISTRY: dict[str, dict[str, Any]] = {
+    nodeid: {"reason_code": "retired_qemu", "owner": "ui-tooling",
+             "environment": "retired-qemu-controller", "capabilities": [],
+             "manual_phase": "retired", "disposition": "retired; QEMU controller rejected"}
+    for nodeid in sorted(RETIRED_QEMU_NODEIDS)
+}
+SKIP_POLICY_REGISTRY[MANUAL_HOST_NODEID] = {
+    "reason_code": "host_environment_unavailable", "owner": "ui-tooling",
+    "environment": "deployed-host", "capabilities": ["installed-services", "readonly-live-smoke"],
+    "manual_phase": "post-deployment", "disposition": "manual-only; explicit opt-in required",
+}
 UNIT_FIXTURE_PATHS = (
     "backend/tests/test_apply_pipeline.py",
     "backend/tests/test_bootstrap.py",
@@ -206,7 +239,16 @@ TEST_FILE_GLOBS = (
     "integrations/homeassistant/tests/test_*.py",
     "tests/application_acceptance/test_*.py",
     "tests/gates/test_*.py",
+    "tests/acceptance/test_*.py",
 )
+RUNNER_CONTRACTS = {
+    "pytest": {"identity_adapter": "pytest-nodeid", "environment": "python", "capabilities": ["python", "pytest"]},
+    "node": {"identity_adapter": "node-tap", "environment": "node", "capabilities": ["node", "tap"]},
+    "shell": {"identity_adapter": "declared-shell-case", "environment": "shell", "capabilities": ["posix-shell"]},
+    "qualified-child": {"identity_adapter": "qualified-scenario-nodeid", "environment": "qualified-child", "capabilities": ["isolated-process", "exact-scenario"]},
+    "hosted-compose": {"identity_adapter": "qualified-scenario-nodeid", "environment": "hosted-compose", "capabilities": ["compose-isolation", "exact-scenario"]},
+    "hosted-kernel": {"identity_adapter": "qualified-scenario-nodeid", "environment": "hosted-kernel", "capabilities": ["kernel-network", "packet-capture", "exact-scenario"]},
+}
 STDLIB_CONTRACT_PATHS = {
     "tests/gates/test_core_snapshot_recovery_contract.py",
     "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
@@ -251,15 +293,23 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         raise GateError("unsupported or missing manifest schema_version")
     if not isinstance(manifest.get("version"), str) or not manifest["version"]:
         raise GateError("manifest version must be a nonempty string")
+    if manifest.get("runner_contracts") != RUNNER_CONTRACTS:
+        raise GateError("manifest runner_contracts differ from the closed supported registry")
+    if manifest.get("candidate_exclusions") != []:
+        raise GateError("manifest candidate_exclusions differ from the reviewed empty exclusion register")
+    if manifest.get("node_skip_policies") != [
+            {"nodeid": nodeid, **policy} for nodeid, policy in sorted(SKIP_POLICY_REGISTRY.items())]:
+        raise GateError("manifest node_skip_policies differ from the closed reviewed registry")
     rows = manifest.get("test_files")
     if not isinstance(rows, list) or not rows:
         raise GateError("manifest test_files must be a nonempty list")
     seen: set[str] = set()
+    seen_ids: set[str] = set()
     for row in rows:
         required = {
             "path", "id", "domain", "primary_level", "fixture_owner",
             "runtime_dependencies", "isolation", "network", "destructive",
-            "slow", "timeout_seconds", "max_output_bytes", "max_artifact_bytes",
+            "slow", "timeout_seconds", "max_output_bytes", "max_artifact_bytes", "runner",
         }
         if not isinstance(row, dict) or not required <= row.keys():
             raise GateError(f"manifest row lacks required fields: {row!r}")
@@ -269,6 +319,19 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if path in seen:
             raise GateError(f"duplicate test path: {path}")
         seen.add(path)
+        suite_id = row["id"]
+        if not isinstance(suite_id, str) or not suite_id or suite_id in seen_ids:
+            raise GateError(f"missing or duplicate suite ID: {suite_id!r}")
+        seen_ids.add(suite_id)
+        profile = row.get("execution_profile")
+        if profile is not None and profile not in EXECUTION_PROFILES:
+            raise GateError(f"{path}: unknown execution_profile")
+        runner_name = row["runner"]
+        contract = RUNNER_CONTRACTS.get(runner_name)
+        if contract is None:
+            raise GateError(f"{path}: unknown runner contract {runner_name!r}")
+        if row.get("required_capabilities", contract["capabilities"]) != contract["capabilities"]:
+            raise GateError(f"{path}: runner capabilities cannot weaken the closed contract")
         if row["primary_level"] not in LEVELS:
             raise GateError(f"{path}: invalid primary_level")
         if row["primary_level"] in {"L0", "L5", "L6"}:
@@ -282,9 +345,6 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError(f"{path}: slow must be true, false or unknown")
         if not isinstance(row["destructive"], bool):
             raise GateError(f"{path}: destructive must be boolean")
-        profile = row.get("execution_profile")
-        if profile is not None and profile not in EXECUTION_PROFILES:
-            raise GateError(f"{path}: unknown execution_profile")
         if profile == KERNEL_DATAPLANE_EXECUTION_PROFILE:
             raise GateError(f"{path}: hosted-kernel-dataplane is reserved for exact provider-cohort node bindings")
         if profile == PACKET_EXECUTION_PROFILE and (
@@ -299,6 +359,31 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError(f"{path}: hosted-kernel-packet is reserved for the exact opt-in L3 packet suite")
         if row.get("native") is True and profile not in EXECUTION_PROFILES:
             raise GateError(f"{path}: native suites require an explicit qualified execution profile")
+        suffix = Path(path).suffix.lower()
+        if profile:
+            expected_runner = {
+                "qualified-child-process": "qualified-child",
+                "hosted-isolated-compose": "hosted-compose",
+                PACKET_EXECUTION_PROFILE: "hosted-kernel",
+                KERNEL_DATAPLANE_EXECUTION_PROFILE: "hosted-kernel",
+            }[profile]
+            if runner_name != expected_runner or suffix != ".py":
+                raise GateError(f"{path}: execution profile requires its exact qualified Python runner")
+        else:
+            compatible_extensions = {
+                "pytest": {".py"}, "node": {".js", ".cjs", ".mjs"}, "shell": {".sh"},
+            }
+            if runner_name not in compatible_extensions or suffix not in compatible_extensions[runner_name]:
+                raise GateError(f"{path}: runner contract is incompatible with the declared test extension")
+    rows_by_path = {row["path"]: row for row in rows}
+    for nodeid, policy in SKIP_POLICY_REGISTRY.items():
+        target = rows_by_path.get(nodeid.split("::", 1)[0])
+        if (target is None or target.get("runner") != "pytest"
+                or target.get("execution_group") != policy["owner"]
+                or target.get("native") is not False or target.get("execution_profile") is not None
+                or target.get("primary_level") == "L7" or target.get("destructive") is not False
+                or target.get("opt_in") is not False):
+            raise GateError(f"node skip policy is detached from a safe routine pytest suite: {nodeid}")
     node_profiles = manifest.get("node_execution_profiles", [])
     if not isinstance(node_profiles, list):
         raise GateError("node_execution_profiles must be a list")
@@ -332,6 +417,9 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             base = next(item for item in manifest["test_files"] if item["path"] == key[0])
             if row["execution_profile"] is not None or base.get("execution_profile") not in EXECUTION_PROFILES:
                 raise GateError(f"routine node overrides may only carve exact nodes out of a profiled file: {row!r}")
+    override_nodeids = {f"{path}::{node}" for path, node in override_ids}
+    if override_nodeids & node_profile_ids:
+        raise GateError("duplicate test-node ownership across node profiles and overrides")
     if routine_profile_carveouts != ROUTINE_PROFILE_CARVEOUTS:
         raise GateError("manifest must preserve the exact reviewed routine Xray node carve-outs")
     rules = manifest.get("path_rules")
@@ -374,15 +462,81 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError(f"L5 anchor cannot force an L7/destructive staging suite: {item}")
 
 
+def validate_authorized_node_skips(manifest: dict[str, Any], node_status: dict[str, str],
+                                   authorized_skip_reasons: Any, *,
+                                   required_paths: set[str] | None = None) -> None:
+    """Validate exact reviewed SKIPs at execution and replay boundaries."""
+    policies = {nodeid: policy for nodeid, policy in SKIP_POLICY_REGISTRY.items()}
+    if manifest.get("node_skip_policies") != [
+            {"nodeid": nodeid, **policy} for nodeid, policy in sorted(policies.items())]:
+        raise GateError("manifest node skip policies differ from the closed registry")
+    rows = {row["path"]: row for row in manifest["test_files"]}
+    for nodeid in policies:
+        row = rows.get(nodeid.split("::", 1)[0])
+        if (row is None or row.get("runner") != "pytest" or row.get("execution_group") != policies[nodeid]["owner"]
+                or row.get("native") is not False
+                or row.get("execution_profile") is not None or row.get("primary_level") == "L7"
+                or row.get("destructive") is True or row.get("opt_in") is not False):
+            raise GateError(f"reviewed skip policy is detached from a safe routine pytest suite: {nodeid}")
+    required_paths = required_paths or set()
+    required_nodes = {nodeid for nodeid in policies if nodeid.split("::", 1)[0] in required_paths}
+    missing = sorted(required_nodes - set(node_status))
+    if missing:
+        raise GateError("reviewed policy node missing from collected evidence: " + ", ".join(missing))
+    for nodeid, status in node_status.items():
+        if status == "skipped" and nodeid not in policies:
+            raise GateError(f"unauthorized node SKIP: {nodeid}")
+        if nodeid in policies and status != "skipped":
+            raise GateError(f"reviewed host/retired node must remain SKIP in qualification evidence: {nodeid}")
+    if not isinstance(authorized_skip_reasons, dict):
+        raise GateError("authorized_skip_reasons must be a node-to-policy mapping")
+    skipped = {nodeid for nodeid, status in node_status.items() if status == "skipped"}
+    if set(authorized_skip_reasons) != skipped:
+        raise GateError("authorized SKIP reasons do not exactly match skipped node IDs")
+    for nodeid in sorted(skipped):
+        expected_policy = {**policies[nodeid], "pytest_reason": node_skip_reason(policies[nodeid])}
+        if authorized_skip_reasons[nodeid] != expected_policy:
+            raise GateError(f"authorized SKIP reason differs from reviewed policy: {nodeid}")
+
+
+def node_skip_reason(policy: dict[str, Any]) -> str:
+    return f"FWROUTER_SKIP_POLICY[{policy['reason_code']}]: {policy['disposition']}"
+
+
+def policy_complete_node_results(manifest: dict[str, Any], node_status: dict[str, str],
+                                 authorized_skip_reasons: Any, *,
+                                 required_paths: set[str] | None = None) -> bool:
+    validate_authorized_node_skips(manifest, node_status, authorized_skip_reasons,
+                                   required_paths=required_paths)
+    return bool(node_status) and all(status in {"passed", "skipped"} for status in node_status.values())
+
+
 def discover_test_files() -> set[str]:
     files: set[str] = set()
     for pattern in TEST_FILE_GLOBS:
-        files.update(p.relative_to(ROOT).as_posix() for p in ROOT.glob(pattern) if p.is_file())
+        for path in ROOT.glob(pattern):
+            if path.is_symlink():
+                files.add(path.relative_to(ROOT).as_posix())
+            elif path.is_file():
+                files.add(path.relative_to(ROOT).as_posix())
     return files
 
 
 def manifest_paths(manifest: dict[str, Any]) -> set[str]:
     return {row["path"] for row in manifest["test_files"]}
+
+
+def runner_adapter(row: dict[str, Any], manifest: dict[str, Any]) -> str:
+    """Resolve only an explicitly declared adapter from the closed registry."""
+    contracts = manifest.get("runner_contracts")
+    name = row.get("runner")
+    contract = contracts.get(name) if isinstance(contracts, dict) else None
+    adapter = contract.get("identity_adapter") if isinstance(contract, dict) else None
+    if not isinstance(adapter, str) or adapter not in {
+        "pytest-nodeid", "node-tap", "declared-shell-case", "qualified-scenario-nodeid",
+    }:
+        raise GateError(f"test row has no resolvable runner identity adapter: {row.get('path', '<unknown>')}")
+    return adapter
 
 
 def check_catalog(manifest: dict[str, Any]) -> list[str]:
@@ -392,6 +546,40 @@ def check_catalog(manifest: dict[str, Any]) -> list[str]:
     stale = sorted(path for path in catalog - expected if not (ROOT / path).is_file())
     errors = [f"unclassified test file: {p}" for p in missing]
     errors.extend(f"catalog path does not exist: {p}" for p in stale)
+    for path in sorted(catalog):
+        candidate = ROOT / path
+        try:
+            candidate.resolve(strict=True).relative_to(ROOT.resolve(strict=True))
+        except (OSError, ValueError):
+            errors.append(f"catalog path escapes repository or is unresolved: {path}")
+        if candidate.is_symlink() or any(parent.is_symlink() for parent in candidate.parents
+                                         if parent != ROOT and ROOT in parent.parents):
+            errors.append(f"catalog test path must not be a symlink: {path}")
+    # Scan tracked candidates independently of the supported roots/globs so a
+    # newly named test cannot disappear by being placed beside an adapter.
+    tracked = subprocess.run(["git", "ls-files", "--cached", "-z"], cwd=ROOT,
+                             capture_output=True, check=False)
+    if tracked.returncode:
+        errors.append("cannot enumerate tracked test candidates")
+    else:
+        for raw in tracked.stdout.split(b"\0"):
+            if not raw:
+                continue
+            path = raw.decode("utf-8", "strict")
+            name = Path(path).name
+            node_suffixes = (".js", ".cjs", ".mjs")
+            node_test_name = (
+                name.startswith(("test-", "test_")) and name.endswith(node_suffixes)
+            ) or (name.startswith("test.") and name.endswith(node_suffixes)) or (
+                name.endswith(("_test.js", "_test.cjs", "_test.mjs"))
+            ) or (name.endswith((".test.js", ".test.cjs", ".test.mjs"))) or (
+                name.endswith((".spec.js", ".spec.cjs", ".spec.mjs"))
+            )
+            shell_test_name = name in {"test.sh"} or name.startswith(("test-", "test_")) and name.endswith(".sh") or name.endswith("_test.sh")
+            candidate = (name == "test.py" or name.startswith("test_") and name.endswith(".py")
+                         or name.endswith("_test.py") or node_test_name or shell_test_name)
+            if candidate and path not in catalog:
+                errors.append(f"unassigned tracked test candidate: {path}")
     owners: dict[str, list[str]] = {}
     for row in manifest.get("test_files", []):
         group = row.get("execution_group") if isinstance(row, dict) else None
@@ -1076,6 +1264,12 @@ def promote(plan: dict[str, Any], manifest: dict[str, Any], reports: list[dict[s
             raise GateError("evidence report manifest version does not match")
         if report.get("manifest_digest") != canonical_digest(manifest):
             raise GateError("evidence report manifest digest does not match")
+        if report.get("host_qualification_status") != "NOT_VERIFIED":
+            raise GateError("CI evidence must state host qualification is NOT_VERIFIED")
+        validate_authorized_node_skips(
+            manifest, report.get("node_status"), report.get("authorized_skip_reasons"),
+            required_paths=set(plan["selected_files"]),
+        )
         if report.get("tool_version") != TOOL_VERSION:
             raise GateError("evidence report test-gate tool version does not match")
         if report.get("eligible") is not True:
@@ -1106,10 +1300,23 @@ def promote(plan: dict[str, Any], manifest: dict[str, Any], reports: list[dict[s
         suite_rows = [row for row in report["executions"] if row.get("path") != "@L0"]
         if len(suite_rows) != len(expected_files):
             raise GateError("evidence report contains duplicate suite executions")
+        projected_nodes: dict[str, str] = {}
+        projected_skip_reasons: dict[str, dict[str, Any]] = {}
         for row in suite_rows:
             expected_row = expected_rows[row["path"]]
             if row.get("suite") != expected_row["id"] or row.get("primary_level") != expected_row["primary_level"]:
                 raise GateError("evidence suite ID or primary level disagrees with manifest")
+            node_status = row.get("node_status", {})
+            skip_reasons = row.get("authorized_skip_reasons", {})
+            if not isinstance(node_status, dict) or not isinstance(skip_reasons, dict):
+                raise GateError("evidence suite node status or SKIP reason mapping is malformed")
+            if set(projected_nodes) & set(node_status):
+                raise GateError("evidence suite executions duplicate exact node IDs")
+            projected_nodes.update(node_status)
+            projected_skip_reasons.update(skip_reasons)
+        if (projected_nodes != report.get("node_status")
+                or projected_skip_reasons != report.get("authorized_skip_reasons")):
+            raise GateError("evidence top-level node results differ from per-suite execution receipts")
         valid_statuses = {"passed"}
         if any(row.get("status") not in valid_statuses for row in report["executions"]):
             raise GateError("evidence report contains an unknown, skipped or blocked status")
@@ -1440,9 +1647,9 @@ def environment_evidence(env: dict[str, str]) -> dict[str, str]:
     return {"python": sys.version.split()[0], "pytest": pytest_version, "node": node_version}
 
 
-def node_status_from_plugin(path: Path, max_bytes: int) -> dict[str, str]:
+def node_report_from_plugin(path: Path, max_bytes: int) -> dict[str, Any]:
     if not path.is_file():
-        return {}
+        return {"node_status": {}, "authorized_skip_reasons": {}}
     if path.stat().st_size > max_bytes:
         raise GateError("pytest exact-node report exceeded its artifact bound")
     try:
@@ -1452,12 +1659,14 @@ def node_status_from_plugin(path: Path, max_bytes: int) -> dict[str, str]:
     statuses = payload.get("node_status") if payload.get("schema_version") == 2 else None
     collected = payload.get("collected_nodeids")
     executions = payload.get("node_executions")
+    authorized_skips = payload.get("authorized_skip_reasons")
     if (not isinstance(statuses, dict)
             or any(value not in {"passed", "failed", "skipped"} for value in statuses.values())
             or not isinstance(collected, list)
             or any(not isinstance(nodeid, str) for nodeid in collected)
             or len(collected) != len(set(collected))
             or not isinstance(executions, dict)
+            or not isinstance(authorized_skips, dict)
             or set(executions) != set(collected)
             or set(statuses) != set(collected)):
         raise GateError("pytest exact-node report has unknown schema or status")
@@ -1469,7 +1678,17 @@ def node_status_from_plugin(path: Path, max_bytes: int) -> dict[str, str]:
                 or (statuses[nodeid] == "passed" and row.get("call_report_count") != 1)
                 or (statuses[nodeid] != "passed" and row.get("call_report_count") not in {0, 1})):
             raise GateError("pytest exact-node report contains missing or repeated test execution")
-    return statuses
+        if statuses[nodeid] == "skipped":
+            evidence = authorized_skips.get(nodeid)
+            if not isinstance(evidence, dict) or row.get("skip_reason") != evidence.get("pytest_reason"):
+                raise GateError("pytest exact-node report skip text differs from its reviewed policy")
+    validate_authorized_node_skips(load_manifest(), statuses, authorized_skips)
+    return {"node_status": statuses, "authorized_skip_reasons": authorized_skips}
+
+
+def node_status_from_plugin(path: Path, max_bytes: int) -> dict[str, str]:
+    """Compatibility accessor for callers that need statuses only."""
+    return node_report_from_plugin(path, max_bytes)["node_status"]
 
 
 def read_junit_case_names(path: Path, max_bytes: int) -> list[str]:
@@ -1977,6 +2196,7 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
                 log_bytes = redact_failure_output(output).encode("utf-8")
                 (artifact_root / f"{artifact_id}.log").write_bytes(log_bytes)
             observed: dict[str, str] = {}
+            authorized_skip_reasons: dict[str, dict[str, Any]] = {}
             tap_file_status: str | None = None
             validation_error = None
             junit_case_names: list[str] = []
@@ -1992,7 +2212,11 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
                 elif path == "installer/test-install.sh":
                     observed = installer_node_status or {}
                 else:
-                    observed = node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
+                    plugin_result = node_report_from_plugin(node_report_path, row["max_artifact_bytes"])
+                    observed = plugin_result["node_status"]
+                    authorized_skip_reasons = plugin_result["authorized_skip_reasons"]
+                    validate_authorized_node_skips(manifest, observed, authorized_skip_reasons,
+                                                   required_paths={path})
             except GateError as exc:
                 observed = {}
                 validation_error = str(exc)
@@ -2007,14 +2231,16 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
                     except GateError as exc:
                         validation_error = str(exc)
             junit_digest = hashlib.sha256(junit_bytes).hexdigest() if junit_bytes else None
-            complete = (validation_error is None and bool(observed)
-                        and all(status == "passed" for status in observed.values())
+            complete = (validation_error is None
+                        and policy_complete_node_results(manifest, observed, authorized_skip_reasons,
+                                                         required_paths={path})
                         and tap_file_status in (None, "passed"))
             status = "passed" if code == 0 and not truncated and complete else "failed"
             failed |= status != "passed"
             executions.append({
                 "path": path, "status": status, "exit_code": code,
                 "node_count": len(observed), "node_status": observed,
+                "authorized_skip_reasons": authorized_skip_reasons,
                 **({"file_status": tap_file_status} if path.startswith("ui/") else {}),
                 "junit_case_count": len(junit_case_names),
                 "junit_case_names": junit_case_names,
@@ -2067,6 +2293,10 @@ def _routine_shard_report(plan: dict[str, Any], manifest: dict[str, Any], shard_
     execution_ids = [row.get("suite") for row in executions]
     collected_nodes = [node for row in executions for node in row.get("collected_node_ids", [])]
     executed_nodes = [node for row in executions for node in row.get("executed_node_ids", [])]
+    authorized_skip_reasons = {
+        node: reason for row in executions
+        for node, reason in row.get("authorized_skip_reasons", {}).items()
+    }
     # Python contract files now run under pytest and emit exact unittest method
     # IDs.  Only retain a bare path as a marker when an adapter genuinely emits
     # that synthetic file-level ID; never hide observed method-level coverage.
@@ -2090,6 +2320,8 @@ def _routine_shard_report(plan: dict[str, Any], manifest: dict[str, Any], shard_
                             if row.get("status") == "passed"],
         "executions": executions,
         "node_status": node_status,
+        "authorized_skip_reasons": authorized_skip_reasons,
+        "host_qualification_status": "NOT_VERIFIED",
         "expected_node_ids": collected_nodes,
         "collected_node_ids": collected_nodes,
         "executed_node_ids": executed_nodes,
@@ -2399,6 +2631,7 @@ def command_run(args: argparse.Namespace) -> int:
                         env["FWROUTER_XRAY_TEST_IMAGE"] = image
         for row in selected:
             path = row["path"]
+            adapter = runner_adapter(row, manifest)
             if path in deferred_paths:
                 local_node_names = routine_node_override_names(manifest, path)
                 local_node_status: dict[str, str] = {}
@@ -2470,7 +2703,7 @@ def command_run(args: argparse.Namespace) -> int:
                 continue
             suite_env = dict(env)
             node_report_path: Path | None = None
-            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/") or path in STDLIB_CONTRACT_PATHS:
+            if adapter == "pytest-nodeid":
                 rel = path.removeprefix("backend/")
                 suite_root, reports_root = create_suite_root(owned, row["id"])
                 report_id = hashlib.sha256(row["id"].encode("utf-8")).hexdigest()[:16]
@@ -2485,12 +2718,12 @@ def command_run(args: argparse.Namespace) -> int:
                 # Both integration and installer pytest files need backend modules.
                 if cwd == ROOT:
                     suite_env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
-            elif path.startswith("ui/"):
+            elif adapter == "node-tap":
                 suite_root, _reports_root = create_suite_root(owned, row["id"])
                 suite_env["TMPDIR"] = str(suite_root / "tmp")
                 argv = ["node", "--test", "--test-reporter=tap", path]
                 cwd = ROOT
-            elif path == "installer/test-install.sh":
+            elif adapter == "declared-shell-case":
                 argv = ["sh", path]
                 cwd = ROOT
             else:
@@ -2509,15 +2742,29 @@ def command_run(args: argparse.Namespace) -> int:
                 if node_report_path is not None and node_report_path.exists() else 0
             )
             artifact_exceeded = node_report_size > row["max_artifact_bytes"]
-            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/") or path in STDLIB_CONTRACT_PATHS:
+            if adapter == "pytest-nodeid":
                 assert node_report_path is not None
-                observed = {} if artifact_exceeded else node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
-            elif path.startswith("ui/"):
+                plugin_result = ({} if artifact_exceeded else
+                                 node_report_from_plugin(node_report_path, row["max_artifact_bytes"]))
+                observed = plugin_result.get("node_status", {})
+                authorized_skip_reasons = plugin_result.get("authorized_skip_reasons", {})
+                if not artifact_exceeded:
+                    validate_authorized_node_skips(manifest, observed, authorized_skip_reasons,
+                                                   required_paths={path})
+            elif adapter == "node-tap":
                 observed = node_status_from_tap(output, path, require_observed=True)
+                authorized_skip_reasons = {}
             else:
                 observed = {f"{path}::{row['id']}": "passed" if code == 0 else "failed"}
+                authorized_skip_reasons = {}
             node_status.update(observed)
-            status = "passed" if code == 0 and not truncated and not artifact_exceeded and observed and all(s == "passed" for s in observed.values()) else "failed"
+            complete_nodes = False
+            try:
+                complete_nodes = policy_complete_node_results(
+                    manifest, observed, authorized_skip_reasons, required_paths={path})
+            except GateError as exc:
+                blocked.append(f"{path}: {exc}")
+            status = "passed" if code == 0 and not truncated and not artifact_exceeded and complete_nodes else "failed"
             executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"],
                                "domain": row["domain"], "execution_group": row.get("execution_group"),
                                "execution_profile": row.get("execution_profile"), "status": status,
@@ -2526,6 +2773,7 @@ def command_run(args: argparse.Namespace) -> int:
                                "node_report_bytes": node_report_size, "report_limit_exceeded": artifact_exceeded,
                                "node_count": len(observed), "collected_node_ids": sorted(observed),
                                "executed_node_ids": sorted(observed), "node_status": observed,
+                               "authorized_skip_reasons": authorized_skip_reasons,
                                "fixture_identity": row["fixture_identity"],
                                "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(),
                                "fixture_owner": row["fixture_owner"], "command": argv})
@@ -2578,6 +2826,7 @@ def command_run(args: argparse.Namespace) -> int:
             "deferred_remote_suites": sorted(deferred_paths),
             **_staging_gate_evidence(plan),
             "execution_complete": not deferred_paths,
+            "host_qualification_status": "NOT_VERIFIED",
             "available_execution_profiles": [],
             "environment": environment_evidence(env),
             "plan_digest": plan["plan_digest"],
@@ -2585,6 +2834,10 @@ def command_run(args: argparse.Namespace) -> int:
             "l0": {"status": "passed" if l0_ok else "failed", "elapsed_seconds": l0_elapsed, "checks": ["git diff --check", "changed-source syntax"], "problems": l0_problems},
             "executions": [{"suite": "L0-static", "path": "@L0", "status": "passed" if l0_ok else "failed", "primary_level": "L0", "elapsed_seconds": l0_elapsed}, *executions],
             "node_status": node_status,
+            "authorized_skip_reasons": {
+                node: reason for entry in executions
+                for node, reason in entry.get("authorized_skip_reasons", {}).items()
+            },
             "blocked_reasons": blocked,
             "failure_diagnostics": failure_diagnostics,
             "eligible": False,

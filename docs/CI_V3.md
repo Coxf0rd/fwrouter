@@ -1,5 +1,60 @@
 # CI V3: visible qualification and parallel execution
 
+## Stage 6.2.5 — measured baseline and qualification preparation (2026-11-05)
+
+Current implementation branch: `stage6/ci-test-architecture`, starting at `158f5f5725c974622c374ffa20edb1205940c7b2`. Stages 6.2.1–6.2.4 are accepted within their recorded source/verification scope. Stage 6.2 is not fully qualified: no new branch/PR/main/L6 hosted run is established by local tests. This section supersedes older planning/status statements below only for current Stage 6.2 work; historical source identities and results remain unchanged.
+
+### Actual hosted observations; not measurements of the Stage 6.2 HEAD
+
+All three observations are attempt 1 at **`cfb0a4540b672b22b43da8da81acdf91385742f6`**, on `ubuntu-24.04`. Read-only GitHub Actions run/jobs/artifacts API data was inspected on 2026-11-05. L6 schedule and manual runs have the same source but different trigger/cache/runner conditions; Main has a distinct single-repeat policy. They are not a matched optimization experiment.
+
+| Run | Event/profile | Wall seconds | Sum job minutes | Runner jobs | Artifacts / API bytes |
+|---|---|---:|---:|---:|---:|
+| [41833555265](https://github.com/Coxf0rd/fwrouter/actions/runs/41833555265) | push / actual Main | 490 | 35.500 | 16 | 16 / 5,628,242 |
+| [41833603309](https://github.com/Coxf0rd/fwrouter/actions/runs/41833603309) | dispatch / L6 main | 484 | 51.067 | 19 | 19 / 5,358,257 |
+| [42025975917](https://github.com/Coxf0rd/fwrouter/actions/runs/42025975917) | schedule / L6 main | 464 | 53.567 | 19 | 19 / 5,358,003 |
+
+Wall is `max(jobs.completed_at) - run.run_started_at`; job cost is the sum of `completed_at - started_at`, divided by 60. These are whole-second API observations, not billed minutes, CPU time, queue-free service time or complete workflow-finalization time. Artifact bytes sum API `size_in_bytes` for the run, not network traffic or uncompressed size.
+
+Raw per-job durations (seconds), retained here as the minimum reproducible measurement record:
+
+| Job/group | Main 41833555265 | L6 41833603309 | L6 42025975917 |
+|---|---:|---:|---:|
+| Plan/preflight | 22 | 22 | 31 |
+| Build | 28 | 27 | 34 |
+| Routine: core-state | 114 | 79 | 106 |
+| Routine: services-events | 113 | 129 | 120 |
+| Routine: ui-tooling | 63 | 54 | 70 |
+| Routine: routing-adapters | 121 | 151 | 175 |
+| Routine: api-persistence-contracts | 38 | 44 | 37 |
+| Routine: ui-provider-contracts | 44 | 38 | 59 |
+| Routine: local-integration | 243 | 264 | 283 |
+| Routine: installer-startup | 107 | 100 | 93 |
+| Hosted: single/r1 | 408 | 354 | 367 |
+| Hosted: r2 | n/a | 407 | 343 |
+| Provider/browser: single/r1 | 312 | 306 | 355 |
+| Provider/browser: r2 | n/a | 303 | 314 |
+| Packet: single/r1 | 355 | 293 | 283 |
+| Packet: r2 | n/a | 347 | 367 |
+| Native QCP | 100 | 92 | 103 |
+| Native Docker-Xray | 40 | 35 | 53 |
+| Final strict qualification | 22 | 19 | 21 |
+
+In the latest L6 run, hosted-r1 and packet-r2 finish at offset 440 s; aggregate starts at 443 s and ends at 464 s. Local-integration finishes at 429 s, after waiting until offset 146 s to start. In the other L6 run, hosted-r2 finishes at offset 463 s; aggregate runs at 465–484 s and local-integration ends at 392 s. Main hosted finishes at offset 466 s, aggregate runs at 468–490 s, local-integration ends at 384 s. Thus routine imbalance is real, but neither run proves routine repartitioning would shorten the overall critical path. Waiting includes max-parallel/capacity/scheduling effects and is not attributed solely to test code.
+
+API execution steps include provision/test/cleanup within the worker: latest L6 hosted-r1/r2 348/321 s, provider-r1/r2 327/289 s, packet-r1/r2 263/341 s, QCP 74 s, Docker-Xray 19 s. Routine execution steps range 9–242 s; job setup/teardown differences are not pure reusable overhead. Latest plan Python/Node setup steps are 11/10 s; build Python/Node setup 13/8 s versus 3 s build work. Final Main download/aggregate/build-verify/publish steps are 1/2/1/2 s. API second granularity can show zero for real short work; this does not prove zero cost. No isolated browser, cleanup or wire-transfer cost is inferred from combined steps.
+
+The downloaded latest L6 success bundle has 77 content-manifest entries; exact file closure, sizes and SHA-256 hashes match. Its metadata matches external source/run/attempt and records 3,501 unique cases / 3,547 executions, all PASS, no SKIP. This is historical evidence only; no strict replay against the new Stage 6.2 source was claimed. Its local-integration shard retains 240.094 s summed suite execution, with largest suites `test_mihomo_config_runtime.py` 47.141 s and `test_ui_client_list_settings.py` 35.583 s. Observed runner snapshot: 4 CPUs, 16,760,344,576 bytes MemTotal; shard process max RSS 640,352 KiB. RSS is a process observation, not container/runner peak memory.
+
+### Decision and reproducible method
+
+Retain the existing DAG, eight deterministic routine shards/max four, independent L6 repeats, cache policy, immutable build reuse and 1/3/7-day retention. Do not split browser/runtime groups, reorder/rebalance shards or add caches without matched new-source evidence including startup/cleanup and runner-minute cost. There is **no demonstrated Stage 6.2 speedup**.
+
+For a future authorized run, inspect `gh api repos/Coxf0rd/fwrouter/actions/runs/<RUN>` plus `/jobs?per_page=100` (paginate if necessary) and `/artifacts?per_page=100`; retain the run/attempt/source/profile, runner image and raw job/step timestamps. Compute wall/job-time consistently above, distinguish omitted/failed/cancelled jobs, and compare same-source/profile repetitions. Use sealed producer measurements for provision/commands/resources and existing shard/launcher receipts for suite/phase details. Routine summed suite execution is nested inside the unit command wall duration: these observations overlap and must not be added together as worker, workflow or runner cost. Process CPU/RSS belongs to the observed command; a suite-total scalar does not establish an independent suite peak. Missing or unsupported fields remain NOT MEASURED; timings cannot qualify tests. GitHub metadata is external provenance, while content hashes alone do not authenticate origin. The exact-source PR/Main/L6 success bundles still require independent strict offline replay.
+
+---
+
+
 ## Baseline and scope
 
 The starting source is `ccb8de81be68585d95a327e6d1835ea7387de24a` (PR39). Actual-main run [39912198441](https://github.com/Coxf0rd/fwrouter/actions/runs/39912198441), attempt 1, completed all eight jobs successfully. Its downloaded main bundle passed the trusted-source offline verifier, including main smoke and safe recovery. The owner confirmed completion of the separate production rollout before implementation began. This CI change performs no deployment and does not qualify private deployment-wrapper bytes.

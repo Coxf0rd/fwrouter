@@ -1,6 +1,16 @@
 name: FWRouter affected CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      acknowledge:
+        description: Type RUN PRE-PR FULL to run non-promotional full safe qualification
+        required: true
+        type: string
+      expected_sha:
+        description: Exact 40-character source commit to qualify
+        required: true
+        type: string
   pull_request:
     branches: [main]
   push:
@@ -15,7 +25,7 @@ concurrency:
 
 jobs:
   plan:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     name: Immutable plan and preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -28,6 +38,7 @@ jobs:
       needs_native: ${{ steps.plan.outputs.needs_native }}
       needs_runtime: ${{ steps.plan.outputs.needs_runtime }}
       main_smoke: ${{ steps.plan.outputs.main_smoke }}
+      qualification_mode: ${{ steps.plan.outputs.qualification_mode }}
       unit_shards_json: ${{ steps.plan.outputs.unit_shards_json }}
       native_profiles_json: ${{ steps.plan.outputs.native_profiles_json }}
     steps:
@@ -77,36 +88,18 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PUSH_BASE_SHA: ${{ github.event.before }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACKNOWLEDGE: ${{ inputs.acknowledge }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = pull_request ]; then
-            BASE="$PR_BASE_SHA"
-          else
-            BASE="$PUSH_BASE_SHA"
-          fi
-          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo 'Cannot resolve immutable event base SHA' >&2
-            exit 2
-          fi
-          python tests/gates/gate.py lint-changed --base "$BASE"
           mkdir -p "$RUNNER_TEMP/plan"
           PLAN="$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
-          PLAN_ARGS=(--base "$BASE" --include-native --output "$PLAN")
-          mandatory_all=false
-          if [ "$EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
-            mandatory_all=true
-          elif [ "$EVENT_NAME" = pull_request ] \
-            && [ "$PR_HEAD_REPO" = "$GITHUB_REPOSITORY" ] \
-            && git log -1 --format=%B | grep -Fq -- 'ci:full-acceptance'; then
-            mandatory_all=true
-          fi
-          if [ "$mandatory_all" = true ]; then
-            PLAN_ARGS+=(--mandatory-all)
-          fi
-          python tests/gates/gate.py plan "${PLAN_ARGS[@]}"
-          smoke=()
-          if [ "$EVENT_NAME" = push ]; then smoke+=(--main-smoke); fi
-          python tests/gates/parallel_ci.py configure --plan "$PLAN" --github-output "$GITHUB_OUTPUT" "${smoke[@]}"
+          python tests/gates/parallel_ci.py prepare --event "$EVENT_NAME" --ref "$GITHUB_REF" \
+            --event-before "$PUSH_BASE_SHA" --pr-base "$PR_BASE_SHA" \
+            --pr-head-repo "$PR_HEAD_REPO" --repository "$REPOSITORY" \
+            --acknowledge "$ACKNOWLEDGE" --expected-sha "$EXPECTED_SHA" \
+            --plan "$PLAN" --github-output "$GITHUB_OUTPUT" --lint-changed
       - name: Upload immutable plan
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -480,7 +473,7 @@ jobs:
           --outcome '${{ steps.execution.outcome }}' >> "$GITHUB_STEP_SUMMARY"
 
   affected:
-    name: Affected L0-L5 with hosted profiles
+    name: ${{ github.event_name == 'workflow_dispatch' && 'Pre-PR full safe qualification' || 'Affected L0-L5 with hosted profiles' }}
     if: always()
     needs: [plan, build, unit, hosted, provider, packet, native]
     runs-on: ubuntu-24.04
@@ -505,19 +498,31 @@ jobs:
       - name: Aggregate immutable evidence and qualify safe recovery
         id: aggregate
         if: always()
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          ACKNOWLEDGE: ${{ inputs.acknowledge }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
           smoke=()
           if [ '${{ github.event_name }}' = push ]; then smoke+=(--main-smoke); fi
           python tests/gates/parallel_ci.py aggregate \
             --plan "$RUNNER_TEMP/evidence/fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}/fwrouter-affected-plan.json" \
-            --artifacts "$RUNNER_TEMP/evidence" --root "$RUNNER_TEMP/required" "${smoke[@]}"
+            --artifacts "$RUNNER_TEMP/evidence" --root "$RUNNER_TEMP/required" \
+            --qualification-mode '${{ needs.plan.outputs.qualification_mode }}' \
+            --event "$EVENT_NAME" --ref "$EVENT_REF" --pr-head-repo "$PR_HEAD_REPO" \
+            --repository "$REPOSITORY" --acknowledge "$ACKNOWLEDGE" --expected-sha "$EXPECTED_SHA" \
+            "${smoke[@]}"
       - name: Build and verify complete evidence bundle
         id: evidence
         if: steps.aggregate.outcome == 'success'
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REF: ${{ github.ref }}
+          WORKFLOW_KIND: ${{ github.event_name == 'workflow_dispatch' && 'prepr' || 'main' }}
         run: |
           set -euo pipefail
           printf '%s' "$FWROUTER_CI_NEEDS" > "$RUNNER_TEMP/job-results.json"
@@ -525,13 +530,13 @@ jobs:
             --evidence "$RUNNER_TEMP/evidence" --required "$RUNNER_TEMP/required" \
             --jobs "$RUNNER_TEMP/job-results.json" --destination "$RUNNER_TEMP/final-evidence" \
             --event "$EVENT_NAME" --ref "$EVENT_REF" \
-            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT"
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --workflow-kind "$WORKFLOW_KIND"
       - name: Publish successful CI evidence bundle
         id: publish_bundle
         if: steps.evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('fwrouter-main-evidence-{0}-{1}-{2}', needs.plan.outputs.source_sha, github.run_id, github.run_attempt) || format('fwrouter-pr-evidence-{0}-{1}-{2}', needs.plan.outputs.source_sha, github.run_id, github.run_attempt) }}
+          name: ${{ github.event_name == 'workflow_dispatch' && format('fwrouter-pre-pr-evidence-{0}-{1}-{2}', needs.plan.outputs.source_sha, github.run_id, github.run_attempt) || (github.event_name == 'push' && github.ref == 'refs/heads/main' && format('fwrouter-main-evidence-{0}-{1}-{2}', needs.plan.outputs.source_sha, github.run_id, github.run_attempt) || format('fwrouter-pr-evidence-{0}-{1}-{2}', needs.plan.outputs.source_sha, github.run_id, github.run_attempt)) }}
           path: ${{ runner.temp }}/final-evidence/
           if-no-files-found: error
           retention-days: 7
@@ -542,6 +547,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REF: ${{ github.ref }}
+          WORKFLOW_KIND: ${{ github.event_name == 'workflow_dispatch' && 'prepr' || 'main' }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -570,15 +576,32 @@ jobs:
           PUBLISH_OUTCOME: ${{ steps.publish_bundle.outcome }}
           ARTIFACT_ID: ${{ steps.publish_bundle.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.publish_bundle.outputs.artifact-digest }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          WORKFLOW_KIND: ${{ github.event_name == 'workflow_dispatch' && 'prepr' || 'main' }}
         run: |
           set -uo pipefail
           summary_status=0
+          printf '%s' "$FWROUTER_CI_NEEDS" > "$RUNNER_TEMP/job-results.json"
+          plan="$RUNNER_TEMP/evidence/plan/fwrouter-affected-plan.json"
+          if [ ! -f "$plan" ]; then
+            plan="$RUNNER_TEMP/evidence/fwrouter-v2-plan-${RUN_ID}-${RUN_ATTEMPT}/fwrouter-affected-plan.json"
+          fi
           python tests/gates/evidence_bundle.py summary \
             --required "$RUNNER_TEMP/required" --output "$RUNNER_TEMP/ci-summary.md" \
             --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
+            --expected-sha "$EXPECTED_SHA" --event "$EVENT_NAME" --ref "$EVENT_REF" \
+            --plan "$plan" --jobs "$RUNNER_TEMP/job-results.json" \
             --aggregate-outcome "${AGGREGATE_OUTCOME:-unknown}" \
             --bundle-outcome "${BUNDLE_OUTCOME:-unknown}" \
             --publish-outcome "${PUBLISH_OUTCOME:-unknown}" \
-            --artifact-id "${ARTIFACT_ID:-}" --artifact-digest "${ARTIFACT_DIGEST:-}" || summary_status=$?
-          cat "$RUNNER_TEMP/ci-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            --artifact-id "${ARTIFACT_ID:-}" --artifact-digest "${ARTIFACT_DIGEST:-}" \
+            --workflow-kind "$WORKFLOW_KIND" || summary_status=$?
+          if [ -f "$RUNNER_TEMP/ci-summary.md" ]; then
+            cat "$RUNNER_TEMP/ci-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## FWRouter CI qualification summary\n\n- Overall result: **INCOMPLETE**\n- Source/run evidence: NOT AVAILABLE. Inspect this run and its job logs.\n' >> "$GITHUB_STEP_SUMMARY"
+            summary_status=2
+          fi
           exit "$summary_status"

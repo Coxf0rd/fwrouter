@@ -23,10 +23,198 @@ SPEC.loader.exec_module(bundle)
 
 
 class EvidenceBundleTests(unittest.TestCase):
+    def test_unit_worker_measurement_phases_and_handoff_preserve_peak_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan_root = root / "plan"
+            plan_root.mkdir()
+            plan_path = plan_root / "fwrouter-affected-plan.json"
+            manifest = bundle.gate.load_manifest()
+            plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
+                    "manifest_digest": bundle.gate.canonical_digest(manifest),
+                    "manifest_version": manifest["version"], "selected_files": [],
+                    "required_levels": ["L0"], "required_execution_profiles": [],
+                    "regression_policy": {"level": "L0", "reasons": [], "anchors": []}}
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            worker_root = root / "unit"
+            real_verify_producer = bundle.parallel_ci.verify_producer
+            resource = {"cpu_count": 2, "memory": {}, "disk_total_bytes": 4096,
+                        "disk_used_bytes": 1024, "disk_free_bytes": 3072}
+            peaks = {"max_rss_kib": 4096, "cpu_percent": 80}
+
+            def fake_run_command(command, log, *, env=None):
+                output_path = Path(command[command.index("--output") + 1])
+                report = bundle.gate._routine_shard_report(
+                    plan, manifest, "core-state", [], [], {}, [], l0_owned=True,
+                    l0_ok=True, l0_elapsed=0.1, l0_problems=[])
+                report["owned_temp_cleanup"] = {
+                    "status": "removed", "root_name": f"fwrouter-gate-{'a' * 8}-fixture",
+                    "entries": [], "truncated": False, "readonly_directories_restored": 0}
+                bundle.gate.atomic_json(output_path, report)
+                return 0, 9.5
+
+            args = argparse.Namespace(plan=plan_path, root=worker_root, role="unit",
+                                      shard_group="core-state", l6=False)
+            with patch.dict("os.environ", {"RUNNER_TEMP": temporary, "GITHUB_RUN_ID": "123",
+                                            "GITHUB_RUN_ATTEMPT": "1"}, clear=False), \
+                    patch.object(bundle.parallel_ci, "load_plan", return_value=plan), \
+                    patch.object(bundle.parallel_ci, "verify_producer"), \
+                    patch.object(bundle.parallel_ci, "resource_snapshot", return_value=resource), \
+                    patch.object(bundle.parallel_ci, "run_command", side_effect=fake_run_command), \
+                    patch.object(bundle.parallel_ci, "process_peak", return_value=peaks):
+                self.assertEqual(0, bundle.parallel_ci.run_worker(args))
+                measurements = bundle.parallel_ci.load_measurement_receipt(worker_root / "measurements.json")
+                self.assertEqual(["routine_execution", "unit"],
+                                 [phase["phase"] for phase in measurements["phases"]])
+                routine, unit = measurements["phases"]
+                self.assertEqual(0.1, routine["duration_seconds"])
+                self.assertNotIn("max_rss_kib", routine)
+                self.assertEqual(9.5, unit["duration_seconds"])
+                self.assertEqual(4096, unit["max_rss_kib"])
+                self.assertEqual(80, unit["cpu_percent"])
+                self.assertNotIn("unknown", [phase["phase"] for phase in measurements["phases"]])
+                handoff_args = argparse.Namespace(
+                    source=worker_root, destination=root / "unit-handoff", plan=plan_path,
+                    role="unit", shard_group="core-state", outcome="success",
+                    event="pull_request", ref="refs/pull/1/merge")
+                needs = {"plan": True, "build": True, "unit": True, "hosted": False,
+                         "provider": False, "packet": False, "native": False}
+                with patch.object(bundle.gate, "ensure_plan"), patch.object(
+                        bundle.parallel_ci, "requirements", return_value=needs):
+                    bundle.handoff(handoff_args)
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=False):
+                real_verify_producer(root / "unit-handoff", "unit", plan)
+                retained = bundle.parallel_ci.load_measurement_receipt(
+                    root / "unit-handoff" / "measurements.json")
+            self.assertEqual(measurements, retained)
+
+    def test_offline_strict_replay_rejects_rehashed_forged_host_pass(self) -> None:
+        manifest = bundle.gate.load_manifest()
+        plan = bundle.gate.make_plan(
+            "HEAD", manifest, paths=["tests/gates/test_manual_host_smoke.py"])
+        forged_status = {
+            node: ("passed" if node == bundle.gate.MANUAL_HOST_NODEID else "skipped")
+            for node in bundle.gate.SKIP_POLICY_REGISTRY
+            if node.split("::", 1)[0] in set(plan["selected_files"])
+        }
+        forged_reasons = {
+            node: {**bundle.gate.SKIP_POLICY_REGISTRY[node],
+                   "pytest_reason": bundle.gate.node_skip_reason(bundle.gate.SKIP_POLICY_REGISTRY[node])}
+            for node, status in forged_status.items() if status == "skipped"
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            plan_dir, unit_dir = evidence / "plan", evidence / "unit"
+            plan_dir.mkdir(); unit_dir.mkdir()
+            (plan_dir / "fwrouter-affected-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            unit = {
+                "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
+                "manifest_version": manifest["version"],
+                "manifest_digest": bundle.gate.canonical_digest(manifest),
+                "host_qualification_status": "NOT_VERIFIED",
+                "node_status": forged_status,
+                "authorized_skip_reasons": forged_reasons,
+            }
+            unit["report_digest"] = bundle.gate.canonical_digest(unit)
+            (unit_dir / "fwrouter-affected-unit.json").write_text(json.dumps(unit), encoding="utf-8")
+            with patch.object(bundle, "verify_routine_shards"), \
+                    patch.object(bundle.parallel_ci, "requirements", return_value={
+                        "native": False, "hosted": False, "provider": False, "packet": False}), \
+                    patch.object(bundle.strict.gate, "ensure_plan"), \
+                    self.assertRaisesRegex(bundle.gate.GateError, "must remain SKIP"):
+                bundle.replay_strict(evidence, plan, main_smoke=False)
+
     def test_main_smoke_is_derived_only_from_actual_main_push(self) -> None:
         self.assertTrue(bundle.main_smoke_for("push", "refs/heads/main"))
         self.assertFalse(bundle.main_smoke_for("pull_request", "refs/pull/35/merge"))
         self.assertFalse(bundle.main_smoke_for("push", "refs/heads/feature"))
+
+    def test_prepr_scope_is_bound_to_required_result_and_cannot_be_relabelled(self) -> None:
+        plan = {'source_commit': 'a' * 40, 'plan_digest': 'b' * 64,
+                'manifest_digest': 'c' * 64, 'manifest_version': 'v',
+                'mandatory_suite_required': True, 'selected_files': []}
+        upstream = {role: {'result': 'success'} for role in bundle.parallel_ci.ROLES}
+        required = {'schema': 'fwrouter-parallel-required/v1', 'eligible': True,
+                    'source_commit': plan['source_commit'], 'plan_digest': plan['plan_digest'],
+                    'manifest_digest': plan['manifest_digest'], 'manifest_version': 'v',
+                    'run_id': '123', 'run_attempt': '2', 'upstream': upstream,
+                    'safe_recovery_required': False,
+                    'qualification_scope': bundle.parallel_ci.PREPR_SCOPE}
+        report = {'eligible': True, 'source_commit': plan['source_commit'],
+                  'plan_digest': plan['plan_digest'], 'manifest_version': 'v',
+                  'main_smoke_required': False, 'blocked_reasons': [], 'missing_levels': []}
+        with patch.object(bundle, 'load_plan', return_value=(Path('plan.json'), plan)), \
+                patch.object(bundle, 'read_json', side_effect=[required, report]), \
+                patch.object(bundle.parallel_ci, 'requirements', return_value={}), \
+                patch.object(bundle.parallel_ci, 'validate_results', return_value=[]):
+            bundle.check_eligibility(Path('evidence'), Path('required'), event='workflow_dispatch',
+                                     ref='refs/heads/topic', run_id='123', attempt='2',
+                                     upstream=upstream, require_prepr_scope=True)
+        required['qualification_scope'] = 'pr-trusted-full-safe'
+        with patch.object(bundle, 'load_plan', return_value=(Path('plan.json'), plan)), \
+                patch.object(bundle, 'read_json', side_effect=[required, report]), \
+                patch.object(bundle.parallel_ci, 'requirements', return_value={}), \
+                patch.object(bundle.parallel_ci, 'validate_results', return_value=[]), \
+                self.assertRaisesRegex(bundle.gate.GateError, 'non-promotional pre-PR scope'):
+            bundle.check_eligibility(Path('evidence'), Path('required'), event='workflow_dispatch',
+                                     ref='refs/heads/topic', run_id='123', attempt='2',
+                                     upstream=upstream, require_prepr_scope=True)
+
+        # Even if the outer archive is relabelled as a trusted PR bundle, its
+        # sealed required-result remains bound to the pre-PR event scope.
+        required['qualification_scope'] = bundle.parallel_ci.PREPR_SCOPE
+        with patch.object(bundle, 'load_plan', return_value=(Path('plan.json'), plan)), \
+                patch.object(bundle, 'read_json', side_effect=[required, report]), \
+                patch.object(bundle.parallel_ci, 'requirements', return_value={}), \
+                patch.object(bundle.parallel_ci, 'validate_results', return_value=[]), \
+                self.assertRaisesRegex(bundle.gate.GateError, 'scope does not match'):
+            bundle.check_eligibility(Path('evidence'), Path('required'), event='pull_request',
+                                     ref='refs/pull/8/merge', run_id='123', attempt='2',
+                                     upstream=upstream)
+
+    def test_offline_verifier_rejects_prepr_required_result_relabelled_as_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'bundle'
+            (root / 'evidence/plan').mkdir(parents=True)
+            (root / 'reports').mkdir()
+            source = 'a' * 40
+            plan = {'source_commit': source, 'plan_digest': 'b' * 64,
+                    'manifest_digest': 'c' * 64, 'manifest_version': 'v',
+                    'mandatory_suite_required': True, 'selected_files': []}
+            bundle.gate.atomic_json(root / 'evidence/plan/fwrouter-affected-plan.json', plan)
+            bundle.gate.atomic_json(root / 'reports/required-result.json',
+                                    {'qualification_scope': bundle.parallel_ci.PREPR_SCOPE})
+            metadata = {'schema': bundle.SCHEMA, 'source_sha': source, 'run_id': '123',
+                        'run_attempt': '2', 'event': 'pull_request', 'ref': 'refs/pull/8/merge',
+                        'repository': bundle.REPOSITORY, 'workflow': bundle.WORKFLOW_NAME,
+                        'workflow_path': '.github/workflows/test-gates.yml',
+                        'required_check': bundle.REQUIRED_CHECK, 'strict_aggregate': 'passed',
+                        'plan_digest': plan['plan_digest'], 'manifest_digest': plan['manifest_digest'],
+                        'manifest_version': plan['manifest_version'],
+                        'main_smoke_required': False, 'verifier_sources': []}
+            rows = []
+            for path in bundle.SOURCE_FILES:
+                local = bundle.ROOT / path
+                packaged = root / 'verifier-source' / path
+                packaged.parent.mkdir(parents=True, exist_ok=True)
+                packaged.write_bytes(local.read_bytes())
+                rows.append({'path': path, 'bytes': local.stat().st_size, 'sha256': 'd' * 64})
+            metadata['verifier_sources'] = rows
+            with patch.object(bundle, 'verify_content', return_value=(metadata, {})), \
+                    patch.object(bundle.gate, 'git', side_effect=[source, '']), \
+                    patch.object(bundle, 'sha256', return_value='d' * 64), \
+                    patch.object(bundle.gate, 'ensure_plan'), \
+                    self.assertRaisesRegex(bundle.gate.GateError, 'offline required-result scope'):
+                bundle.verify_bundle(argparse.Namespace(bundle=root, expected_sha=source,
+                    event='pull_request', ref='refs/pull/8/merge', run_id='123', attempt='2',
+                    require_main=False, workflow_kind='main'))
+
+    def test_prepr_bundle_contract_uses_distinct_name_and_check_context(self) -> None:
+        workflow = (bundle.ROOT / '.github/workflows/test-gates.yml').read_text(encoding='utf-8')
+        self.assertIn("Pre-PR full safe qualification", workflow)
+        self.assertIn("PREPR_REQUIRED_CHECK = \"Pre-PR full safe qualification\"", SCRIPT.read_text())
+        self.assertIn('fwrouter-pre-pr-evidence-', workflow)
+        self.assertNotIn("name: Affected L0-L5 with hosted profiles\n    if: github.event_name == 'workflow_dispatch'", workflow)
 
     def test_hidden_bundle_paths_are_limited_to_pinned_workflow_source(self) -> None:
         self.assertEqual(".github/workflows/test-gates.yml",
@@ -159,6 +347,14 @@ class EvidenceBundleTests(unittest.TestCase):
             report["shard_digest"] = bundle.gate.canonical_digest(report)
             (source / "shard.json").write_text(json.dumps(report) + "\n", encoding="utf-8")
             (source / "timings.json").write_text('[{"seconds":1}]\n', encoding="utf-8")
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=False):
+                bundle.gate.atomic_json(source / "measurements.json", bundle.parallel_ci.measurement_receipt(
+                    plan, "unit", [{"phase": "routine_execution", "seconds": 0.25, "exit": 0}],
+                    shard_group="core-state",
+                    resources_before={"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                      "disk_used_bytes": 1, "disk_free_bytes": 3},
+                    resources_after={"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                     "disk_used_bytes": 1, "disk_free_bytes": 3}))
             (source / "runner.log").write_text("verbose output", encoding="utf-8")
             (source / "capture.pcap").write_bytes(b"raw packet data")
             plan_path.write_text(json.dumps(plan), encoding="utf-8")
@@ -173,10 +369,11 @@ class EvidenceBundleTests(unittest.TestCase):
                 result = bundle.handoff(args)
                 bundle.parallel_ci.verify_producer(destination, "unit", plan)
             self.assertEqual("success", result["outcome"])
-            self.assertEqual({"shard.json", "producer.json"},
+            self.assertEqual({"shard.json", "measurements.json", "producer.json"},
                              {path.name for path in destination.iterdir()})
             self.assertTrue((source / "runner.log").exists())
             self.assertTrue((source / "capture.pcap").exists())
+            self.assertIn("measurements.json", result["copied"])
             self.assertNotIn("timings.json", result["copied"])
 
             failed_destination = root / "failed-handoff"
@@ -189,7 +386,7 @@ class EvidenceBundleTests(unittest.TestCase):
                 failed = bundle.handoff(failed_args)
                 failed_envelope = bundle.read_json(failed_destination / "producer.json")
                 self.assertEqual("failure", failed_envelope["outcome"])
-                self.assertEqual({"shard.json", "producer.json"},
+                self.assertEqual({"shard.json", "measurements.json", "producer.json"},
                                  {path.name for path in failed_destination.iterdir()})
             self.assertEqual("failure", failed["outcome"])
 
@@ -380,6 +577,7 @@ class EvidenceBundleTests(unittest.TestCase):
                     for role, required in needed.items()}
 
         def fixtures(root: Path, event: str, ref: str, results: dict[str, dict[str, str]], attempt: str):
+            plan['mandatory_suite_required'] = event == 'push' and ref == 'refs/heads/main'
             evidence = root / "evidence"
             plan_dir = evidence / "plan"
             plan_dir.mkdir(parents=True)
@@ -519,31 +717,335 @@ class EvidenceBundleTests(unittest.TestCase):
             for path, original in originals.items():
                 self.assertEqual(original, path.read_bytes())
 
-    def test_summary_fails_if_aggregate_passes_but_publication_or_receipt_fails(self) -> None:
+    def _summary_fixture(self, root: Path, *, event='push', ref='refs/heads/main', workflow_kind='main'):
+        root.mkdir(parents=True, exist_ok=True)
+        required = root / 'required'; required.mkdir()
+        manifest = bundle.gate.load_manifest()
+        qemu_nodes = sorted(node for node, policy in bundle.gate.SKIP_POLICY_REGISTRY.items()
+                            if policy['reason_code'] == 'retired_qemu')
+        host_node = bundle.gate.MANUAL_HOST_NODEID
+        host_path = 'tests/gates/test_host_qualification.py'
+        manual_path = 'tests/gates/test_manual_host_smoke.py'
+        selected_files = [host_path, manual_path]
+        plan = {'source_commit': 'a' * 40, 'plan_digest': 'b' * 64, 'manifest_digest': 'c' * 64,
+                'manifest_version': bundle.gate.load_manifest()['version'],
+                'mandatory_suite_required': event == 'push' and ref == 'refs/heads/main',
+                'selected_files': selected_files}
+        plan_path = root / 'plan.json'; plan_path.write_text(json.dumps(plan), encoding='utf-8')
+        jobs = {role: {'result': 'success'} for role in bundle.parallel_ci.ROLES}
+        jobs_path = root / 'jobs.json'; jobs_path.write_text(json.dumps(jobs), encoding='utf-8')
+        identity = {'source_commit': plan['source_commit'], 'plan_digest': plan['plan_digest'],
+                    'manifest_digest': plan['manifest_digest'], 'manifest_version': plan['manifest_version'],
+                    'run_id': '123', 'run_attempt': '2'}
+        required_result = {'schema': ('fwrouter-l6-required/v1' if workflow_kind == 'l6'
+                                      else 'fwrouter-parallel-required/v1'),
+                           **identity, 'eligible': True, 'upstream': jobs,
+                           'safe_recovery_required': workflow_kind == 'l6'}
+        if workflow_kind == 'l6':
+            required_result.update({'qualification_scope': 'branch-regression-non-promotional',
+                                    'minimum_repeats': 2})
+        bundle.gate.atomic_json(required / 'required-result.json', required_result)
+        aggregate = {'schema_version': 1, 'source_commit': plan['source_commit'],
+                     'plan_digest': plan['plan_digest'], 'manifest_version': plan['manifest_version'],
+                     'selected_files': sorted(plan['selected_files']),
+                     'main_smoke_required': event == 'push' and ref == 'refs/heads/main' and workflow_kind != 'l6',
+                     'host_qualification_status': 'NOT_VERIFIED',
+                     'hosted_repeats_required': 2 if workflow_kind == 'l6' else 1,
+                     'eligible': True, 'blocked_reasons': [], 'missing_levels': []}
+        bundle.gate.atomic_json(required / 'fwrouter-aggregate.json', aggregate)
+        generic_nodes = [
+            f'{host_path}::HostQualificationTests::test_absent_or_mismatched_github_context_fails_before_guest_factory',
+            f'{host_path}::HostQualificationTests::test_missing_github_context_fails_before_guest_factory',
+            f'{host_path}::HostQualificationTests::test_admission_failure_is_structured_incomplete_and_nonpromotional',
+        ]
+        executions = [{'node_id': node, 'status': 'passed'} for node in generic_nodes]
+        for node in [*qemu_nodes, host_node]:
+            policy = bundle.gate.SKIP_POLICY_REGISTRY[node]
+            executions.append({'node_id': node, 'status': 'skipped',
+                               'skip_reason': {**policy, 'pytest_reason': bundle.gate.node_skip_reason(policy)}})
+        statuses = {'passed': 3, 'failed': 0, 'skipped': len(qemu_nodes) + 1, 'blocked': 0, 'not_run': 0}
+        visibility = {'schema': 'fwrouter-ci-visibility/v1', **identity,
+                      'qualification_status': 'passed', 'host_qualification_status': 'NOT_VERIFIED',
+                      'strict_aggregate_eligible': True, 'required_result_eligible': True,
+                      'unique_test_coverage': len(executions), 'total_test_executions': len(executions),
+                      'discovered_suite_file_count': len(manifest['test_files']),
+                      'selected_suite_file_count': len(selected_files), 'observed_selected_suite_file_count': len(selected_files),
+                      'statuses': statuses, 'levels': {}, 'groups': [], 'executions': executions,
+                      'not_run_selected_files': [], 'omitted_files': [], 'diagnostic_limitations': [],
+                      'l5_coverage': 'L5 anchors: not applicable'}
+        visibility['visibility_digest'] = bundle.gate.canonical_digest(visibility)
+        bundle.gate.atomic_json(required / 'visibility.json', visibility)
+        output = root / 'summary.md'
+        args = argparse.Namespace(required=required, plan=plan_path, jobs=jobs_path, output=output,
+                                  run_id='123', attempt='2', expected_sha='a' * 40,
+                                  event=event, ref=ref, workflow_kind=workflow_kind,
+                                  aggregate_outcome='success', bundle_outcome='success',
+                                  publish_outcome='success', artifact_id='55', artifact_digest='d' * 64,
+                                  run_url='https://github.com/example/fwrouter/actions/runs/123')
+        return args, jobs, required
+
+    def test_summary_pass_requires_current_identity_and_replayable_projections(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            args, _jobs, _required = self._summary_fixture(Path(temporary))
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(0, bundle.summary(args))
+            rendered = args.output.read_text(encoding='utf-8')
+            self.assertIn('Overall result: **PASS**', rendered)
+            self.assertIn('Profile: **main required qualification**', rendered)
+            self.assertIn('Host qualification: **NOT_VERIFIED**', rendered)
+            self.assertIn('Retired QEMU SKIPs: retired_qemu (15)', rendered)
+            self.assertIn('Active host SKIPs (host qualification remains NOT_VERIFIED): host_environment_unavailable (1)', rendered)
+            self.assertIn('PASS 3; FAIL 0; SKIP 16', rendered)
+            self.assertIn('Actual executed PASS+FAIL case executions (SKIP excluded): **3**', rendered)
+            self.assertIn('Discovered suite files (manifest): **215**', rendered)
+            self.assertIn('Open this run and its job logs', rendered)
+            self.assertLess(len(rendered.encode()), 16 * 1024)
+
+    def test_summary_failure_and_incomplete_are_distinct_and_keep_trusted_context(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            required = root / "required"
-            required.mkdir()
-            bundle.gate.atomic_json(required / "required-result.json", {
-                "eligible": True, "source_commit": "a" * 40, "upstream": {},
-            })
-            for bundle_outcome, publication, artifact_id, digest in (
-                ("success", "failure", "", ""), ("failure", "skipped", "", ""),
-                ("success", "success", "", ""), ("success", "success", "55", "not-a-digest"),
-                ("success", "success", "55", "a" * 64),
-            ):
-                output = root / f"summary-{publication}-{artifact_id}-{len(digest)}.md"
-                args = argparse.Namespace(aggregate_outcome="success", bundle_outcome=bundle_outcome,
-                                          publish_outcome=publication, artifact_id=artifact_id,
-                                          artifact_digest=digest, required=required, output=output,
-                                          run_id="123", attempt="1")
+            args, jobs, required = self._summary_fixture(root)
+            jobs['unit']['result'] = 'failure'
+            args.aggregate_outcome = 'failure'
+            args.bundle_outcome = 'skipped'
+            args.publish_outcome = 'skipped'
+            args.artifact_id = ''
+            args.artifact_digest = ''
+            args.jobs.write_text(json.dumps(jobs), encoding='utf-8')
+            required_result = json.loads((required / 'required-result.json').read_text())
+            required_result['upstream'] = jobs
+            required_result['eligible'] = False
+            bundle.gate.atomic_json(required / 'required-result.json', required_result)
+            aggregate = json.loads((required / 'fwrouter-aggregate.json').read_text())
+            aggregate['eligible'] = False
+            aggregate['blocked_reasons'] = ['unit job failed']
+            bundle.gate.atomic_json(required / 'fwrouter-aggregate.json', aggregate)
+            visibility = json.loads((required / 'visibility.json').read_text())
+            failed_case = next(row for row in visibility['executions'] if row['status'] == 'passed')
+            failed_case['status'] = 'failed'
+            visibility['statuses']['passed'] -= 1
+            visibility['statuses']['failed'] += 1
+            visibility['strict_aggregate_eligible'] = False
+            visibility['required_result_eligible'] = False
+            visibility['qualification_status'] = 'incomplete_or_failed'
+            visibility.pop('visibility_digest')
+            visibility['visibility_digest'] = bundle.gate.canonical_digest(visibility)
+            bundle.gate.atomic_json(required / 'visibility.json', visibility)
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
                 self.assertEqual(2, bundle.summary(args))
-                self.assertIn("Overall result: **FAIL / INCOMPLETE**", output.read_text(encoding="utf-8"))
+            failed = args.output.read_text(encoding='utf-8')
+            self.assertIn('Overall result: **FAIL**', failed)
+            self.assertIn('unit', failed)
+            self.assertIn('FAIL 1; SKIP 16', failed)
+
+            args, _jobs, required = self._summary_fixture(root / 'incomplete')
+            args.attempt = '3'
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            incomplete = args.output.read_text(encoding='utf-8')
+            self.assertIn('Overall result: **INCOMPLETE**', incomplete)
+            self.assertIn('visibility run attempt does not match this workflow attempt', incomplete)
+            self.assertIn('Observed test counts and coverage: NOT AVAILABLE', incomplete)
+            self.assertIn('Open this run and its job logs', incomplete)
+            self.assertNotIn('PASS 0; FAIL 0', incomplete)
+
+    def test_summary_redacts_bounded_failure_details_and_l6_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, _jobs, required = self._summary_fixture(root)
+            aggregate = json.loads((required / 'fwrouter-aggregate.json').read_text())
+            aggregate.update({'eligible': False, 'blocked_reasons': ['token=SECRET_SENTINEL\ninvalid receipt']})
+            bundle.gate.atomic_json(required / 'fwrouter-aggregate.json', aggregate)
+            visibility = json.loads((required / 'visibility.json').read_text())
+            visibility['qualification_status'] = 'incomplete_or_failed'
+            visibility['strict_aggregate_eligible'] = False
+            visibility['diagnostic_limitations'] = ['password=SECRET_SENTINEL\nreceipt unavailable']
+            visibility.pop('visibility_digest')
+            visibility['visibility_digest'] = bundle.gate.canonical_digest(visibility)
+            bundle.gate.atomic_json(required / 'visibility.json', visibility)
+            args.aggregate_outcome = 'failure'
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            failed = args.output.read_text(encoding='utf-8')
+            self.assertIn('Overall result: **INCOMPLETE**', failed)
+            self.assertNotIn('SECRET_SENTINEL', failed)
+            self.assertIn('invalid receipt', failed)
+
+            args, _jobs, required = self._summary_fixture(root / 'l6')
+            args.event, args.ref, args.workflow_kind = 'workflow_dispatch', 'refs/heads/feature', 'l6'
+            required_result = json.loads((required / 'required-result.json').read_text())
+            required_result.update({'schema': 'fwrouter-l6-required/v1',
+                                    'qualification_scope': 'branch-regression-non-promotional',
+                                    'minimum_repeats': 2, 'safe_recovery_required': True})
+            bundle.gate.atomic_json(required / 'required-result.json', required_result)
+            aggregate = json.loads((required / 'fwrouter-aggregate.json').read_text())
+            aggregate.update({'main_smoke_required': False, 'hosted_repeats_required': 2})
+            bundle.gate.atomic_json(required / 'fwrouter-aggregate.json', aggregate)
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(0, bundle.summary(args))
+            l6 = args.output.read_text(encoding='utf-8')
+            self.assertIn('Profile: **L6 non-promotional branch regression**', l6)
+            self.assertIn('PASS 3; FAIL 0; SKIP 16', l6)
+
+    def test_summary_never_passes_unauthorized_skips_or_nonpassing_case_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, _jobs, required = self._summary_fixture(root / 'unauthorized')
+            visibility = json.loads((required / 'visibility.json').read_text())
+            manual = bundle.gate.MANUAL_HOST_NODEID
+            for row in visibility['executions']:
+                if row['node_id'] == manual:
+                    row['node_id'] = 'tests/gates/test_manual_host_smoke.py::HostSmokeTests::test_unregistered'
+                    break
+            visibility.pop('visibility_digest')
+            visibility['visibility_digest'] = bundle.gate.canonical_digest(visibility)
+            bundle.gate.atomic_json(required / 'visibility.json', visibility)
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            unauthorized = args.output.read_text()
+            self.assertIn('Overall result: **INCOMPLETE**', unauthorized)
+            self.assertIn('reviewed policy node missing from collected evidence', unauthorized)
+            self.assertNotIn('Overall result: **PASS**', unauthorized)
+
+            args, _jobs, required = self._summary_fixture(root / 'unknown-skip')
+            visibility = json.loads((required / 'visibility.json').read_text())
+            generic = next(row for row in visibility['executions'] if row['status'] == 'passed')
+            generic['status'] = 'skipped'
+            visibility['statuses']['passed'] -= 1
+            visibility['statuses']['skipped'] += 1
+            visibility.pop('visibility_digest')
+            visibility['visibility_digest'] = bundle.gate.canonical_digest(visibility)
+            bundle.gate.atomic_json(required / 'visibility.json', visibility)
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            unknown_skip = args.output.read_text()
+            self.assertIn('Overall result: **INCOMPLETE**', unknown_skip)
+            self.assertIn('unauthorized node SKIP', unknown_skip)
+
+            for status in ('failed', 'blocked', 'not_run'):
+                args, _jobs, required = self._summary_fixture(root / status)
+                visibility = json.loads((required / 'visibility.json').read_text())
+                node = next(row for row in visibility['executions'] if row['status'] == 'passed')
+                node['status'] = status
+                visibility['statuses']['passed'] -= 1
+                visibility['statuses'][status] += 1
+                visibility.pop('visibility_digest')
+                visibility['visibility_digest'] = bundle.gate.canonical_digest(visibility)
+                bundle.gate.atomic_json(required / 'visibility.json', visibility)
+                with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                        bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                    self.assertEqual(2, bundle.summary(args))
+                rendered = args.output.read_text()
+                self.assertIn('Overall result: **INCOMPLETE**', rendered)
+                self.assertNotIn('Overall result: **PASS**', rendered)
+
+    def test_summary_rejects_conflicting_repeat_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            args, _jobs, required = self._summary_fixture(Path(temporary))
+            visibility = json.loads((required / 'visibility.json').read_text())
+            duplicate = dict(next(row for row in visibility['executions'] if row['status'] == 'passed'))
+            duplicate['status'] = 'failed'
+            visibility['executions'].append(duplicate)
+            visibility['total_test_executions'] += 1
+            visibility['statuses']['failed'] += 1
+            visibility.pop('visibility_digest')
+            visibility['visibility_digest'] = bundle.gate.canonical_digest(visibility)
+            bundle.gate.atomic_json(required / 'visibility.json', visibility)
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            rendered = args.output.read_text()
+            self.assertIn('Overall result: **INCOMPLETE**', rendered)
+            self.assertIn('repeated case IDs have conflicting terminal statuses', rendered)
+            self.assertNotIn('Overall result: **PASS**', rendered)
+
+    def test_summary_cancellation_publication_and_bad_digest_never_become_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, jobs, required = self._summary_fixture(root / 'cancelled')
+            jobs['unit']['result'] = 'cancelled'
+            args.jobs.write_text(json.dumps(jobs), encoding='utf-8')
+            args.bundle_outcome = 'skipped'; args.publish_outcome = 'skipped'
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            self.assertIn('Overall result: **INCOMPLETE**', args.output.read_text())
+
+            args, _jobs, required = self._summary_fixture(root / 'bad-digest')
+            visibility = json.loads((required / 'visibility.json').read_text())
+            visibility['visibility_digest'] = 'e' * 64
+            bundle.gate.atomic_json(required / 'visibility.json', visibility)
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            rendered = args.output.read_text()
+            self.assertIn('Overall result: **INCOMPLETE**', rendered)
+            self.assertIn('Observed test counts and coverage: NOT AVAILABLE', rendered)
+
+            args, _jobs, _required = self._summary_fixture(root / 'publication-failure')
+            args.publish_outcome = 'failure'
+            with patch.object(bundle.gate, 'ensure_plan'), patch.object(
+                    bundle.parallel_ci, 'requirements', return_value={role: True for role in bundle.parallel_ci.ROLES}):
+                self.assertEqual(2, bundle.summary(args))
+            self.assertIn('Overall result: **INCOMPLETE**', args.output.read_text())
+
+    def test_branch_quick_summary_is_bounded_and_never_claims_qualification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = {'source_commit': 'a' * 40, 'plan_digest': 'b' * 64,
+                    'selected_files': ['tests/example.py']}
+            report = {'source_commit': 'a' * 40, 'plan_digest': 'b' * 64,
+                      'eligible': True, 'blocked_reasons': [],
+                      'node_status': {'tests/example.py::test_pass': 'passed',
+                                      'tests/example.py::test_host': 'skipped'},
+                      'authorized_skip_reasons': {}, 'executions': [], 'failure_diagnostics': []}
+            report['report_digest'] = bundle.gate.canonical_digest(report)
+            plan_path, report_path, state, output = (root / 'plan.json', root / 'report.json',
+                                                       root / 'state', root / 'summary.md')
+            plan_path.write_text(json.dumps(plan)); report_path.write_text(json.dumps(report))
+            state.write_text('changed')
+            args = argparse.Namespace(plan=plan_path, report=report_path, state=state, output=output,
+                                      expected_sha='a' * 40, run_id='123', attempt='1', event='push',
+                                      ref='refs/heads/topic', execution_outcome='success',
+                                      run_url='https://github.com/example/fwrouter/actions/runs/123')
+            with patch.object(bundle.gate, 'ensure_plan'):
+                self.assertEqual(0, bundle.quick_summary(args))
+            rendered = output.read_text()
+            self.assertIn('Quick-scope result: **PASS**', rendered)
+            self.assertIn('L0-L1 only; non-promotional', rendered)
+            self.assertIn('PASS 1; FAIL 0; SKIP 1', rendered)
+            self.assertIn('does not establish required CI', rendered)
+            self.assertNotIn('Unique IDs: 2', rendered)
+
+            report['source_commit'] = 'c' * 40
+            report.pop('report_digest')
+            report['report_digest'] = bundle.gate.canonical_digest(report)
+            report_path.write_text(json.dumps(report))
+            with patch.object(bundle.gate, 'ensure_plan'):
+                self.assertEqual(0, bundle.quick_summary(args))
+            rendered = output.read_text()
+            self.assertIn('Quick-scope result: **INCOMPLETE**', rendered)
+            self.assertIn('counts are NOT AVAILABLE', rendered)
+            self.assertNotIn('PASS 1; FAIL 0', rendered)
+
+            state.write_text('unchanged')
+            with patch.object(bundle.gate, 'ensure_plan'):
+                self.assertEqual(0, bundle.quick_summary(args))
+            self.assertIn('Quick-scope result: **NOT RUN**', output.read_text())
 
     def test_workflow_preserves_eight_jobs_required_name_and_no_write_permission(self) -> None:
         workflow = (bundle.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
         self.assertNotIn("actions: write", workflow)
-        self.assertIn("name: Affected L0-L5 with hosted profiles", workflow)
+        self.assertIn("'Affected L0-L5 with hosted profiles'", workflow)
+        self.assertIn("name: ${{ github.event_name == 'workflow_dispatch' && 'Pre-PR full safe qualification' || 'Affected L0-L5 with hosted profiles' }}", workflow)
+        self.assertNotIn('jobs:\n  prepr-required-alias:', workflow)
         self.assertIn("Publish successful CI evidence bundle", workflow)
         self.assertIn("retention-days: 1", workflow)
         self.assertIn("retention-days: 3", workflow)

@@ -8,6 +8,8 @@ L6 is a scheduled or explicitly dispatched full safe-manifest qualification. It 
 
 `.github/workflows/test-full-suite.yml` runs nightly on `main` at 04:17 UTC. Manual dispatch requires the exact text `RUN L6`, an explicit `main` or `branch` mode, and a 40-character expected SHA matching the checked-out/event SHA. Scheduled runs are accepted only on `refs/heads/main`. Main-mode dispatch is accepted only on `main`; branch mode produces `branch-regression-non-promotional` evidence and cannot satisfy main/release qualification. CI has `contents: read`, uses GitHub-hosted `ubuntu-24.04` runners and pinned Actions, and receives no production credentials or deployment authority. Checkout credentials are not persisted.
 
+The existing shared `parallel_ci.py prepare` now validates this trigger mode and creates the existing L6 full-safe plan. `l6_ci.configure` remains a compatible wrapper and retains the serialized `main-regression` / `branch-regression-non-promotional` scopes. The shared producer output constructor is reused; L6 still owns its distinct two-repeat child layout, envelope, and strict aggregate. Main smoke remains specific to actual-main affected CI.
+
 The plan comes from the checked-out immutable source and complete safe manifest. L7 remains outside the selected plan. Strict consumers bind evidence to the repository, workflow, event/ref, source SHA, run ID, attempt, plan/manifest, required profiles and exact upstream job result set. Missing, skipped, cancelled, failed, stale, duplicated, incomplete or cross-attempt evidence blocks eligibility.
 
 ## Execution graph

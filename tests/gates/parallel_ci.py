@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -13,6 +15,7 @@ import stat
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,9 +23,151 @@ import gate
 import aggregate_hosted as strict
 import routine_shards
 
+PREPR_ACKNOWLEDGEMENT = 'RUN PRE-PR FULL'
+PREPR_SCOPE = 'pre-pr-safe-non-promotional'
+
+
+def qualification_scope(mode):
+    return {'branch-quick': 'branch-quick-non-promotional',
+            'pre-pr-full-safe': PREPR_SCOPE,
+            'pr-affected': 'pr-affected', 'pr-full-safe': 'pr-trusted-full-safe',
+            'main-mandatory': 'main-mandatory',
+            'l6-main': 'main-regression', 'l6-branch': 'branch-regression-non-promotional'}.get(mode)
+
+
+def resolve_plan_mode(event, ref, plan, *, pr_head_repo='', repository='', acknowledge='', expected_sha=''):
+    trusted_pr = event == 'pull_request' and bool(repository) and pr_head_repo == repository
+    marker = trusted_pr and 'ci:full-acceptance' in gate.git('show', '-s', '--format=%B', plan['source_commit'])
+    mode = qualification_mode(event, ref, trusted_pr=trusted_pr, full_marker=marker,
+                              acknowledge=acknowledge, expected_sha=expected_sha,
+                              actual_sha=plan.get('source_commit', ''))
+    full = mode in {'main-mandatory', 'pr-full-safe', 'pre-pr-full-safe'}
+    if bool(plan.get('mandatory_suite_required')) != full:
+        raise gate.GateError('qualification mode does not match the immutable plan selection')
+    return mode
+
+
+def qualification_mode(event, ref, *, trusted_pr=False, full_marker=False, acknowledge='', expected_sha='', actual_sha='', l6_mode=''):
+    """Closed event policy shared by workflow planning and independent callers."""
+    if event == 'workflow_dispatch':
+        if (acknowledge == 'RUN L6' and expected_sha == actual_sha
+                and re.fullmatch(r'[0-9a-f]{40}', actual_sha or '')):
+            if l6_mode == 'main' and ref == 'refs/heads/main':
+                return 'l6-main'
+            if l6_mode == 'branch' and ref.startswith('refs/heads/') and ref != 'refs/heads/main':
+                return 'l6-branch'
+        if (acknowledge != PREPR_ACKNOWLEDGEMENT or not ref.startswith('refs/heads/')
+                or ref == 'refs/heads/main' or expected_sha != actual_sha
+                or not re.fullmatch(r'[0-9a-f]{40}', actual_sha or '')):
+            raise gate.GateError('pre-PR full-safe dispatch acknowledgement, branch, or exact SHA is invalid')
+        return 'pre-pr-full-safe'
+    if event == 'pull_request' and ref.startswith('refs/pull/'):
+        return 'pr-full-safe' if trusted_pr and full_marker else 'pr-affected'
+    if event == 'push' and ref == 'refs/heads/main':
+        return 'main-mandatory'
+    if event == 'push' and ref.startswith('refs/heads/'):
+        return 'branch-quick'
+    if event == 'schedule' and ref == 'refs/heads/main':
+        return 'l6-main'
+    raise gate.GateError('CI event/ref is outside the supported qualification modes')
+
+
+def write_configure_outputs(plan_path, output_path, *, main_smoke=False, l6=False, qualification_mode=''):
+    """Single output constructor used by the affected and repeated L6 DAGs."""
+    plan = load_plan(plan_path, l6=l6)
+    required = requirements(plan, main_smoke)
+    outputs = {'source_sha': plan['source_commit'], 'plan_digest': plan['plan_digest'],
+               **{f'needs_{key}': str(value).lower() for key, value in required.items()},
+               'needs_runtime': str(any(required[key] for key in ('hosted', 'provider', 'packet', 'native'))).lower(),
+               'needs_recovery': str({'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
+                                      'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'}
+                                     <= set(plan['selected_files'])).lower(),
+               'main_smoke': str(bool(main_smoke)).lower(),
+               'unit_shards_json': json.dumps(list(gate.ROUTINE_SHARD_GROUPS), separators=(',', ':')),
+               'native_profiles_json': json.dumps(native_profiles(plan), separators=(',', ':'))}
+    if qualification_mode:
+        if qualification_scope(qualification_mode) is None:
+            raise gate.GateError('unknown CI qualification mode')
+        outputs['qualification_mode'] = qualification_mode
+    with Path(output_path).open('a') as stream:
+        for key, value in outputs.items():
+            stream.write(f'{key}={value}\n')
+    seal(Path(plan_path).parent, 'plan', plan, 'success')
+    return outputs
+
+
+def prepare_plan(args):
+    """Resolve trusted trigger context and invoke gate.py's existing plan constructors."""
+    actual = gate.git('rev-parse', 'HEAD')
+    if args.l6:
+        mode = qualification_mode(args.event, args.ref, acknowledge=args.acknowledge,
+                                  expected_sha=args.expected_sha, actual_sha=actual,
+                                  l6_mode=args.l6_mode)
+        if mode not in {'l6-main', 'l6-branch'}:
+            raise gate.GateError('L6 planning requires an authorized main or branch regression mode')
+        gate.command_full_suite_plan(SimpleNamespace(
+            manual=True, manifest=args.manifest, include_native=True, output=args.plan))
+        if not Path(args.plan).is_file():
+            raise gate.GateError('L6 full-suite planner did not produce its immutable plan')
+        if args.github_output:
+            write_configure_outputs(args.plan, args.github_output, l6=True)
+            with Path(args.github_output).open('a') as stream:
+                stream.write(f"qualification_scope={'main-regression' if mode == 'l6-main' else 'branch-regression-non-promotional'}\n")
+        return mode
+
+    trusted_pr = (args.event == 'pull_request' and bool(args.repository)
+                  and args.pr_head_repo == args.repository)
+    full_marker = trusted_pr and 'ci:full-acceptance' in gate.git('log', '-1', '--format=%B')
+    mode = qualification_mode(args.event, args.ref, trusted_pr=trusted_pr,
+                              full_marker=full_marker, acknowledge=args.acknowledge,
+                              expected_sha=args.expected_sha, actual_sha=actual)
+    if args.quick_push and mode != 'branch-quick':
+        raise gate.GateError('quick planning is restricted to non-main branch pushes')
+    if not args.quick_push and mode in {'branch-quick', 'l6-main', 'l6-branch'}:
+        raise gate.GateError('affected planning cannot use quick or L6 qualification modes')
+    if args.event == 'pull_request':
+        base = args.pr_base
+    elif args.event == 'workflow_dispatch':
+        base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main')
+    else:
+        base = args.event_before
+        if base == '0' * 40 and mode == 'branch-quick':
+            base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main')
+    if not base or subprocess.run(['git', 'cat-file', '-e', f'{base}^{{commit}}'],
+                                  cwd=gate.ROOT, capture_output=True).returncode:
+        raise gate.GateError('cannot resolve immutable base for CI plan')
+    if getattr(args, 'lint_changed', False) and gate.command_lint_changed(SimpleNamespace(base=base)) != 0:
+        raise gate.GateError('changed-source lint failed')
+    if args.quick_push:
+        changed = subprocess.run(['git', 'diff', '--name-only', '-z', base, 'HEAD', '--'],
+                                 cwd=gate.ROOT, capture_output=True, check=True).stdout
+        if not changed:
+            if not args.state:
+                raise gate.GateError('quick no-op requires an explicit state output')
+            Path(args.state).write_text('unchanged\n', encoding='utf-8')
+            return mode
+    manifest = gate.load_manifest(Path(args.manifest))
+    if mode in {'main-mandatory', 'pr-full-safe', 'pre-pr-full-safe'}:
+        plan = gate.make_mandatory_suite_plan(base, manifest)
+    elif mode == 'branch-quick':
+        plan = gate.make_quick_push_plan(base, manifest)
+    else:
+        plan = gate.make_plan(base, manifest, include_native=True)
+    gate.atomic_json(Path(args.plan), plan)
+    if args.quick_push and args.state:
+        Path(args.state).write_text('changed\n', encoding='utf-8')
+    if args.github_output:
+        write_configure_outputs(args.plan, args.github_output,
+                                main_smoke=mode == 'main-mandatory', qualification_mode=mode)
+    return mode
+
 ROLES = ('plan', 'build', 'unit', 'hosted', 'provider', 'packet', 'native')
 MAX_FILES = 6000
 MAX_BYTES = 256 * 1024 * 1024
+MEASUREMENTS_SCHEMA = 'fwrouter-ci-measurements/v1'
+MAX_MEASUREMENT_BYTES = 64 * 1024
+NOT_MEASURED_PHASES = ['workflow.checkout', 'workflow.dependencies',
+                       'workflow.artifact_transfer', 'launcher.cleanup']
 
 
 def identity(plan):
@@ -107,6 +252,16 @@ def verify_producer(root, role, plan):
         raise gate.GateError(f'{role}: producer identity/status does not match this workflow attempt')
     if value.get('files') != file_inventory(root):
         raise gate.GateError(f'{role}: missing, duplicated, extra or modified producer files')
+    if 'measurements.json' in value['files']:
+        measurement = load_measurement_receipt(Path(root) / 'measurements.json')
+        validate_measurement_receipt(
+            measurement, plan, role,
+            shard_group=measurement.get('shard_group'),
+            native_profile=measurement.get('native_profile'))
+        if role == 'unit':
+            shard_report = strict.read_json(Path(root) / 'shard.json')
+            if measurement.get('shard_group') != shard_report.get('shard_group'):
+                raise gate.GateError('routine measurement shard differs from its sealed shard report')
     for name in value['files']:
         p = PurePosixPath(name)
         if p.is_absolute() or '..' in p.parts:
@@ -129,20 +284,16 @@ def validate_results(results, required):
 
 
 def configure(args):
-    plan = load_plan(args.plan); required = requirements(plan, args.main_smoke)
-    outputs = {'source_sha': plan['source_commit'], 'plan_digest': plan['plan_digest'],
-               **{f'needs_{k}': str(v).lower() for k, v in required.items()},
-               'needs_runtime': str(any(required[k] for k in ('hosted', 'provider', 'packet', 'native'))).lower(),
-               'needs_recovery': str({'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
-                                      'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'}
-                                     <= set(plan['selected_files'])).lower(),
-               'main_smoke': str(args.main_smoke).lower(),
-               'unit_shards_json': json.dumps(list(gate.ROUTINE_SHARD_GROUPS), separators=(',', ':')),
-               'native_profiles_json': json.dumps(native_profiles(plan), separators=(',', ':'))}
-    with Path(args.github_output).open('a') as stream:
-        for k, v in outputs.items():
-            stream.write(f'{k}={v}\n')
-    seal(Path(args.plan).parent, 'plan', plan, 'success')
+    plan = load_plan(args.plan)
+    mode = resolve_plan_mode(args.event, args.ref, plan,
+                             pr_head_repo=args.pr_head_repo, repository=args.repository,
+                             acknowledge=args.acknowledge, expected_sha=args.expected_sha)
+    if args.qualification_mode and args.qualification_mode != mode:
+        raise gate.GateError('configured qualification mode differs from trusted event context and plan')
+    if bool(args.main_smoke) != (mode == 'main-mandatory'):
+        raise gate.GateError('main smoke is required only for actual-main affected CI')
+    write_configure_outputs(args.plan, args.github_output, main_smoke=args.main_smoke,
+                            qualification_mode=mode)
 
 
 def run_command(command, log, *, env=None):
@@ -208,10 +359,147 @@ def process_peak(log_path: Path) -> dict[str, int]:
     return result
 
 
+def measurement_receipt(plan: dict[str, Any], role: str, phases: list[dict[str, Any]], *,
+                        shard_group: str | None = None, native_profile: str | None = None,
+                        resources_before: dict[str, Any] | None = None,
+                        resources_after: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Create bounded source/run-bound measurements; these never establish test status."""
+    rows = []
+    names = set()
+    for phase in phases:
+        name, seconds, exit_code = phase.get('phase'), phase.get('seconds'), phase.get('exit')
+        if (not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', name) or name in names
+                or not isinstance(seconds, (int, float)) or isinstance(seconds, bool)
+                or not math.isfinite(float(seconds)) or seconds < 0
+                or not isinstance(exit_code, int) or isinstance(exit_code, bool)):
+            raise gate.GateError('worker measurement phase is malformed or duplicated')
+        names.add(name)
+        row = {'phase': name, 'duration_seconds': round(float(seconds), 3), 'exit_code': exit_code}
+        for key in ('cpu_percent', 'max_rss_kib'):
+            value = phase.get(key)
+            if value is not None:
+                if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                        or not math.isfinite(float(value)) or value < 0):
+                    raise gate.GateError('worker measurement resource value is invalid')
+                row[key] = value
+        rows.append(row)
+    if role == 'unit':
+        if shard_group not in gate.ROUTINE_SHARD_GROUPS or native_profile is not None:
+            raise gate.GateError('routine measurement context is invalid')
+    elif role == 'native':
+        if native_profile not in {'qcp', 'xray'} or shard_group is not None:
+            raise gate.GateError('native measurement context is invalid')
+    elif role not in {'hosted', 'provider', 'packet'} or shard_group is not None or native_profile is not None:
+        raise gate.GateError('worker measurement role context is invalid')
+    value = {'schema': MEASUREMENTS_SCHEMA, **identity(plan), 'role': role,
+             'shard_group': shard_group, 'native_profile': native_profile,
+             'phases': rows, 'resources_before': resources_before,
+             'resources_after': resources_after,
+             'not_measured': NOT_MEASURED_PHASES}
+    validate_measurement_receipt(value, plan, role, shard_group=shard_group,
+                                 native_profile=native_profile)
+    if len(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()) > MAX_MEASUREMENT_BYTES:
+        raise gate.GateError('worker measurement receipt exceeds size bound')
+    return value
+
+
+def validate_measurement_receipt(value: Any, plan: dict[str, Any], role: str, *,
+                                 shard_group: str | None = None,
+                                 native_profile: str | None = None) -> None:
+    if role == 'unit':
+        context_valid = shard_group in gate.ROUTINE_SHARD_GROUPS and native_profile is None
+    elif role == 'native':
+        context_valid = native_profile in {'qcp', 'xray'} and shard_group is None
+    else:
+        context_valid = role in {'hosted', 'provider', 'packet'} and shard_group is None and native_profile is None
+    if (not isinstance(value, dict)
+            or set(value) != {'schema', 'source_commit', 'plan_digest', 'manifest_digest',
+                              'manifest_version', 'run_id', 'run_attempt', 'role',
+                              'shard_group', 'native_profile', 'phases', 'resources_before',
+                              'resources_after', 'not_measured'}
+            or value.get('schema') != MEASUREMENTS_SCHEMA
+            or any(value.get(key) != expected for key, expected in identity(plan).items())
+            or value.get('role') != role or value.get('shard_group') != shard_group
+            or value.get('native_profile') != native_profile
+            or not context_valid
+            or value.get('not_measured') != NOT_MEASURED_PHASES
+            or not isinstance(value.get('phases'), list) or len(value['phases']) > 32):
+        raise gate.GateError('worker measurement identity or envelope is invalid')
+    phases = value['phases']
+    names = set()
+    for phase in phases:
+        if not isinstance(phase, dict):
+            raise gate.GateError('worker measurement phase is invalid')
+        name = phase.get('phase')
+        seconds, exit_code = phase.get('duration_seconds'), phase.get('exit_code')
+        if (not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', name) or name in names
+                or not isinstance(seconds, (int, float)) or isinstance(seconds, bool)
+                or not math.isfinite(float(seconds)) or seconds < 0
+                or not isinstance(exit_code, int) or isinstance(exit_code, bool)
+                or set(phase) - {'phase', 'duration_seconds', 'exit_code', 'cpu_percent', 'max_rss_kib'}):
+            raise gate.GateError('worker measurement phase is malformed or duplicated')
+        names.add(name)
+        for key in ('cpu_percent', 'max_rss_kib'):
+            metric = phase.get(key)
+            if metric is not None and (not isinstance(metric, (int, float)) or isinstance(metric, bool)
+                                       or not math.isfinite(float(metric)) or metric < 0):
+                raise gate.GateError('worker measurement resource value is invalid')
+    for key in ('resources_before', 'resources_after'):
+        snapshot = value.get(key)
+        if not isinstance(snapshot, dict) or set(snapshot) != {
+                'cpu_count', 'memory', 'disk_total_bytes', 'disk_used_bytes', 'disk_free_bytes'}:
+            raise gate.GateError('worker resource snapshot is invalid')
+        numeric_values = [snapshot.get('cpu_count'), snapshot.get('disk_total_bytes'),
+                          snapshot.get('disk_used_bytes'), snapshot.get('disk_free_bytes')]
+        memory = snapshot.get('memory')
+        if not isinstance(memory, dict) or set(memory) - {
+                'MemTotal_bytes', 'MemAvailable_bytes', 'SwapTotal_bytes', 'SwapFree_bytes'}:
+            raise gate.GateError('worker memory snapshot is invalid')
+        numeric_values.extend(memory.values())
+        if any(not isinstance(number, int) or isinstance(number, bool) or number < 0
+               for number in numeric_values):
+            raise gate.GateError('worker resource snapshot contains invalid numeric values')
+
+
+def load_measurement_receipt(path: Path) -> dict[str, Any]:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_MEASUREMENT_BYTES:
+        raise gate.GateError('worker measurement receipt is missing, unsafe or oversized')
+    return strict.read_json(path)
+
+
+def format_seconds(value: Any) -> str:
+    if (not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(float(value)) or value < 0):
+        return 'NOT AVAILABLE'
+    return f'{float(value):.3f}'
+
+
 def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
-                   native_profile: str | None = None) -> str:
+                   native_profile: str | None = None, *, l6: bool = False) -> str:
     """Render bounded, non-payload job summary from local runner receipts."""
-    plan = strict.read_json(plan_path)
+    try:
+        if Path(plan_path).is_symlink() or not Path(plan_path).is_file():
+            raise gate.GateError('immutable plan is unavailable')
+        plan = load_plan(plan_path, l6=l6)
+    except (OSError, ValueError, gate.GateError, KeyError, TypeError):
+        try:
+            source_sha = gate.git('rev-parse', 'HEAD')
+        except gate.GateError:
+            source_sha = 'NOT AVAILABLE'
+        title = f"## FWRouter CI {role}" + (f" ({native_profile})" if native_profile else "")
+        lines = [title, '', '**Status: INCOMPLETE** (immutable plan unavailable or invalid; no test counts inferred).',
+                 f"- Checked-out source SHA: `{html.escape(source_sha)}`",
+                 f"- Run/attempt: `{html.escape(os.environ.get('GITHUB_RUN_ID', 'unavailable'))}` / "
+                 f"`{html.escape(os.environ.get('GITHUB_RUN_ATTEMPT', 'unavailable'))}`",
+                 '- Selected suites, case IDs and coverage: NOT AVAILABLE.',
+                 '- Only the strict aggregate establishes qualification.']
+        server, repository, run_id = (os.environ.get('GITHUB_SERVER_URL', '').rstrip('/'),
+                                      os.environ.get('GITHUB_REPOSITORY', ''),
+                                      os.environ.get('GITHUB_RUN_ID', ''))
+        if server.startswith(('https://', 'http://')) and repository and run_id.isdigit():
+            lines.append(f"- [Open this run and job logs]({server}/{repository}/actions/runs/{run_id})")
+        return '\n'.join(lines) + '\n'
     lines = [f"## FWRouter CI {role}" + (f" ({native_profile})" if native_profile else ""), "",
              f"- Status: **{outcome.upper()}**", f"- Source SHA: `{plan.get('source_commit', 'unknown')}`",
              f"- Plan digest: `{plan.get('plan_digest', 'unknown')}`",
@@ -239,18 +527,33 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
             if isinstance(timings, list):
                 lines += ["", "| Stage | Result | Seconds | Peak RSS KiB |", "|---|---:|---:|---:|"]
                 lines += [f"| {item.get('stage', 'unknown')} | {item.get('exit', 'unknown')} | "
-                          f"{float(item.get('seconds', 0)):.3f} | "
+                          f"{format_seconds(item.get('seconds'))} | "
                           f"{process_peak(root / (str(item.get('stage', 'unknown')) + '.log')).get('max_rss_kib', 'n/a')} |"
                           for item in timings if isinstance(item, dict)]
+            measurement_path = root / 'measurements.json'
+            if measurement_path.is_file() and not measurement_path.is_symlink():
+                try:
+                    if measurement_path.stat().st_size > MAX_MEASUREMENT_BYTES:
+                        raise gate.GateError('worker measurement receipt exceeds size bound')
+                    measurement = strict.read_json(measurement_path)
+                    validate_measurement_receipt(measurement, plan, role,
+                                                 shard_group=measurement.get('shard_group'),
+                                                 native_profile=native_profile)
+                    lines.append(f"- Measured worker phases: {len(measurement['phases'])}; workflow checkout/dependencies/artifact transfer and launcher cleanup: NOT MEASURED.")
+                except (OSError, ValueError, TypeError, gate.GateError):
+                    lines.append("- Worker measurements: unavailable or invalid; timing is not qualification evidence.")
+            else:
+                lines.append("- Worker measurement receipt: NOT MEASURED; checkout/dependencies/artifact transfer and launcher cleanup: NOT MEASURED.")
         except (OSError, ValueError, TypeError):
             lines += ["", "Stage timings: unavailable or malformed."]
     receipt_paths = []
     for name in ('hosted-acceptance-report.json', 'qualified-child-receipt.json',
                  'qualified-xray-docker-receipt.json', 'build-summary.json', 'wheel-metadata.json'):
         receipt_paths.extend(sorted(root.rglob(name)))
-    id_statuses: list[tuple[str, str]] = []
+    observed_statuses: list[tuple[str, str]] = []
     cleanup_values: list[str] = []
     receipt_rows = []
+    receipt_details: list[str] = []
     for path in receipt_paths:
         if path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
             continue
@@ -259,11 +562,19 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
         except (OSError, ValueError, gate.GateError):
             continue
         tests = value.get('tests') if isinstance(value.get('tests'), dict) else {}
+        raw_counts = [tests.get('failures'), tests.get('errors'), tests.get('skipped')]
+        counts = [value if type(value) is int and value >= 0 else 'NOT AVAILABLE' for value in raw_counts]
+        failure_count, error_count, skipped_count = counts
+        if (value.get('status') not in {'passed', 'success'}
+                or any(type(count) is int and count > 0 for count in counts)):
+            receipt_details.append(
+                f"{value.get('suite', value.get('scope', path.name))}: status {value.get('status', 'unknown')}; "
+                f"test failures/errors/skips {failure_count}/{error_count}/{skipped_count}")
         statuses = tests.get('node_status') if isinstance(tests.get('node_status'), dict) else {}
         if statuses:
             for node, status in statuses.items():
                 if isinstance(node, str) and isinstance(status, str):
-                    id_statuses.append((node, status))
+                    observed_statuses.append((node, status))
         else:
             # Hosted receipts publish exact IDs but not a per-node status map.
             # Preserve their declared receipt result without inventing PASS for a
@@ -273,7 +584,7 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
             projected_status = 'passed' if receipt_status == 'passed' else 'unverified'
             for node in nodeids:
                 if isinstance(node, str):
-                    id_statuses.append((node, projected_status))
+                    observed_statuses.append((node, projected_status))
         cleanup = value.get('cleanup')
         if isinstance(cleanup, str):
             cleanup_values.append(cleanup)
@@ -294,10 +605,28 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
     if receipt_rows:
         lines += ["", "| Receipt | Suite/profile | Status |", "|---|---|---|"]
         lines += [f"| `{name}` | `{suite}` | `{status}` |" for name, suite, status in receipt_rows]
-    lines += ["", f"Observed test IDs: {len(id_statuses)}; unique IDs: {len({node for node, _ in id_statuses})}."]
-    if id_statuses:
-        lines += ["", "| Test ID | Result |", "|---|---|"]
-        lines += [f"| `{node.replace('|', '&#124;')}` | `{status}` |" for node, status in sorted(id_statuses)]
+    outcome_counts = {key: sum(status == key for _, status in observed_statuses)
+                      for key in ('passed', 'failed', 'skipped', 'blocked', 'not_run', 'unverified')}
+    unique_ids = {node for node, _ in observed_statuses}
+    failure_rows = [(node, status) for node, status in observed_statuses
+                    if status in {'failed', 'blocked', 'not_run'}]
+    escape = lambda value: html.escape(str(value).replace('\n', ' ').replace('\r', ' '), quote=True).replace('|', '&#124;').replace('`', '&#96;')
+    lines += ["", f"Observed case IDs: {len(unique_ids)} unique; {len(observed_statuses)} terminal outcomes; "
+              f"{max(0, len(observed_statuses) - len(unique_ids))} repeated executions.",
+              "Outcomes: " + "; ".join(f"{name.upper()} {count}" for name, count in outcome_counts.items()) + ".",
+              "", "### Non-passing observed case IDs"]
+    for node, status in failure_rows[:12]:
+        node_text = gate.redact_failure_output(node).replace('\n', ' ').replace('\r', ' ')
+        lines.append(f"- `{escape(node_text[:240])}` — {escape(status)}")
+    if len(failure_rows) > 12:
+        lines.append(f"- {len(failure_rows) - 12} additional non-passing IDs are in producer receipts.")
+    if not failure_rows:
+        lines.append("- None recorded.")
+    if receipt_details:
+        lines += ["", "### Failed or incomplete receipts"]
+        lines += ["- " + escape(gate.redact_failure_output(value)[:360]) for value in receipt_details[:8]]
+        if len(receipt_details) > 8:
+            lines.append(f"- {len(receipt_details) - 8} additional receipt summaries omitted.")
     before = root / 'resources-before.json'
     after = root / 'resources-after.json'
     for label, path in (("before", before), ("after", after)):
@@ -312,6 +641,11 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
                 lines.append(f"- Runner resources {label}: unavailable.")
     lines.append(f"- Receipt cleanup values: `{', '.join(sorted(set(cleanup_values))) if cleanup_values else 'no profile cleanup receipt'}`.")
     lines.append("- This job summary is diagnostic visibility; only the strict aggregate establishes qualification.")
+    server, repository, run_id = (os.environ.get('GITHUB_SERVER_URL', '').rstrip('/'),
+                                  os.environ.get('GITHUB_REPOSITORY', ''),
+                                  os.environ.get('GITHUB_RUN_ID', ''))
+    if server.startswith(('https://', 'http://')) and repository and run_id.isdigit():
+        lines.append(f"- [Open this run and job logs]({server}/{repository}/actions/runs/{run_id})")
     return "\n".join(lines) + "\n"
 
 
@@ -342,6 +676,10 @@ def run_worker(args):
         times.append({'stage': 'provision', 'seconds': elapsed, 'exit': code})
         if code:
             gate.atomic_json(root / 'timings.json', times)
+            gate.atomic_json(root / 'measurements.json', measurement_receipt(
+                plan, args.role, _measurement_phases(times, root), native_profile=getattr(args, 'native_profile', None),
+                resources_before=strict.read_json(root / 'resources-before.json'),
+                resources_after=resource_snapshot(root)))
             return code
         for line in env_file.read_text().splitlines():
             key, value = line.split('=', 1)
@@ -381,6 +719,26 @@ def run_worker(args):
                     shutil.copytree(source, root / source.name)
     gate.atomic_json(root / 'timings.json', times)
     gate.atomic_json(root / 'resources-after.json', resource_snapshot(root))
+    if args.role == 'unit':
+        shard_report = strict.read_json(shard_path) if shard_path.is_file() else {}
+        routine_duration = shard_report.get('duration_seconds')
+        if (not isinstance(routine_duration, (int, float)) or isinstance(routine_duration, bool)
+                or not math.isfinite(float(routine_duration)) or routine_duration < 0):
+            raise gate.GateError('routine shard duration is unavailable for measurement receipt')
+        if shard_report.get('status') not in {'passed', 'failed'}:
+            raise gate.GateError('routine shard outcome is unavailable for measurement receipt')
+        measured = [{'phase': 'routine_execution',
+                     'seconds': routine_duration,
+                     'exit': 0 if shard_report['status'] == 'passed' else 1}]
+        measured += times
+    else:
+        measured = times
+    gate.atomic_json(root / 'measurements.json', measurement_receipt(
+        plan, args.role, _measurement_phases(measured, root),
+        shard_group=getattr(args, 'shard_group', None),
+        native_profile=getattr(args, 'native_profile', None),
+        resources_before=strict.read_json(root / 'resources-before.json'),
+        resources_after=strict.read_json(root / 'resources-after.json')))
     if args.role == 'unit' and shard_path.is_file():
         report = strict.read_json(shard_path)
         report['run_id'] = os.environ['GITHUB_RUN_ID']
@@ -405,6 +763,19 @@ def run_worker(args):
         if report['status'] != 'passed':
             status = status or 1
     return status
+
+
+def _measurement_phases(timings: list[dict[str, Any]], root: Path) -> list[dict[str, Any]]:
+    phases = []
+    for item in timings:
+        row = {'phase': str(item.get('phase', item.get('stage', 'unknown'))),
+               'seconds': item.get('seconds'), 'exit': item.get('exit')}
+        # Only command rows have a corresponding GNU-time log. A routine-suite
+        # total is nested within the unit command wall and has no separate peak.
+        if 'stage' in item:
+            row.update(process_peak(root / (row['phase'] + '.log')))
+        phases.append(row)
+    return phases
 
 
 def one(root, pattern):
@@ -439,6 +810,9 @@ def combine_native_profiles(artifact_root: Path, plan: dict[str, Any], profiles:
     for index, profile in enumerate(profiles):
         source = Path(artifact_root) / prefix.format(role=f"native-{profile}")
         verify_producer(source, "native", plan)
+        if (source / 'measurements.json').is_file():
+            validate_measurement_receipt(load_measurement_receipt(source / 'measurements.json'),
+                                         plan, 'native', native_profile=profile)
         runtime = strict.read_json(source / "runtime-inputs.json")
         strict.validate_runtime_inputs(runtime)
         manifests.append(runtime)
@@ -461,6 +835,7 @@ def combine_native_profiles(artifact_root: Path, plan: dict[str, Any], profiles:
 def aggregate(args):
     output = Path(args.root); output.mkdir(parents=True, exist_ok=True)
     results = {}
+    artifact_root = Path(args.artifacts)
     try:
         results = json.loads(os.environ.get('FWROUTER_CI_NEEDS', '{}'))
         if not isinstance(results, dict):
@@ -470,11 +845,17 @@ def aggregate(args):
         if plan_status != 'success':
             raise gate.GateError(f'plan preflight result is {plan_status or "missing"}; immutable plan unavailable')
         plan = load_plan(args.plan)
+        mode = resolve_plan_mode(args.event, args.ref, plan,
+                                 pr_head_repo=args.pr_head_repo, repository=args.repository,
+                                 acknowledge=args.acknowledge, expected_sha=args.expected_sha)
+        if getattr(args, 'qualification_mode', '') != mode:
+            raise gate.GateError('configured qualification mode differs from trusted event context and plan')
+        if bool(args.main_smoke) != (mode == 'main-mandatory'):
+            raise gate.GateError('main smoke is required only for actual-main affected CI')
         required = requirements(plan, args.main_smoke)
         problems = validate_results(results, required)
         if problems:
             raise gate.GateError('; '.join(problems))
-        artifact_root = Path(args.artifacts)
         prefix = f"fwrouter-v2-{{role}}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
         selected_native_profiles = native_profiles(plan)
         expected_dirs = {prefix.format(role=k) for k, needed in required.items()
@@ -559,6 +940,18 @@ def aggregate(args):
                                   require_main_smoke=args.main_smoke, main_smoke_path=smoke)
         gate.atomic_json(output / 'fwrouter-aggregate.json', report)
         if report.get('eligible') is not True:
+            recovery = {'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
+                        'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'} <= set(plan['selected_files'])
+            gate.atomic_json(output / 'required-result.json', {'schema': 'fwrouter-parallel-required/v1',
+                             **identity(plan), 'eligible': False, 'upstream': results,
+                             'safe_recovery_required': recovery,
+                             **({'qualification_scope': qualification_scope(mode)} if mode else {})})
+            try:
+                import visibility_report
+                partial_visibility = visibility_report.collect(artifact_root, output, plan)
+                gate.atomic_json(output / 'visibility.json', partial_visibility)
+            except Exception:
+                pass
             return 1
         recovery = {'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
                     'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'} <= set(plan['selected_files'])
@@ -566,7 +959,8 @@ def aggregate(args):
             subprocess.run([sys.executable, 'installer/qualify_recovery.py', '--aggregate',
                             str(output / 'fwrouter-aggregate.json'), '--output', str(output / 'safe-recovery')], check=True)
         gate.atomic_json(output / 'required-result.json', {'schema': 'fwrouter-parallel-required/v1',
-                         **identity(plan), 'eligible': True, 'upstream': results, 'safe_recovery_required': recovery})
+                         **identity(plan), 'eligible': True, 'upstream': results, 'safe_recovery_required': recovery,
+                         **({'qualification_scope': qualification_scope(mode)} if mode else {})})
         import visibility_report
         visibility = visibility_report.collect(artifact_root, output, plan)
         if (visibility.get('qualification_status') != 'passed'
@@ -580,14 +974,23 @@ def aggregate(args):
                          'eligible': False, 'upstream': results, 'error': str(exc)[:3000]})
         if not (output / 'fwrouter-aggregate.json').exists():
             gate.atomic_json(output / 'fwrouter-aggregate.json', strict.aggregate_error_report(exc))
+        # Preserve current-attempt observed outcomes for the always-run human
+        # summary. This projection is diagnostic only and cannot qualify a run.
+        try:
+            if 'plan' in locals() and 'artifact_root' in locals() and artifact_root.is_dir():
+                import visibility_report
+                partial_visibility = visibility_report.collect(artifact_root, output, plan)
+                gate.atomic_json(output / 'visibility.json', partial_visibility)
+        except Exception:
+            pass
         print(str(exc), file=sys.stderr)
         return 1
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('configure', 'verify-plan', 'seal', 'worker', 'aggregate', 'summary'))
-    parser.add_argument('--plan', type=Path, required=True)
+    parser.add_argument('command', choices=('mode', 'prepare', 'configure', 'verify-plan', 'seal', 'worker', 'aggregate', 'summary'))
+    parser.add_argument('--plan', type=Path)
     parser.add_argument('--root', type=Path)
     parser.add_argument('--role', choices=ROLES)
     parser.add_argument('--shard-group', choices=gate.ROUTINE_SHARD_GROUPS)
@@ -597,9 +1000,33 @@ def main():
     parser.add_argument('--artifacts', type=Path)
     parser.add_argument('--main-smoke', action='store_true')
     parser.add_argument('--l6', action='store_true')
+    parser.add_argument('--event', default='')
+    parser.add_argument('--ref', default='')
+    parser.add_argument('--trusted-pr', action='store_true')
+    parser.add_argument('--full-marker', action='store_true')
+    parser.add_argument('--acknowledge', default='')
+    parser.add_argument('--expected-sha', default='')
+    parser.add_argument('--actual-sha', default='')
+    parser.add_argument('--l6-mode', default='')
+    parser.add_argument('--quick-push', action='store_true')
+    parser.add_argument('--lint-changed', action='store_true')
+    parser.add_argument('--state', type=Path)
+    parser.add_argument('--qualification-mode', default='')
+    parser.add_argument('--manifest', type=Path, default=gate.MANIFEST)
+    parser.add_argument('--event-before', default='')
+    parser.add_argument('--pr-base', default='')
+    parser.add_argument('--pr-head-repo', default='')
+    parser.add_argument('--repository', default='')
     args = parser.parse_args()
     try:
-        if args.command == 'configure':
+        if args.command == 'mode':
+            print(qualification_mode(args.event, args.ref, trusted_pr=args.trusted_pr,
+                                     full_marker=args.full_marker, acknowledge=args.acknowledge,
+                                     expected_sha=args.expected_sha, actual_sha=args.actual_sha,
+                                     l6_mode=args.l6_mode))
+        elif args.command == 'prepare':
+            print(prepare_plan(args))
+        elif args.command == 'configure':
             configure(args)
         elif args.command == 'verify-plan':
             verify_producer(args.plan.parent, 'plan', load_plan(args.plan, l6=args.l6))
@@ -608,7 +1035,8 @@ def main():
         elif args.command == 'worker':
             return run_worker(args)
         elif args.command == 'summary':
-            print(worker_summary(args.root, args.plan, args.role, args.outcome, args.native_profile), end='')
+            print(worker_summary(args.root, args.plan, args.role, args.outcome, args.native_profile,
+                                 l6=args.l6), end='')
         else:
             return aggregate(args)
         return 0

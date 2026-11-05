@@ -33,30 +33,22 @@ def load(path):
 
 
 def trigger(event, ref, acknowledge, mode, expected_sha, actual_sha):
-    if event == 'schedule':
-        if ref != 'refs/heads/main':
-            raise gate.GateError('nightly L6 requires main')
-        return 'main-regression'
-    if (event != 'workflow_dispatch' or acknowledge != 'RUN L6'
-            or expected_sha != actual_sha or len(actual_sha) != 40):
-        raise gate.GateError('L6 dispatch acknowledgement or exact SHA is invalid')
-    if mode == 'main' and ref == 'refs/heads/main':
-        return 'main-regression'
-    if mode == 'branch' and ref.startswith('refs/heads/') and ref != 'refs/heads/main':
-        return 'branch-regression-non-promotional'
-    raise gate.GateError('L6 mode/ref is not authorized by the trigger contract')
+    resolved = parallel.qualification_mode(event, ref, acknowledge=acknowledge,
+                                           expected_sha=expected_sha, actual_sha=actual_sha,
+                                           l6_mode=mode)
+    if resolved not in {'l6-main', 'l6-branch'}:
+        raise gate.GateError('L6 mode/ref is not authorized by the trigger contract')
+    return {'l6-main': 'main-regression',
+            'l6-branch': 'branch-regression-non-promotional'}[resolved]
 
 
 def configure(args):
     scope = trigger(os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_REF'],
                     args.acknowledge, args.mode, args.expected_sha, gate.git('rev-parse', 'HEAD'))
-    plan = load(args.plan)
-    parallel.seal(args.plan.parent, 'plan', plan, 'success')
+    load(args.plan)
+    parallel.write_configure_outputs(args.plan, args.github_output, l6=True)
     with Path(args.github_output).open('a') as stream:
-        for key, value in {'source_sha': plan['source_commit'], 'plan_digest': plan['plan_digest'],
-                           'unit_shards_json': json.dumps(gate.ROUTINE_SHARD_GROUPS),
-                           'native_profiles_json': json.dumps(parallel.native_profiles(plan)),
-                           'qualification_scope': scope}.items():
+        for key, value in {'qualification_scope': scope}.items():
             stream.write(f'{key}={value}\n')
 
 
@@ -68,12 +60,9 @@ def expected_children():
 
 
 def check_jobs(jobs):
-    if not isinstance(jobs, dict) or set(jobs) != set(ROLES):
-        raise gate.GateError('L6 required job result set is incomplete or unexpected')
-    failed = [role for role in ROLES if not isinstance(jobs[role], dict)
-              or jobs[role].get('result') != 'success']
-    if failed:
-        raise gate.GateError('L6 required jobs failed/skipped/cancelled: ' + ', '.join(failed))
+    problems = parallel.validate_results(jobs, {role: True for role in ROLES})
+    if problems:
+        raise gate.GateError('L6 required jobs failed/skipped/cancelled: ' + '; '.join(problems))
 
 
 def verify_metadata_plan_identity(metadata, plan):
@@ -95,7 +84,12 @@ def check_native_files(root, profile, plan):
     files = value['files']
     name = 'qualified-child-receipt.json' if profile == 'qcp' else 'qualified-xray-docker-receipt.json'
     receipts = [path for path in files if Path(path).name == name]
-    if len(receipts) != 1 or set(files) != {'runtime-inputs.json', receipts[0], str(Path(receipts[0]).with_name('profile.json'))}:
+    expected = {'runtime-inputs.json', receipts[0], str(Path(receipts[0]).with_name('profile.json'))} if len(receipts) == 1 else set()
+    if 'measurements.json' in files:
+        parallel.validate_measurement_receipt(parallel.load_measurement_receipt(root / 'measurements.json'), plan,
+                                              'native', native_profile=profile)
+        expected.add('measurements.json')
+    if len(receipts) != 1 or set(files) != expected:
         raise gate.GateError('L6 native child has missing or unapproved evidence')
 
 
@@ -110,11 +104,20 @@ def replay(evidence, plan, jobs):
             files = strict.read_json(root / 'producer.json')['files']
             if role == 'plan' and set(files) != {'fwrouter-affected-plan.json'}:
                 raise gate.GateError('unexpected L6 planner evidence')
-            if role == 'unit' and set(files) != {'shard.json'}:
-                raise gate.GateError('unexpected L6 routine evidence')
+            if role == 'unit':
+                expected = {'shard.json'}
+                if 'measurements.json' in files:
+                    parallel.validate_measurement_receipt(parallel.load_measurement_receipt(root / 'measurements.json'),
+                                                          plan, 'unit', shard_group=child.removeprefix('unit-'))
+                    expected.add('measurements.json')
+                if set(files) != expected:
+                    raise gate.GateError('unexpected L6 routine evidence')
             if role in HOSTED:
                 receipts = [name for name in files if Path(name).name == 'hosted-acceptance-report.json']
-                if len(receipts) != 1 or set(files) != {'runtime-inputs.json', receipts[0]}:
+                expected = {'runtime-inputs.json', receipts[0], 'measurements.json'} if len(receipts) == 1 and 'measurements.json' in files else {'runtime-inputs.json', receipts[0]} if len(receipts) == 1 else set()
+                if 'measurements.json' in files:
+                    parallel.validate_measurement_receipt(parallel.load_measurement_receipt(root / 'measurements.json'), plan, role)
+                if len(receipts) != 1 or set(files) != expected:
                     raise gate.GateError('unexpected L6 hosted evidence')
             if role == 'native':
                 check_native_files(root, child.removeprefix('native-'), plan)
@@ -162,6 +165,7 @@ def aggregate(args):
     required = args.root
     required.mkdir(mode=0o700, parents=True, exist_ok=True)
     jobs = json.loads(os.environ.get('FWROUTER_CI_NEEDS', '{}'))
+    plan = None
     try:
         check_jobs(jobs)
         suffix = f"-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
@@ -185,6 +189,23 @@ def aggregate(args):
     except (OSError, ValueError, KeyError, gate.GateError, subprocess.CalledProcessError) as exc:
         gate.atomic_json(required / 'required-result.json', {'schema': 'fwrouter-l6-required/v1',
                          'eligible': False, 'upstream': jobs, 'error': str(exc)[:3000]})
+        if not (required / 'fwrouter-aggregate.json').exists():
+            gate.atomic_json(required / 'fwrouter-aggregate.json', strict.aggregate_error_report(exc))
+        # Partial visibility is retained for the always-run summary only. The
+        # strict verifier still rejects this incomplete diagnostic projection.
+        try:
+            if plan is None and args.artifacts.is_dir():
+                plan_path = args.artifacts / 'plan/fwrouter-affected-plan.json'
+                if not plan_path.is_file():
+                    candidates = list(args.artifacts.glob('fwrouter-l6-plan-*/fwrouter-affected-plan.json'))
+                    plan_path = candidates[0] if len(candidates) == 1 else plan_path
+                if plan_path.is_file():
+                    plan = load(plan_path)
+            if plan is not None and args.artifacts.is_dir():
+                partial_visibility = visibility_report.collect(args.artifacts, required, plan)
+                gate.atomic_json(required / 'visibility.json', partial_visibility)
+        except Exception:
+            pass
         print(str(exc), file=sys.stderr)
         return 1
 

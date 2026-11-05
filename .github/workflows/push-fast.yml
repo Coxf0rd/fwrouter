@@ -34,43 +34,42 @@ jobs:
       - name: Validate isolation bootstrap
         run: python tests/gates/isolation_smoke.py
       - name: Plan and run routine affected L0-L1 only
+        id: quick
         env:
           EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          # A new branch push has the zero SHA, not a previous commit.
-          # Resolve its immutable fork point from the fully fetched main ref.
-          if [ "$EVENT_BEFORE" = 0000000000000000000000000000000000000000 ]; then
-            EVENT_BEFORE="$(git merge-base HEAD refs/remotes/origin/main)"
-          fi
-          if [ -z "$EVENT_BEFORE" ] || ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
-            echo "Push has no resolvable immutable before SHA" >&2
-            exit 2
-          fi
-          python tests/gates/gate.py lint-changed --base "$EVENT_BEFORE"
-          CHANGED_PATHS="$RUNNER_TEMP/fwrouter-fast-changed-paths.bin"
-          git diff --name-only -z "$EVENT_BEFORE" HEAD -- > "$CHANGED_PATHS"
-          if [ ! -s "$CHANGED_PATHS" ]; then
-            MESSAGE='Test execution NOT RUN: source tree unchanged; no test/deploy qualification.'
-            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
-            echo "$MESSAGE"
-            exit 0
-          fi
+          printf 'changed\n' > "$RUNNER_TEMP/fwrouter-fast-state"
           PLAN="$RUNNER_TEMP/fwrouter-fast-plan.json"
           REPORT="$RUNNER_TEMP/fwrouter-fast-report.json"
-          python tests/gates/gate.py plan --base "$EVENT_BEFORE" --quick-push --output "$PLAN"
+          python tests/gates/parallel_ci.py prepare --event "$EVENT_NAME" --ref "$EVENT_REF" \
+            --event-before "$EVENT_BEFORE" --quick-push --lint-changed \
+            --plan "$PLAN" --state "$RUNNER_TEMP/fwrouter-fast-state"
+          if [ "$(cat "$RUNNER_TEMP/fwrouter-fast-state")" = unchanged ]; then exit 0; fi
           python tests/gates/gate.py run --plan "$PLAN" --output "$REPORT" \
-            > "$RUNNER_TEMP/fwrouter-fast.log" 2>&1 || { tail -c 65536 "$RUNNER_TEMP/fwrouter-fast.log"; exit 1; }
-          cat "$RUNNER_TEMP/fwrouter-fast.log"
-      - name: Retain exact quick selection and bounded failure report
+            > "$RUNNER_TEMP/fwrouter-fast.log" 2>&1
+      - name: Write non-promotional quick summary
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: fwrouter-fast-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/fwrouter-fast-plan.json
-            ${{ runner.temp }}/fwrouter-fast-report.json
-            ${{ runner.temp }}/fwrouter-fast.log
-          if-no-files-found: warn
-          retention-days: 7
-          compression-level: 6
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EXECUTION_OUTCOME: ${{ steps.quick.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          python tests/gates/evidence_bundle.py quick-summary \
+            --plan "$RUNNER_TEMP/fwrouter-fast-plan.json" \
+            --report "$RUNNER_TEMP/fwrouter-fast-report.json" \
+            --state "$RUNNER_TEMP/fwrouter-fast-state" \
+            --output "$RUNNER_TEMP/fwrouter-fast-summary.md" \
+            --expected-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --event "$EVENT_NAME" --ref "$EVENT_REF" --execution-outcome "${EXECUTION_OUTCOME:-unknown}" \
+            --run-url "$RUN_URL"
+          if [ -f "$RUNNER_TEMP/fwrouter-fast-summary.md" ]; then
+            cat "$RUNNER_TEMP/fwrouter-fast-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## FWRouter branch quick check\n\n**Quick-scope result: INCOMPLETE.** Summary generation failed; inspect this run log.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi

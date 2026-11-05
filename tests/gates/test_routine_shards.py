@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
@@ -31,6 +32,8 @@ def _fixture(*, mandatory_all=False):
         row = next(item for item in manifest["test_files"]
                    if item["execution_group"] == group)
         selected.append(row["path"])
+    selected.extend(("tests/gates/test_host_qualification.py",
+                     "tests/gates/test_manual_host_smoke.py"))
     anchors = sorted(manifest["policies"]["L5"]["anchors"]) if mandatory_all else []
     selected = sorted(set(selected) | set(anchors))
     plan = {
@@ -52,8 +55,23 @@ def _fixture(*, mandatory_all=False):
                 if override.get("path") == row["path"]
                 and "execution_profile" in override and override.get("execution_profile") is None
             ) if row.get("execution_profile") else []
-            nodes = local_nodes if row.get("execution_profile") else [row["path"] + "::test_case"]
-            node_status = {node: "passed" for node in nodes}
+            if row["path"] == "tests/gates/test_host_qualification.py":
+                nodes = sorted([node for node in gate.SKIP_POLICY_REGISTRY
+                                if node.startswith(row["path"] + "::")] + [
+                    row["path"] + "::HostQualificationTests::test_absent_or_mismatched_github_context_fails_before_guest_factory",
+                    row["path"] + "::HostQualificationTests::test_missing_github_context_fails_before_guest_factory",
+                    row["path"] + "::HostQualificationTests::test_admission_failure_is_structured_incomplete_and_nonpromotional",
+                ])
+            elif row["path"] == "tests/gates/test_manual_host_smoke.py":
+                nodes = [gate.MANUAL_HOST_NODEID]
+            else:
+                nodes = local_nodes if row.get("execution_profile") else [row["path"] + "::test_case"]
+            node_status = {node: ("skipped" if node in gate.SKIP_POLICY_REGISTRY else "passed")
+                           for node in nodes}
+            skip_reasons = {node: {**gate.SKIP_POLICY_REGISTRY[node],
+                                   "pytest_reason": gate.node_skip_reason(gate.SKIP_POLICY_REGISTRY[node])}
+                            for node in nodes
+                            if node in gate.SKIP_POLICY_REGISTRY}
             shard_status.update(node_status)
             executions.append({
                 "suite": row["id"], "path": row["path"],
@@ -63,6 +81,7 @@ def _fixture(*, mandatory_all=False):
                 "status": "deferred_remote_hosted" if row.get("execution_profile") else "passed",
                 "elapsed_seconds": 0.25, "collected_node_ids": nodes, "executed_node_ids": nodes,
                 "node_status": node_status,
+                "authorized_skip_reasons": skip_reasons,
                 **({"routine_node_status": node_status} if row.get("execution_profile") and nodes else {}),
             })
         report = gate._routine_shard_report(
@@ -85,6 +104,94 @@ def _fixture(*, mandatory_all=False):
 
 
 class RoutineShardContractTests(unittest.TestCase):
+    def test_measurement_receipt_binds_identity_and_rejects_invalid_phases(self):
+        plan, _, _, _ = _fixture()
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            receipt = parallel_ci.measurement_receipt(
+                plan, "unit", [{"phase": "routine_execution", "seconds": 0.25, "exit": 0}],
+                shard_group="core-state", resources_before=_resource(), resources_after=_resource())
+            parallel_ci.validate_measurement_receipt(receipt, plan, "unit", shard_group="core-state")
+        altered = copy.deepcopy(receipt)
+        altered["run_attempt"] = "3"
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            with self.assertRaisesRegex(gate.GateError, "identity"):
+                parallel_ci.validate_measurement_receipt(altered, plan, "unit", shard_group="core-state")
+        duplicated = copy.deepcopy(receipt)
+        duplicated["phases"].append(copy.deepcopy(duplicated["phases"][0]))
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            with self.assertRaisesRegex(gate.GateError, "duplicated"):
+                parallel_ci.validate_measurement_receipt(duplicated, plan, "unit", shard_group="core-state")
+        nonfinite = copy.deepcopy(receipt)
+        nonfinite["phases"][0]["duration_seconds"] = float("nan")
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            with self.assertRaisesRegex(gate.GateError, "malformed"):
+                parallel_ci.validate_measurement_receipt(nonfinite, plan, "unit", shard_group="core-state")
+            invalid_context = copy.deepcopy(receipt)
+            invalid_context["shard_group"] = "unregistered"
+            with self.assertRaisesRegex(gate.GateError, "identity"):
+                parallel_ci.validate_measurement_receipt(invalid_context, plan, "unit",
+                                                         shard_group="unregistered")
+            with self.assertRaisesRegex(gate.GateError, "malformed"):
+                parallel_ci.measurement_receipt(
+                    plan, "unit", [{"phase": "x" * 65, "seconds": 0, "exit": 0}],
+                    shard_group="core-state", resources_before=_resource(), resources_after=_resource())
+
+    def test_routine_shard_summary_is_bounded_and_shows_only_nonpassing_ids(self):
+        report = {
+            'shard_group': 'core-state', 'status': 'failed',
+            'expected_suites': [{'suite': 'one', 'path': 'tests/one.py', 'execution_profile': None}],
+            'executions': [{'path': 'tests/one.py', 'suite': 'one', 'status': 'failed'}],
+            'collected_paths': ['tests/one.py'], 'executed_paths': [],
+            'expected_node_ids': [f'tests/one.py::test_{i}' for i in range(2000)],
+            'collected_node_ids': [f'tests/one.py::test_{i}' for i in range(2000)],
+            'executed_node_ids': [f'tests/one.py::test_{i}' for i in range(2000)],
+            'unique_node_status_count': 2000,
+            'node_status': {f'tests/one.py::test_{i}': ('failed' if i < 100 else 'passed')
+                            for i in range(2000)},
+            'authorized_skip_reasons': {}, 'duration_seconds': 1.25,
+            'cleanup': 'verified', 'process_peak': {'max_rss_kib': 1234},
+        }
+        rendered = routine_shards.write_summary(report)
+        self.assertIn('PASS 1900; FAIL 100', rendered)
+        self.assertIn('Non-passing case IDs', rendered)
+        self.assertIn('additional non-passing IDs', rendered)
+        self.assertNotIn('tests/one.py::test_1999', rendered)
+        self.assertNotIn('| Test ID |', rendered)
+        self.assertLess(len(rendered.encode()), 8 * 1024)
+
+    def test_worker_summary_omits_success_id_dump_and_missing_plan_stays_incomplete(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = {'source_commit': SOURCE, 'plan_digest': 'b' * 64,
+                    'manifest_digest': 'c' * 64, 'manifest_version': 2,
+                    'selected_files': ['tests/example.py']}
+            (root / 'plan.json').write_text(json.dumps(plan), encoding='utf-8')
+            receipt_dir = root / 'profile'; receipt_dir.mkdir()
+            node_status = {f'tests/example.py::test_{index}': 'passed' for index in range(2000)}
+            (receipt_dir / 'hosted-acceptance-report.json').write_text(json.dumps({
+                'status': 'passed', 'suite': 'functional', 'cleanup': 'owned_resources_removed',
+                'tests': {'node_status': node_status},
+            }), encoding='utf-8')
+            manifest = {'test_files': [{'path': 'tests/example.py', 'execution_group': 'core-state',
+                                        'primary_level': 'L1', 'domain': 'core',
+                                        'execution_profile': 'hosted-isolated-compose'}]}
+            with patch.object(parallel_ci, 'load_plan', return_value=plan), \
+                    patch.object(gate, 'load_manifest', return_value=manifest):
+                rendered = parallel_ci.worker_summary(root, root / 'plan.json', 'hosted', 'success')
+            self.assertIn('Observed case IDs: 2000 unique', rendered)
+            self.assertIn('PASSED 2000', rendered)
+            self.assertNotIn('tests/example.py::test_1999', rendered)
+            self.assertNotIn('| Test ID |', rendered)
+            self.assertLess(len(rendered.encode()), 8 * 1024)
+
+            with patch.object(gate, 'git', return_value=SOURCE):
+                fallback = parallel_ci.worker_summary(root, root / 'missing-plan.json', 'native',
+                                                      'success', 'qcp')
+            self.assertIn('Status: INCOMPLETE', fallback)
+            self.assertIn('Checked-out source SHA', fallback)
+            self.assertIn('case IDs and coverage: NOT AVAILABLE', fallback)
+            self.assertNotIn('Unique IDs: 0', fallback)
+
     def test_process_peak_parses_realistic_gnu_time_indentation_and_cpu_percent(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "worker.log"
@@ -117,6 +224,29 @@ class RoutineShardContractTests(unittest.TestCase):
                          {row["path"] for row in merged["executions"] if row["path"] != "@L0"})
         self.assertFalse(merged["eligible"])
         self.assertIn("strict aggregate validates hosted/native evidence", merged["eligibility_note"])
+        self.assertEqual("NOT_VERIFIED", merged["host_qualification_status"])
+        self.assertEqual(16, len(merged["authorized_skip_reasons"]))
+
+    def test_shards_fail_closed_on_missing_wrong_or_forged_host_skip_evidence(self):
+        plan, manifest, _, reports = _fixture()
+        group = next(row["execution_group"] for row in manifest["test_files"]
+                     if row["path"] == "tests/gates/test_manual_host_smoke.py")
+        for mutate, message in (
+                (lambda report: report["authorized_skip_reasons"].pop(gate.MANUAL_HOST_NODEID),
+                 "reasons do not exactly match"),
+                (lambda report: report["authorized_skip_reasons"][gate.MANUAL_HOST_NODEID].update(
+                    environment="forged"), "differs from reviewed policy"),
+                (lambda report: report["node_status"].update({gate.MANUAL_HOST_NODEID: "passed"}),
+                 "must remain SKIP"),
+                (lambda report: report.update(host_qualification_status="PASS"),
+                 "cannot claim host qualification"),
+        ):
+            candidate = copy.deepcopy(reports)
+            mutate(candidate[group])
+            candidate[group]["shard_digest"] = gate.canonical_digest(
+                {key: value for key, value in candidate[group].items() if key != "shard_digest"})
+            with self.subTest(message=message), self.assertRaisesRegex(gate.GateError, message):
+                routine_shards.merge_reports(plan, manifest, candidate, run_id=RUN_ID, attempt=ATTEMPT)
 
     def test_l5_anchors_are_selected_and_executed_under_their_primary_owner(self):
         plan, manifest, _, reports = _fixture(mandatory_all=True)
@@ -260,6 +390,7 @@ class RoutineShardContractTests(unittest.TestCase):
         node = "backend/tests/test_contract.py::TestContract::test_roundtrip[param]"
         good = {"schema_version": 2, "collected_nodeids": [node],
                 "node_status": {node: "passed"},
+                "authorized_skip_reasons": {},
                 "node_executions": {node: {"start_count": 1, "call_report_count": 1,
                                             "terminal_report_count": 1, "status": "passed"}}}
         with tempfile.TemporaryDirectory() as temporary:

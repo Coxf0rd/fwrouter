@@ -9,6 +9,7 @@ import os
 import shutil
 import shlex
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -48,6 +49,75 @@ WHEEL_VERIFIER_SPEC.loader.exec_module(wheel_verifier)
 
 
 class GateContractTests(unittest.TestCase):
+    def test_parallel_cli_main_prepare_full_safe_uses_real_entrypoint_and_current_manifest(self) -> None:
+        script = Path(__file__).with_name("parallel_ci.py")
+        source_sha = gate.git("rev-parse", "HEAD")
+        base_sha = gate.git("rev-parse", "HEAD^")
+        manifest = gate.load_manifest()
+        safe_rows = [row for row in manifest["test_files"]
+                     if row["primary_level"] in {"L1", "L2", "L3", "L4"}
+                     and not row.get("destructive")]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            plan_path = Path(temporary) / "plan.json"
+            prepared = subprocess.run(
+                [sys.executable, str(script), "prepare", "--event", "push",
+                 "--ref", "refs/heads/main", "--event-before", base_sha,
+                 "--plan", str(plan_path)],
+                cwd=gate.ROOT, text=True, capture_output=True, check=False,
+            )
+
+            self.assertEqual(0, prepared.returncode, prepared.stderr)
+            self.assertEqual("main-mandatory", prepared.stdout.strip())
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            self.assertEqual(source_sha, plan["source_commit"])
+            self.assertEqual(gate.canonical_digest(manifest), plan["manifest_digest"])
+            self.assertTrue(plan["mandatory_suite_required"])
+            self.assertEqual(214, len(plan["selected_files"]))
+            self.assertEqual(215, len({row["path"] for row in manifest["test_files"]}))
+            self.assertEqual({row["path"] for row in safe_rows}, set(plan["selected_files"]))
+
+    def test_parallel_cli_mode_entrypoint_rejects_invalid_dispatch_context(self) -> None:
+        script = Path(__file__).with_name("parallel_ci.py")
+        result = subprocess.run(
+            [sys.executable, str(script), "mode", "--event", "workflow_dispatch",
+             "--ref", "refs/heads/stage6", "--acknowledge", "RUN L6",
+             "--expected-sha", "a" * 40, "--actual-sha", "b" * 40, "--l6-mode", "branch"],
+            cwd=gate.ROOT, text=True, capture_output=True, check=False,
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("acknowledgement, branch, or exact SHA is invalid", result.stderr)
+
+    def test_verified_github_run_context_must_match_actual_environment(self) -> None:
+        launcher_path = gate.ROOT / "tests/acceptance/launcher.py"
+        spec = importlib.util.spec_from_file_location("fwrouter_run_context_launcher", launcher_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        expected = {
+            "hosted": True, "runner_environment": "github-hosted", "runner_os": "Linux",
+            "repository": "owner/repo", "source_sha": "a" * 40, "workflow": "qualification",
+            "event": "workflow_dispatch", "ref": "refs/heads/feature", "run_id": "12345",
+            "attempt": "2",
+        }
+        env = {
+            "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux",
+            "GITHUB_REPOSITORY": "owner/repo", "GITHUB_SHA": "a" * 40,
+            "GITHUB_WORKFLOW": "qualification", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/heads/feature", "GITHUB_RUN_ID": "12345",
+            "GITHUB_RUN_ATTEMPT": "2",
+        }
+        self.assertEqual([], launcher.github_run_context_mismatches(env, expected))
+        self.assertEqual(["hosted"], launcher.github_run_context_mismatches(
+            {**env, "GITHUB_ACTIONS": "false"}, expected))
+        self.assertEqual(["source_sha", "attempt"], launcher.github_run_context_mismatches(
+            {**env, "GITHUB_SHA": "b" * 40, "GITHUB_RUN_ATTEMPT": "1"}, expected))
+        missing = dict(env)
+        del missing["GITHUB_WORKFLOW"]
+        self.assertEqual(["workflow"], launcher.github_run_context_mismatches(missing, expected))
+
     def test_proof_only_admission_branch_can_select_existing_qualified_cohort(self) -> None:
         branch = "fix/proof-only-legacy-admission"
         workflow_path = gate.ROOT / ".github/workflows/phase-d-validation.yml"
@@ -77,6 +147,343 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual([], gate.check_catalog(self.manifest))
         self.assertTrue(all(row["primary_level"] not in {"L0", "L5", "L6"} for row in self.manifest["test_files"]))
         self.assertEqual(len(self.manifest["test_files"]), len(gate.manifest_paths(self.manifest)))
+
+    def test_manifest_v2_runner_registry_and_suite_identity_are_closed(self) -> None:
+        self.assertEqual(2, self.manifest["schema_version"])
+        self.assertEqual(gate.RUNNER_CONTRACTS, self.manifest["runner_contracts"])
+        self.assertEqual(215, len(self.manifest["test_files"]))
+        adapters = {gate.runner_adapter(row, self.manifest) for row in self.manifest["test_files"]}
+        self.assertEqual({"pytest-nodeid", "node-tap", "declared-shell-case",
+                          "qualified-scenario-nodeid"}, adapters)
+        by_path = {row["path"]: row for row in self.manifest["test_files"]}
+        host_contract = by_path["tests/gates/test_host_qualification.py"]
+        self.assertEqual("pytest", host_contract["runner"])
+        self.assertIsNone(host_contract.get("execution_profile"))
+        self.assertFalse(host_contract["native"])
+        self.assertFalse(host_contract["opt_in"])
+        manual_host = by_path["tests/gates/test_manual_host_smoke.py"]
+        self.assertEqual("pytest", manual_host["runner"])
+        self.assertEqual("ui-tooling", manual_host["execution_group"])
+        self.assertFalse(manual_host["native"])
+        self.assertEqual("pytest-nodeid", gate.runner_adapter(by_path["tests/acceptance/test_dependency_image_contract.py"], self.manifest))
+        self.assertEqual("node-tap", gate.runner_adapter(by_path["ui/tests/admin-client-presentation.test.js"], self.manifest))
+        self.assertEqual("declared-shell-case", gate.runner_adapter(by_path["installer/test-install.sh"], self.manifest))
+        self.assertEqual("qualified-scenario-nodeid", gate.runner_adapter(by_path["backend/tests/test_xray.py"], self.manifest))
+        with self.assertRaises(gate.GateError):
+            gate.runner_adapter({"path": "unknown", "runner": "future-runner"}, self.manifest)
+        for invalid in ("mystery", "node"):
+            changed = copy.deepcopy(self.manifest)
+            changed["test_files"][0]["runner"] = invalid
+            with self.assertRaises(gate.GateError):
+                gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["test_files"][1]["id"] = changed["test_files"][0]["id"]
+        with self.assertRaisesRegex(gate.GateError, "duplicate suite ID"):
+            gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["runner_contracts"]["pytest"]["capabilities"].remove("pytest")
+        with self.assertRaisesRegex(gate.GateError, "closed supported registry"):
+            gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["schema_version"] = 1
+        with self.assertRaisesRegex(gate.GateError, "unsupported or missing"):
+            gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["candidate_exclusions"] = [{"path": "tests/helpers/test_helper.py"}]
+        with self.assertRaisesRegex(gate.GateError, "empty exclusion register"):
+            gate.validate_manifest(changed)
+
+    def test_node_skip_policy_is_closed_exact_and_nonpromotional(self) -> None:
+        self.assertEqual(16, len(self.manifest["node_skip_policies"]))
+        self.assertEqual(set(gate.SKIP_POLICY_REGISTRY),
+                         {row["nodeid"] for row in self.manifest["node_skip_policies"]})
+        changed = copy.deepcopy(self.manifest)
+        changed["node_skip_policies"].append({
+            "nodeid": "backend/tests/test_xray.py::test_anything", "reason_code": "host_environment_unavailable",
+            "owner": "self", "environment": "claimed-host", "capabilities": [],
+            "manual_phase": "manual", "disposition": "skip",
+        })
+        with self.assertRaisesRegex(gate.GateError, "closed reviewed registry"):
+            gate.validate_manifest(changed)
+
+        nodeid = gate.MANUAL_HOST_NODEID
+        reason = {**gate.SKIP_POLICY_REGISTRY[nodeid],
+                  "pytest_reason": gate.node_skip_reason(gate.SKIP_POLICY_REGISTRY[nodeid])}
+        gate.validate_authorized_node_skips(
+            self.manifest, {nodeid: "skipped"}, {nodeid: reason},
+            required_paths={"tests/gates/test_manual_host_smoke.py"},
+        )
+        for statuses, reasons in (
+                ({nodeid: "skipped"}, {}),
+                ({nodeid: "skipped"}, {nodeid: {**reason, "environment": "other"}}),
+                ({nodeid: "passed"}, {}),
+                ({"backend/tests/test_xray.py::test_anything": "skipped"}, {}),
+                ({}, {})):
+            with self.subTest(statuses=statuses, reasons=reasons):
+                with self.assertRaises(gate.GateError):
+                    gate.validate_authorized_node_skips(
+                        self.manifest, statuses, reasons,
+                        required_paths={"tests/gates/test_manual_host_smoke.py"},
+                    )
+
+    def test_plugin_only_records_skip_metadata_when_injected_reason_matches(self) -> None:
+        nodeid = gate.MANUAL_HOST_NODEID
+        policy = gate.SKIP_POLICY_REGISTRY[nodeid]
+        injected = f"FWROUTER_SKIP_POLICY[{policy['reason_code']}]: {policy['disposition']}"
+        plugin = gate_plugin
+        saved = (dict(plugin._INJECTED_SKIP_REASONS), dict(plugin._REVIEWED_SKIP_POLICIES),
+                 dict(plugin._AUTHORIZED_SKIP_REASONS), dict(plugin._NODE_EXECUTIONS),
+                 dict(plugin._NODE_STATUSES))
+        try:
+            plugin._INJECTED_SKIP_REASONS.clear()
+            plugin._REVIEWED_SKIP_POLICIES.clear()
+            plugin._AUTHORIZED_SKIP_REASONS.clear()
+            plugin._NODE_EXECUTIONS.clear()
+            plugin._NODE_STATUSES.clear()
+            plugin._INJECTED_SKIP_REASONS[nodeid] = injected
+            plugin._REVIEWED_SKIP_POLICIES[nodeid] = policy
+            event = SimpleNamespace(nodeid=nodeid, failed=False, skipped=True, when="call")
+            event.longrepr = ("test_manual_host_smoke.py", 1, "FWROUTER_SKIP_POLICY[wrong]: forged")
+            plugin.pytest_runtest_logreport(event)
+            self.assertNotIn(nodeid, plugin._AUTHORIZED_SKIP_REASONS)
+            event.longrepr = ("test_manual_host_smoke.py", 1, injected)
+            plugin.pytest_runtest_logreport(event)
+            self.assertEqual({nodeid: {**policy, "pytest_reason": injected}},
+                             plugin._AUTHORIZED_SKIP_REASONS)
+        finally:
+            (injected_reasons, reviewed, authorized, executions, statuses) = saved
+            plugin._INJECTED_SKIP_REASONS.clear(); plugin._INJECTED_SKIP_REASONS.update(injected_reasons)
+            plugin._REVIEWED_SKIP_POLICIES.clear(); plugin._REVIEWED_SKIP_POLICIES.update(reviewed)
+            plugin._AUTHORIZED_SKIP_REASONS.clear(); plugin._AUTHORIZED_SKIP_REASONS.update(authorized)
+            plugin._NODE_EXECUTIONS.clear(); plugin._NODE_EXECUTIONS.update(executions)
+            plugin._NODE_STATUSES.clear(); plugin._NODE_STATUSES.update(statuses)
+
+    def test_child_pytest_receipt_carries_only_exact_registry_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path = Path(temporary) / "nodes.json"
+            env = dict(os.environ, PYTHONPATH=str(gate.ROOT / "backend/tests"),
+                       FWROUTER_GATE_NODE_REPORT=str(report_path), PYTHONDONTWRITEBYTECODE="1")
+            command = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-q",
+                       "tests/gates/test_host_qualification.py", "tests/gates/test_manual_host_smoke.py"]
+            result = subprocess.run(command, cwd=gate.ROOT, env=env, capture_output=True, text=True,
+                                    timeout=20, check=False)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            payload = gate.node_report_from_plugin(report_path, 1_048_576)
+            self.assertEqual(16, sum(status == "skipped" for status in payload["node_status"].values()))
+            gate.validate_authorized_node_skips(
+                self.manifest, payload["node_status"], payload["authorized_skip_reasons"],
+                required_paths={"tests/gates/test_host_qualification.py",
+                                "tests/gates/test_manual_host_smoke.py"},
+            )
+            for mutation in (
+                    lambda value: value["authorized_skip_reasons"].pop(gate.MANUAL_HOST_NODEID),
+                    lambda value: value["authorized_skip_reasons"][gate.MANUAL_HOST_NODEID].update(
+                        environment="forged"),
+                    lambda value: value["node_status"].pop(gate.MANUAL_HOST_NODEID)):
+                changed = copy.deepcopy(payload)
+                mutation(changed)
+                with self.assertRaises(gate.GateError):
+                    gate.validate_authorized_node_skips(
+                        self.manifest, changed["node_status"], changed["authorized_skip_reasons"],
+                        required_paths={"tests/gates/test_manual_host_smoke.py"},
+                    )
+
+    def test_ordinary_gate_runner_accepts_policy_complete_ci_without_host_pass(self) -> None:
+        paths = ["tests/gates/test_host_qualification.py", "tests/gates/test_manual_host_smoke.py"]
+        plan = {
+            "source_commit": "c" * 40, "base_commit": "b" * 40, "changed_paths": paths,
+            "manifest_version": self.manifest["version"],
+            "manifest_digest": gate.canonical_digest(self.manifest), "plan_digest": "synthetic",
+            "selected_files": paths, "required_levels": ["L0", "L1"],
+            "required_execution_profiles": [], "required_native_suites": [],
+            "include_native": False, "full_suite_required": False, "manual_subset": False,
+            "mandatory_suite_required": False, "quick_push": False,
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-manual-host-runner-contract-") as temporary:
+            plan_path = Path(temporary) / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            args = SimpleNamespace(
+                manifest=str(gate.MANIFEST), plan=str(plan_path), manual_full_suite=False,
+                manual_subset=False, include_native=False, output=None,
+                baseline=str(gate.ROOT / self.manifest["baseline_policy_file"]),
+                mihomo_binary=None, xray_image=None,
+            )
+            output = StringIO()
+            with mock.patch.object(gate, "ensure_plan"), \
+                    mock.patch.object(gate, "run_l0", return_value=(True, [])), \
+                    mock.patch.object(gate, "load_baseline", return_value={"baseline_commit": "a" * 40,
+                                                                            "failures": []}), \
+                    mock.patch.object(gate, "classify", return_value={"eligible": True}), \
+                    redirect_stdout(output):
+                code = gate.command_run(args)
+        report = json.loads(output.getvalue())
+        self.assertEqual(0, code, (report.get("eligible"), report.get("blocked_reasons"),
+                                   report.get("completed_levels"), report.get("classification")))
+        self.assertTrue(report["eligible"])
+        self.assertEqual("NOT_VERIFIED", report["host_qualification_status"])
+        self.assertEqual(16, sum(status == "skipped" for status in report["node_status"].values()))
+        self.assertEqual(16, len(report["authorized_skip_reasons"]))
+        self.assertTrue(all(row["status"] == "passed" for row in report["executions"][1:]))
+
+    def test_manual_host_opt_in_rejects_github_and_missing_manual_inputs(self) -> None:
+        argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-q",
+                "--fwrouter-manual-host-smoke", "tests/gates/test_manual_host_smoke.py::"
+                "HostSmokeTests::test_manual_live_readonly_host_smoke"]
+        env = dict(os.environ, PYTHONPATH=str(gate.ROOT / "backend/tests"))
+        env["GITHUB_ACTIONS"] = "true"
+        blocked = subprocess.run(argv, cwd=gate.ROOT, env=env, capture_output=True, text=True,
+                                 timeout=20, check=False)
+        self.assertNotEqual(0, blocked.returncode)
+        self.assertIn("forbidden in GitHub Actions", blocked.stderr)
+        env.pop("GITHUB_ACTIONS", None)
+        incomplete = subprocess.run(argv, cwd=gate.ROOT, env=env, capture_output=True, text=True,
+                                    timeout=20, check=False)
+        self.assertNotEqual(0, incomplete.returncode)
+        self.assertIn("manual host smoke opt-in requires", incomplete.stderr)
+
+    def test_strict_aggregate_rejects_forged_manual_host_pass(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "fwrouter_aggregate_host_skip_contract", gate.ROOT / "tests/gates/aggregate_hosted.py")
+        assert spec and spec.loader
+        aggregate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(aggregate)
+        plan = gate.make_plan("HEAD", self.manifest, paths=["tests/gates/test_manual_host_smoke.py"])
+        forged_status = {
+            node: ("passed" if node == gate.MANUAL_HOST_NODEID else "skipped")
+            for node in gate.SKIP_POLICY_REGISTRY
+            if node.split("::", 1)[0] in set(plan["selected_files"])
+        }
+        forged_reasons = {
+            node: {**gate.SKIP_POLICY_REGISTRY[node],
+                   "pytest_reason": gate.node_skip_reason(gate.SKIP_POLICY_REGISTRY[node])}
+            for node, status in forged_status.items() if status == "skipped"
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan_path, unit_path = root / "plan.json", root / "unit.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            unit = {
+                "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
+                "manifest_version": self.manifest["version"],
+                "manifest_digest": gate.canonical_digest(self.manifest),
+                "host_qualification_status": "NOT_VERIFIED",
+                "node_status": forged_status,
+                "authorized_skip_reasons": forged_reasons,
+            }
+            unit["report_digest"] = gate.canonical_digest(unit)
+            unit_path.write_text(json.dumps(unit), encoding="utf-8")
+            with mock.patch.object(aggregate.gate, "ensure_plan"), \
+                    self.assertRaisesRegex(aggregate.gate.GateError, "must remain SKIP"):
+                aggregate.aggregate(plan_path, unit_path, [], [], [], minimum_repeats=1)
+
+    def test_direct_promotion_rejects_forged_host_qualification_claim(self) -> None:
+        plan = gate.make_plan("HEAD", self.manifest, paths=["tests/gates/test_manual_host_smoke.py"])
+        report = {
+            "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
+            "manifest_version": self.manifest["version"],
+            "manifest_digest": gate.canonical_digest(self.manifest),
+            "host_qualification_status": "PASS",
+        }
+        report["report_digest"] = gate.canonical_digest(report)
+        with mock.patch.object(gate, "ensure_plan"), mock.patch.object(gate, "git", return_value=""):
+            with self.assertRaisesRegex(gate.GateError, "host qualification is NOT_VERIFIED"):
+                gate.promote(plan, self.manifest, [report])
+
+    def test_host_smoke_row_is_selected_without_reclassifying_existing_suites(self) -> None:
+        host_path = "tests/gates/test_manual_host_smoke.py"
+        ordinary = gate.make_mandatory_suite_plan("HEAD", self.manifest, paths=[host_path])
+        full = gate.make_plan("HEAD", self.manifest, paths=[host_path])
+        self.assertIn(host_path, ordinary["selected_files"])
+        self.assertIn(host_path, full["selected_files"])
+        original = __import__("subprocess").check_output(
+            ["git", "show", "HEAD:tests/gates/manifest.json"], cwd=gate.ROOT, text=True)
+        old_manifest = json.loads(original)
+        old_rows = {row["path"]: row for row in old_manifest["test_files"]}
+        new_rows = {row["path"]: row for row in self.manifest["test_files"]}
+        self.assertEqual(set(old_rows) | {host_path}, set(new_rows))
+        for path, old in old_rows.items():
+            current = new_rows[path]
+            for field in ("runner", "execution_group", "execution_profile", "primary_level", "domain",
+                          "native", "opt_in", "slow", "destructive", "runtime_dependencies"):
+                self.assertEqual(old.get(field), current.get(field), f"{path}: {field} changed")
+
+    def test_explicit_runners_allow_supported_extensions_outside_legacy_prefixes(self) -> None:
+        changed = copy.deepcopy(self.manifest)
+        rows = {row["path"]: row for row in changed["test_files"]}
+        rows["tests/acceptance/test_dependency_image_contract.py"]["path"] = "tools/ci/test_inventory.py"
+        rows["ui/tests/admin-client-presentation.test.js"]["path"] = "tools/ci/test_ui_adapter.cjs"
+        rows["installer/test-install.sh"]["path"] = "tools/ci/smoke_test.sh"
+        gate.validate_manifest(changed)
+        for path, runner, adapter in (
+            ("tools/ci/test_inventory.py", "pytest", "pytest-nodeid"),
+            ("tools/ci/test_ui_adapter.cjs", "node", "node-tap"),
+            ("tools/ci/smoke_test.sh", "shell", "declared-shell-case"),
+        ):
+            row = next(item for item in changed["test_files"] if item["path"] == path)
+            self.assertEqual(adapter, gate.runner_adapter(row, changed))
+
+    def test_manifest_extension_must_match_the_explicit_runner(self) -> None:
+        for path, runner in (("tools/test_invalid.js", "pytest"),
+                             ("tools/test_invalid.sh", "node"),
+                             ("tools/test_invalid.py", "shell")):
+            changed = copy.deepcopy(self.manifest)
+            row = changed["test_files"][0]
+            row["path"] = path
+            row["runner"] = runner
+            with self.assertRaisesRegex(gate.GateError, "incompatible with the declared test extension"):
+                gate.validate_manifest(changed)
+
+    def test_node_cannot_have_two_manifest_owners(self) -> None:
+        changed = copy.deepcopy(self.manifest)
+        profile = changed["node_execution_profiles"][0]
+        path, node = profile["nodeid"].split("::", 1)
+        changed["node_overrides"].append({"path": path, "node": node, "primary_level": "L3"})
+        with self.assertRaisesRegex(gate.GateError, "duplicate test-node ownership"):
+            gate.validate_manifest(changed)
+
+    def test_acceptance_test_glob_discovers_new_test_and_symlink_candidate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-discovery-") as temp:
+            root = Path(temp)
+            acceptance = root / "tests/acceptance"
+            acceptance.mkdir(parents=True)
+            case = acceptance / "test_new_contract.py"
+            case.write_text("def test_new(): pass\n", encoding="utf-8")
+            with mock.patch.object(gate, "ROOT", root):
+                self.assertIn("tests/acceptance/test_new_contract.py", gate.discover_test_files())
+                link = acceptance / "test_link.py"
+                link.symlink_to(case)
+                self.assertIn("tests/acceptance/test_link.py", gate.discover_test_files())
+
+    def test_catalog_rejects_unassigned_tracked_candidate_and_path_symlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-catalog-") as temp:
+            root = Path(temp)
+            target = root / "target.py"
+            target.write_text("def test_x(): pass\n", encoding="utf-8")
+            (root / "tests/gates").mkdir(parents=True)
+            link = root / "tests/gates/test_linked.py"
+            link.symlink_to(target)
+            linked = {"path": "tests/gates/test_linked.py", "domain": "test-infrastructure",
+                      "execution_group": "ui-tooling", "primary_level": "L1"}
+            fake_git = SimpleNamespace(returncode=0, stdout=b"outside/test_candidate.py\0")
+            with mock.patch.object(gate, "ROOT", root), \
+                 mock.patch.object(gate.subprocess, "run", return_value=fake_git):
+                errors = gate.check_catalog({"test_files": [linked]})
+            self.assertTrue(any("unassigned tracked test candidate" in error for error in errors))
+            self.assertTrue(any("symlink" in error for error in errors))
+
+    def test_catalog_detects_new_unassigned_node_and_shell_candidates_outside_globs(self) -> None:
+        names = (
+            "outside/test-tool.js", "outside/test_tool.cjs", "outside/test.mjs",
+            "outside/tool_test.js", "outside/tool.test.cjs", "outside/tool.spec.mjs",
+            "outside/test.sh", "outside/test-helper.sh", "outside/test_helper.sh",
+            "outside/helper_test.sh",
+        )
+        fake_git = SimpleNamespace(returncode=0, stdout=("\0".join(names) + "\0").encode())
+        with mock.patch.object(gate.subprocess, "run", return_value=fake_git):
+            errors = gate.check_catalog({"test_files": []})
+        joined = "\n".join(errors)
+        for name in names:
+            self.assertIn(name, joined)
 
     def test_existing_standard_library_contracts_have_explicit_routine_runner_adapters(self) -> None:
         paths = {row["path"] for row in self.manifest["test_files"]}
@@ -331,66 +738,148 @@ class GateContractTests(unittest.TestCase):
 
     def test_main_and_trusted_final_pr_use_mandatory_all_plan_policy(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        self.assertIn("name: Affected L0-L5 with hosted profiles", workflow)
-        self.assertIn("github.event_name == 'pull_request'", workflow)
-        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("'Affected L0-L5 with hosted profiles'", workflow)
+        self.assertIn("Pre-PR full safe qualification", workflow)
+        self.assertIn("parallel_ci.py prepare", workflow)
+        self.assertIn("name: ${{ github.event_name == 'workflow_dispatch' && 'Pre-PR full safe qualification' || 'Affected L0-L5 with hosted profiles' }}", workflow)
         self.assertIn("PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}", workflow)
-        self.assertIn("&& [ \"$PR_HEAD_REPO\" = \"$GITHUB_REPOSITORY\" ]", workflow)
-        self.assertIn("grep -Fq -- 'ci:full-acceptance'", workflow)
-        self.assertIn("PLAN_ARGS+=(--mandatory-all)", workflow)
-        self.assertIn("python tests/gates/gate.py plan \"${PLAN_ARGS[@]}\"", workflow)
-        self.assertIn("PLAN_ARGS=(--base \"$BASE\" --include-native --output \"$PLAN\")", workflow)
+        self.assertIn("ci:full-acceptance", (gate.ROOT / 'tests/gates/parallel_ci.py').read_text())
+        planner = (gate.ROOT / 'tests/gates/parallel_ci.py').read_text()
+        self.assertIn("gate.make_mandatory_suite_plan(base, manifest)", planner)
+        self.assertIn("gate.make_plan(base, manifest, include_native=True)", planner)
+        self.assertIn("gate.make_quick_push_plan(base, manifest)", planner)
+        resolve = parallel_ci.qualification_mode
+        self.assertEqual('branch-quick', resolve('push', 'refs/heads/topic'))
+        self.assertEqual('pr-affected', resolve('pull_request', 'refs/pull/8/merge'))
+        self.assertEqual('pr-full-safe', resolve('pull_request', 'refs/pull/8/merge',
+                                                  trusted_pr=True, full_marker=True))
+        self.assertEqual('pr-affected', resolve('pull_request', 'refs/pull/8/merge',
+                                                 trusted_pr=False, full_marker=True))
+        self.assertEqual('main-mandatory', resolve('push', 'refs/heads/main'))
+        sha = 'a' * 40
+        self.assertEqual('pre-pr-full-safe', resolve('workflow_dispatch', 'refs/heads/topic',
+                                                      acknowledge='RUN PRE-PR FULL', expected_sha=sha,
+                                                      actual_sha=sha))
+        for ref, ack, expected in (('refs/heads/main', 'RUN PRE-PR FULL', sha),
+                                   ('refs/heads/topic', '', sha),
+                                   ('refs/heads/topic', 'RUN PRE-PR FULL', 'b' * 40)):
+            with self.subTest(ref=ref, ack=ack, expected=expected), self.assertRaises(parallel_ci.gate.GateError):
+                resolve('workflow_dispatch', ref, acknowledge=ack, expected_sha=expected, actual_sha=sha)
+        base = gate.git('rev-parse', 'HEAD^')
+        legacy_full = gate.make_mandatory_suite_plan(base, self.manifest, None)
+        prepr_full = gate.make_mandatory_suite_plan(base, self.manifest, None)
+        self.assertEqual(legacy_full, prepr_full)
+        self.assertTrue(legacy_full['mandatory_suite_required'])
+        self.assertFalse(gate.make_plan(base, self.manifest, None, include_native=True)['mandatory_suite_required'])
+        with mock.patch.object(parallel_ci.gate, 'git', return_value='ci:full-acceptance'):
+            self.assertEqual('pr-full-safe', parallel_ci.resolve_plan_mode(
+                'pull_request', 'refs/pull/8/merge', {'source_commit': sha, 'mandatory_suite_required': True},
+                pr_head_repo='Coxf0rd/fwrouter', repository='Coxf0rd/fwrouter'))
+            with self.assertRaises(parallel_ci.gate.GateError):
+                parallel_ci.resolve_plan_mode(
+                    'pull_request', 'refs/pull/8/merge', {'source_commit': sha, 'mandatory_suite_required': True},
+                    pr_head_repo='fork/fwrouter', repository='Coxf0rd/fwrouter')
+        with self.assertRaises(parallel_ci.gate.GateError):
+            parallel_ci.resolve_plan_mode('push', 'refs/heads/main',
+                                          {'source_commit': sha, 'mandatory_suite_required': False})
 
-        start = workflow.index("          PLAN_ARGS=(--base")
-        end = workflow.index("          python tests/gates/gate.py plan ", start)
-        policy = workflow[start:end]
-        with tempfile.TemporaryDirectory(prefix="fwrouter-mandatory-event-policy-") as temp:
-            repo = Path(temp)
-            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"],
-                           cwd=repo, check=True)
-            (repo / "event.txt").write_text("event policy\n", encoding="utf-8")
-            subprocess.run(["git", "add", "event.txt"], cwd=repo, check=True)
-            subprocess.run(["git", "commit", "--quiet", "-m", "ci:full-acceptance"], cwd=repo, check=True)
+    def test_shared_prepare_preserves_legacy_plan_selection_by_context(self) -> None:
+        changed = ['backend/fwrouter_api/services/bootstrap.py']
+        sha, base = 'a' * 40, 'b' * 40
+        cases = (
+            ('push', 'refs/heads/topic', False, 'branch-quick'),
+            ('pull_request', 'refs/pull/1/merge', False, 'pr-affected'),
+            ('pull_request', 'refs/pull/1/merge', True, 'pr-full-safe'),
+            ('pull_request', 'refs/pull/1/merge', False, 'pr-affected-foreign-marker'),
+            ('push', 'refs/heads/main', False, 'main-mandatory'),
+            ('workflow_dispatch', 'refs/heads/topic', False, 'pre-pr-full-safe'),
+            ('workflow_dispatch', 'refs/heads/main', False, 'l6-main'),
+            ('workflow_dispatch', 'refs/heads/topic', False, 'l6-branch'),
+        )
 
-            cases = (
-                ("push", "refs/heads/main", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
-                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
-                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", False, "false"),
-                ("pull_request", "refs/pull/8/merge", "fork/fwrouter", "Coxf0rd/fwrouter", True, "false"),
-                ("push", "refs/heads/feature", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "false"),
-            )
-            for event, ref, head_repo, repository, marker, expected in cases:
-                with self.subTest(event=event, ref=ref, head_repo=head_repo):
-                    subprocess.run(
-                        ["git", "commit", "--quiet", "--allow-empty", "-m",
-                         "ci:full-acceptance" if marker else "ordinary commit"],
-                        cwd=repo, check=True,
-                    )
-                    output_path = repo / "github-output.txt"
-                    env = {
-                        **os.environ,
-                        "EVENT_NAME": event,
-                        "BASE": "base-commit",
-                        "GITHUB_REF": ref,
-                        "PR_HEAD_REPO": head_repo,
-                        "GITHUB_REPOSITORY": repository,
-                        "PLAN": str(repo / "plan.json"),
-                        "GITHUB_OUTPUT": str(output_path),
-                    }
-                    output_path.write_text("", encoding="utf-8")
-                    completed = subprocess.run(
-                        ["bash", "-euo", "pipefail", "-c", policy], cwd=repo,
-                        env=env, text=True, capture_output=True, check=False,
-                    )
-                    self.assertEqual(0, completed.returncode, completed.stderr)
-                    args = subprocess.run(
-                        ["bash", "-euo", "pipefail", "-c", policy + '\nprintf \'%s\\n\' "${PLAN_ARGS[@]}"'],
-                        cwd=repo, env=env, text=True, capture_output=True, check=False,
-                    )
-                    self.assertEqual(0, args.returncode, args.stderr)
-                    self.assertEqual(expected == "true", "--mandatory-all" in args.stdout.splitlines())
+        def normalized(plan):
+            self.assertEqual(plan['plan_digest'], gate.canonical_digest(
+                {key: value for key, value in plan.items() if key != 'plan_digest'}))
+            return {key: value for key, value in plan.items()
+                    if key not in {'created_utc', 'plan_digest'}}
+
+        for event, ref, trusted, expected_mode in cases:
+            with self.subTest(mode=expected_mode), tempfile.TemporaryDirectory() as temp:
+                output = Path(temp) / 'plan.json'
+                l6 = expected_mode.startswith('l6-')
+                quick = expected_mode == 'branch-quick'
+                args = SimpleNamespace(
+                    event=event, ref=ref, event_before=base, pr_base=base,
+                    pr_head_repo='repo' if trusted else ('fork/repo' if expected_mode == 'pr-affected-foreign-marker' else ''),
+                    repository='repo', acknowledge='RUN L6' if l6 else
+                    ('RUN PRE-PR FULL' if expected_mode == 'pre-pr-full-safe' else ''),
+                    expected_sha=sha if l6 or expected_mode == 'pre-pr-full-safe' else '',
+                    actual_sha=sha, l6=l6, l6_mode=('main' if expected_mode == 'l6-main' else 'branch' if l6 else ''),
+                    quick_push=quick, lint_changed=False, state=None, manifest=gate.MANIFEST,
+                    plan=output, github_output=None)
+
+                def git_side_effect(*command):
+                    if command == ('rev-parse', 'HEAD'):
+                        return sha
+                    if command == ('rev-parse', f'{base}^{{commit}}'):
+                        return base
+                    if command == ('log', '-1', '--format=%B'):
+                        return 'ci:full-acceptance' if trusted else 'ordinary commit'
+                    if command == ('merge-base', 'HEAD', 'refs/remotes/origin/main'):
+                        return base
+                    raise AssertionError(command)
+
+                with mock.patch.object(parallel_ci.gate, 'git', side_effect=git_side_effect), \
+                        mock.patch.object(gate, 'git', side_effect=git_side_effect), \
+                        mock.patch.object(parallel_ci.gate, 'load_manifest', return_value=self.manifest):
+                    if l6:
+                        old_path = Path(temp) / 'legacy-l6.json'
+                        gate.command_full_suite_plan(SimpleNamespace(
+                            manual=True, manifest=gate.MANIFEST, include_native=True, output=old_path))
+                        with mock.patch.object(parallel_ci.gate, 'git', side_effect=git_side_effect):
+                            self.assertEqual(expected_mode, parallel_ci.prepare_plan(args))
+                    else:
+                        old_base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main') if expected_mode == 'pre-pr-full-safe' else (
+                            args.pr_base if event == 'pull_request' else args.event_before)
+                        if expected_mode == 'branch-quick' and old_base == '0' * 40:
+                            old_base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main')
+                        if expected_mode in {'main-mandatory', 'pr-full-safe', 'pre-pr-full-safe'}:
+                            old = gate.make_mandatory_suite_plan(old_base, self.manifest, changed)
+                        elif quick:
+                            old = gate.make_quick_push_plan(old_base, self.manifest, changed)
+                        else:
+                            old = gate.make_plan(old_base, self.manifest, changed, include_native=True)
+                        fake_run = SimpleNamespace(returncode=0, stdout=('\0'.join(changed) + '\0').encode())
+                        with mock.patch.object(parallel_ci.subprocess, 'run', return_value=fake_run):
+                            resolved = 'pr-affected' if expected_mode == 'pr-affected-foreign-marker' else expected_mode
+                            self.assertEqual(resolved, parallel_ci.prepare_plan(args))
+                    new = json.loads(output.read_text(encoding='utf-8'))
+                    if l6:
+                        old = json.loads(old_path.read_text(encoding='utf-8'))
+                    self.assertEqual(normalized(old), normalized(new))
+                    self.assertEqual(old['selected_files'], new['selected_files'])
+                    self.assertEqual(old['required_execution_profiles'], new['required_execution_profiles'])
+
+    def test_shared_prepare_keeps_quick_empty_diff_as_no_plan(self) -> None:
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / 'state'
+            args = SimpleNamespace(event='push', ref='refs/heads/topic', event_before='b' * 40,
+                                   pr_base='', pr_head_repo='', repository='', acknowledge='',
+                                   expected_sha='', actual_sha='', l6=False, l6_mode='', quick_push=True,
+                                   lint_changed=False, state=state, manifest=gate.MANIFEST,
+                                   plan=Path(temp) / 'plan.json', github_output=None)
+            def git_side_effect(*command):
+                return 'a' * 40
+            def run_side_effect(command, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=b'' if command[1] == 'diff' else b'')
+            with mock.patch.object(parallel_ci.gate, 'git', side_effect=git_side_effect), \
+                    mock.patch.object(parallel_ci.subprocess, 'run', side_effect=run_side_effect), \
+                    mock.patch.object(parallel_ci.gate, 'make_quick_push_plan') as planner:
+                self.assertEqual('branch-quick', parallel_ci.prepare_plan(args))
+                planner.assert_not_called()
+            self.assertEqual('unchanged\n', state.read_text())
+            self.assertFalse(args.plan.exists())
 
     def test_mandatory_all_selects_every_safe_suite_and_rejects_omission(self) -> None:
         changed = "backend/fwrouter_api/services/bootstrap.py"
@@ -935,11 +1424,26 @@ class GateContractTests(unittest.TestCase):
             self.assertEqual(["base.py", "committed.py", "intent-to-add.py", "staged.py"], paths)
 
     def test_preflight_lint_precedes_immutable_plan_publication(self) -> None:
-        workflow = (gate.ROOT / '.github/workflows/test-gates.yml').read_text()
-        plan = workflow.split('  plan:', 1)[1].split('  build:', 1)[0]
-        self.assertLess(plan.index('gate.py lint-changed --base'), plan.index('gate.py plan'))
-        self.assertLess(plan.index('gate.py plan'), plan.index('parallel_ci.py configure'))
-        self.assertIn('set -euo pipefail', plan)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'plan.json'
+            base, sha = 'b' * 40, 'a' * 40
+            args = SimpleNamespace(event='pull_request', ref='refs/pull/2/merge',
+                event_before='', pr_base=base, pr_head_repo='fork/repo', repository='repo',
+                acknowledge='', expected_sha='', actual_sha='', l6=False, l6_mode='',
+                quick_push=False, lint_changed=True, state=None, manifest=gate.MANIFEST,
+                plan=output, github_output=None)
+            run_result = SimpleNamespace(returncode=0, stdout=b'')
+            with mock.patch.object(parallel_ci.gate, 'git', side_effect=lambda *cmd: sha if cmd == ('rev-parse', 'HEAD') else 'ordinary'), \
+                    mock.patch.object(parallel_ci.subprocess, 'run', return_value=run_result), \
+                    mock.patch.object(parallel_ci.gate, 'command_lint_changed', return_value=1) as lint, \
+                    mock.patch.object(parallel_ci.gate, 'make_plan') as constructor, \
+                    mock.patch.object(parallel_ci.gate, 'atomic_json') as publish, \
+                    self.assertRaisesRegex(parallel_ci.gate.GateError, 'changed-source lint failed'):
+                parallel_ci.prepare_plan(args)
+            lint.assert_called_once_with(SimpleNamespace(base=base))
+            constructor.assert_not_called()
+            publish.assert_not_called()
+            self.assertFalse(output.exists())
 
 
     def test_provider_plan_expands_declared_domains_and_uses_l5_anchors_as_primary_levels(self) -> None:
@@ -1233,11 +1737,13 @@ class GateContractTests(unittest.TestCase):
         import yaml
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text()
         jobs = yaml.safe_load(workflow)["jobs"]
-        self.assertEqual("Affected L0-L5 with hosted profiles", jobs["affected"]["name"])
+        self.assertIn("Affected L0-L5 with hosted profiles", jobs["affected"]["name"])
+        self.assertIn("Pre-PR full safe qualification", jobs["affected"]["name"])
         self.assertEqual("always()", jobs["affected"]["if"])
         self.assertEqual(set(parallel_ci.ROLES), set(jobs["affected"]["needs"]))
-        self.assertIn('BASE="$PR_BASE_SHA"', workflow)
-        self.assertIn('BASE="$PUSH_BASE_SHA"', workflow)
+        self.assertIn('--pr-base "$PR_BASE_SHA"', workflow)
+        self.assertIn('--event-before "$PUSH_BASE_SHA"', workflow)
+        self.assertIn('parallel_ci.py prepare', workflow)
         self.assertNotIn('BASE="HEAD^"', workflow)
         self.assertIn("github.event.pull_request.head.sha || github.sha", workflow)
         self.assertEqual(["plan"], jobs["unit"]["needs"])
@@ -1917,6 +2423,8 @@ class GateContractTests(unittest.TestCase):
         report = {
             "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
             "manifest_version": self.manifest["version"], "manifest_digest": gate.canonical_digest(self.manifest),
+            "host_qualification_status": "NOT_VERIFIED", "node_status": {},
+            "authorized_skip_reasons": {},
             "tool_version": gate.TOOL_VERSION, "eligible": True,
             "completed_levels": ["L0", "L1"], "l0": {"status": "passed"},
             "executions": [{"path": "@L0", "status": "passed"}],
@@ -2252,10 +2760,14 @@ class GateContractTests(unittest.TestCase):
         workflow = yaml.safe_load((gate.ROOT / ".github/workflows/push-fast.yml").read_text())
         steps = workflow["jobs"]["fast"]["steps"]
         step = next(item for item in steps if item.get("name") == "Plan and run routine affected L0-L1 only")
+        summary_step = steps[-1]
         script = step["run"]
-        self.assertLess(script.index("gate.py lint-changed --base"), script.index("git diff --name-only -z"))
-        self.assertLess(script.index("git diff --name-only -z"), script.index("gate.py plan"))
-        self.assertIn("Test execution NOT RUN: source tree unchanged; no test/deploy qualification.", script)
+        self.assertIn("parallel_ci.py prepare", script)
+        self.assertIn("--quick-push --lint-changed", script)
+        self.assertIn('if [ "$(cat "$RUNNER_TEMP/fwrouter-fast-state")" = unchanged ]; then exit 0; fi', script)
+        self.assertIn("quick-summary", steps[-1]["run"])
+        self.assertEqual("always()", steps[-1]["if"])
+        self.assertNotIn("actions/upload-artifact", workflow)
 
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
@@ -2296,14 +2808,23 @@ class GateContractTests(unittest.TestCase):
                 #!/usr/bin/env bash
                 set -eu
                 printf '%s\\n' "$*" >> "$STUB_CALLS"
-                if [[ "$1" == tests/gates/gate.py && "$2" == lint-changed ]]; then
-                  exit "$STUB_LINT_EXIT"
-                fi
-                if [[ "$1" == tests/gates/gate.py && "$2" == plan ]]; then
+                if [[ "$1" == tests/gates/parallel_ci.py && "$2" == prepare ]]; then
+                  [[ "$STUB_LINT_EXIT" == 0 ]] || exit "$STUB_LINT_EXIT"
+                  git cat-file -e "${EVENT_BEFORE}^{commit}"
+                  changed="$(git diff --name-only -z "$EVENT_BEFORE" HEAD --)"
+                  state=''
+                  plan=''
                   while (($#)); do
-                    if [[ "$1" == --output ]]; then shift; printf '{}\\n' > "$1"; break; fi
+                    if [[ "$1" == --state ]]; then shift; state="$1"; fi
+                    if [[ "$1" == --plan ]]; then shift; plan="$1"; fi
                     shift
                   done
+                  if [[ -z "$changed" ]]; then
+                    printf 'unchanged\\n' > "$state"
+                  else
+                    printf 'changed\\n' > "$state"
+                    printf '{}\\n' > "$plan"
+                  fi
                   exit 0
                 fi
                 if [[ "$1" == tests/gates/gate.py && "$2" == run ]]; then
@@ -2313,6 +2834,21 @@ class GateContractTests(unittest.TestCase):
                   done
                   echo STUB_TEST_RUN
                   exit "$STUB_RUN_EXIT"
+                fi
+                if [[ "$1" == tests/gates/evidence_bundle.py && "$2" == quick-summary ]]; then
+                  output=''
+                  state=''
+                  while (($#)); do
+                    if [[ "$1" == --output ]]; then shift; output="$1"; fi
+                    if [[ "$1" == --state ]]; then shift; state="$1"; fi
+                    shift
+                  done
+                  if [[ -f "$state" && "$(cat "$state")" == unchanged ]]; then
+                    printf 'Quick-scope result: NOT RUN\\nSource tree unchanged; no test/deploy qualification.\\n' > "$output"
+                  else
+                    printf 'Quick-scope result: INCOMPLETE\\n' > "$output"
+                  fi
+                  exit 0
                 fi
                 exit 91
             """), encoding="utf-8")
@@ -2326,6 +2862,13 @@ class GateContractTests(unittest.TestCase):
                 "STUB_CALLS": str(root / "calls.log"),
                 "STUB_LINT_EXIT": lint_exit,
                 "STUB_RUN_EXIT": run_exit,
+                "SOURCE_SHA": "a" * 40,
+                "EVENT_NAME": "push",
+                "EVENT_REF": "refs/heads/topic",
+                "EXECUTION_OUTCOME": "failure" if run_exit != "0" else "success",
+                "RUN_URL": "https://github.com/example/fwrouter/actions/runs/123",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "1",
             })
             Path(env["RUNNER_TEMP"]).mkdir()
             if fail_diff:
@@ -2338,6 +2881,9 @@ class GateContractTests(unittest.TestCase):
                 git_stub.chmod(0o755)
             completed = subprocess.run(["bash", "-c", script], cwd=repo, env=env,
                                        capture_output=True, text=True)
+            summary_completed = subprocess.run(["bash", "-c", summary_step["run"]], cwd=repo, env=env,
+                                               capture_output=True, text=True)
+            self.assertEqual(0, summary_completed.returncode, summary_completed.stderr)
             calls = Path(env["STUB_CALLS"]).read_text(encoding="utf-8").splitlines() \
                 if Path(env["STUB_CALLS"]).exists() else []
             summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text(encoding="utf-8") \
@@ -2347,8 +2893,9 @@ class GateContractTests(unittest.TestCase):
 
         completed, calls, summary, artifacts = execute_case(None)
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(1, len(calls))
-        self.assertIn("lint-changed", calls[0])
+        self.assertEqual(2, len(calls))
+        self.assertIn("prepare", calls[0])
+        self.assertIn("quick-summary", calls[1])
         self.assertIn("NOT RUN", summary)
         self.assertIn("no test/deploy qualification", summary)
         self.assertNotIn("fwrouter-fast-plan.json", artifacts)
@@ -2361,10 +2908,11 @@ class GateContractTests(unittest.TestCase):
                 completed, calls, summary, artifacts = execute_case(kind)
                 self.assertEqual(0, completed.returncode, completed.stderr)
                 self.assertEqual(3, len(calls), calls)
-                self.assertIn("lint-changed", calls[0])
-                self.assertIn("gate.py plan", calls[1])
-                self.assertIn("gate.py run", calls[2])
+                self.assertIn("prepare", calls[0])
+                self.assertIn("gate.py run", calls[1])
+                self.assertIn("quick-summary", calls[2])
                 self.assertNotIn("NOT RUN", summary)
+                self.assertIn("INCOMPLETE", summary)
                 self.assertIn("fwrouter-fast-plan.json", artifacts)
                 self.assertIn("fwrouter-fast-report.json", artifacts)
 
@@ -2374,22 +2922,26 @@ class GateContractTests(unittest.TestCase):
 
         completed, calls, _summary, _artifacts = execute_case(None, fail_diff=True)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual(1, len(calls))
-        self.assertIn("lint-changed", calls[0])
+        self.assertEqual(2, len(calls))
+        self.assertIn("prepare", calls[0])
 
         completed, calls, _summary, _artifacts = execute_case(None, lint_exit="7")
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual(1, len(calls))
+        self.assertEqual(2, len(calls))
 
         invalid = "f" * 40
         completed, calls, _summary, _artifacts = execute_case(None, before=invalid)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual([], calls)
+        self.assertEqual(2, len(calls))
+        self.assertIn("prepare", calls[0])
+        self.assertIn("quick-summary", calls[1])
 
         zero_sha = "0" * 40
         completed, calls, _summary, _artifacts = execute_case(None, before=zero_sha)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual([], calls)
+        self.assertEqual(2, len(calls))
+        self.assertIn("prepare", calls[0])
+        self.assertIn("quick-summary", calls[1])
 
     def test_acceptance_tail_diagnostic_repetitions_are_bounded_sequential_and_isolated(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
