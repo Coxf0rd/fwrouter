@@ -2621,10 +2621,14 @@ class GateContractTests(unittest.TestCase):
         workflow = yaml.safe_load((gate.ROOT / ".github/workflows/push-fast.yml").read_text())
         steps = workflow["jobs"]["fast"]["steps"]
         step = next(item for item in steps if item.get("name") == "Plan and run routine affected L0-L1 only")
+        summary_step = steps[-1]
         script = step["run"]
         self.assertLess(script.index("gate.py lint-changed --base"), script.index("git diff --name-only -z"))
         self.assertLess(script.index("git diff --name-only -z"), script.index("gate.py plan"))
-        self.assertIn("Test execution NOT RUN: source tree unchanged; no test/deploy qualification.", script)
+        self.assertIn('printf \'unchanged\\n\' > "$RUNNER_TEMP/fwrouter-fast-state"', script)
+        self.assertIn("quick-summary", steps[-1]["run"])
+        self.assertEqual("always()", steps[-1]["if"])
+        self.assertNotIn("actions/upload-artifact", workflow)
 
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
@@ -2683,6 +2687,21 @@ class GateContractTests(unittest.TestCase):
                   echo STUB_TEST_RUN
                   exit "$STUB_RUN_EXIT"
                 fi
+                if [[ "$1" == tests/gates/evidence_bundle.py && "$2" == quick-summary ]]; then
+                  output=''
+                  state=''
+                  while (($#)); do
+                    if [[ "$1" == --output ]]; then shift; output="$1"; fi
+                    if [[ "$1" == --state ]]; then shift; state="$1"; fi
+                    shift
+                  done
+                  if [[ -f "$state" && "$(cat "$state")" == unchanged ]]; then
+                    printf 'Quick-scope result: NOT RUN\\nSource tree unchanged; no test/deploy qualification.\\n' > "$output"
+                  else
+                    printf 'Quick-scope result: INCOMPLETE\\n' > "$output"
+                  fi
+                  exit 0
+                fi
                 exit 91
             """), encoding="utf-8")
             python_stub.chmod(0o755)
@@ -2695,6 +2714,13 @@ class GateContractTests(unittest.TestCase):
                 "STUB_CALLS": str(root / "calls.log"),
                 "STUB_LINT_EXIT": lint_exit,
                 "STUB_RUN_EXIT": run_exit,
+                "SOURCE_SHA": "a" * 40,
+                "EVENT_NAME": "push",
+                "EVENT_REF": "refs/heads/topic",
+                "EXECUTION_OUTCOME": "failure" if run_exit != "0" else "success",
+                "RUN_URL": "https://github.com/example/fwrouter/actions/runs/123",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "1",
             })
             Path(env["RUNNER_TEMP"]).mkdir()
             if fail_diff:
@@ -2707,6 +2733,9 @@ class GateContractTests(unittest.TestCase):
                 git_stub.chmod(0o755)
             completed = subprocess.run(["bash", "-c", script], cwd=repo, env=env,
                                        capture_output=True, text=True)
+            summary_completed = subprocess.run(["bash", "-c", summary_step["run"]], cwd=repo, env=env,
+                                               capture_output=True, text=True)
+            self.assertEqual(0, summary_completed.returncode, summary_completed.stderr)
             calls = Path(env["STUB_CALLS"]).read_text(encoding="utf-8").splitlines() \
                 if Path(env["STUB_CALLS"]).exists() else []
             summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text(encoding="utf-8") \
@@ -2716,8 +2745,9 @@ class GateContractTests(unittest.TestCase):
 
         completed, calls, summary, artifacts = execute_case(None)
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(1, len(calls))
+        self.assertEqual(2, len(calls))
         self.assertIn("lint-changed", calls[0])
+        self.assertIn("quick-summary", calls[1])
         self.assertIn("NOT RUN", summary)
         self.assertIn("no test/deploy qualification", summary)
         self.assertNotIn("fwrouter-fast-plan.json", artifacts)
@@ -2729,11 +2759,13 @@ class GateContractTests(unittest.TestCase):
             with self.subTest(change=kind):
                 completed, calls, summary, artifacts = execute_case(kind)
                 self.assertEqual(0, completed.returncode, completed.stderr)
-                self.assertEqual(3, len(calls), calls)
+                self.assertEqual(4, len(calls), calls)
                 self.assertIn("lint-changed", calls[0])
                 self.assertIn("gate.py plan", calls[1])
                 self.assertIn("gate.py run", calls[2])
+                self.assertIn("quick-summary", calls[3])
                 self.assertNotIn("NOT RUN", summary)
+                self.assertIn("INCOMPLETE", summary)
                 self.assertIn("fwrouter-fast-plan.json", artifacts)
                 self.assertIn("fwrouter-fast-report.json", artifacts)
 
@@ -2743,22 +2775,24 @@ class GateContractTests(unittest.TestCase):
 
         completed, calls, _summary, _artifacts = execute_case(None, fail_diff=True)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual(1, len(calls))
+        self.assertEqual(2, len(calls))
         self.assertIn("lint-changed", calls[0])
 
         completed, calls, _summary, _artifacts = execute_case(None, lint_exit="7")
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual(1, len(calls))
+        self.assertEqual(2, len(calls))
 
         invalid = "f" * 40
         completed, calls, _summary, _artifacts = execute_case(None, before=invalid)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual([], calls)
+        self.assertEqual(1, len(calls))
+        self.assertIn("quick-summary", calls[0])
 
         zero_sha = "0" * 40
         completed, calls, _summary, _artifacts = execute_case(None, before=zero_sha)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual([], calls)
+        self.assertEqual(1, len(calls))
+        self.assertIn("quick-summary", calls[0])
 
     def test_acceptance_tail_diagnostic_repetitions_are_bounded_sequential_and_isolated(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")

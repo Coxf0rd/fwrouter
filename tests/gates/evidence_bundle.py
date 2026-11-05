@@ -9,6 +9,7 @@ recorded source commit; files carried inside the bundle are never executed.
 from __future__ import annotations
 
 import argparse
+import html
 import hashlib
 import json
 import os
@@ -16,7 +17,6 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 from typing import Any
@@ -912,61 +912,402 @@ def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
     return projected_payload
 
 
+def _summary_json(path: Path | None) -> dict[str, Any] | None:
+    if path is None or path.is_symlink() or not path.is_file():
+        return None
+    try:
+        value = read_json(path)
+    except (OSError, ValueError, gate.GateError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _record_digest_valid(value: dict[str, Any], field: str) -> bool:
+    digest = value.get(field)
+    unsigned = dict(value)
+    unsigned.pop(field, None)
+    return isinstance(digest, str) and digest == gate.canonical_digest(unsigned)
+
+
+def _summary_profile(event: str, ref: str, workflow_kind: str) -> str:
+    if workflow_kind == 'l6':
+        return 'L6 main regression' if ref == 'refs/heads/main' else 'L6 non-promotional branch regression'
+    if event == 'pull_request':
+        return 'PR required qualification'
+    if event == 'push' and ref == 'refs/heads/main':
+        return 'main required qualification'
+    if event == 'push' and ref.startswith('refs/heads/'):
+        return 'branch push qualification'
+    return 'profile unavailable'
+
+
+def _summary_context_valid(event: str, ref: str, workflow_kind: str) -> bool:
+    if workflow_kind == 'l6':
+        return (event in {'schedule', 'workflow_dispatch'} and ref.startswith('refs/heads/')
+                and (event != 'schedule' or ref == 'refs/heads/main'))
+    return ((event == 'pull_request' and ref.startswith('refs/pull/'))
+            or (event == 'push' and ref == 'refs/heads/main'))
+
+
+def _safe_summary_text(value: Any, limit: int = 240) -> str:
+    redacted = gate.redact_failure_output(str(value)).replace('\n', ' ').replace('\r', ' ')
+    return html.escape(redacted[:limit], quote=True).replace('|', '&#124;').replace('`', '&#96;')
+
+
 def summary(args: argparse.Namespace) -> int:
-    outcomes = {"aggregate": args.aggregate_outcome, "bundle": args.bundle_outcome,
-                "publication": args.publish_outcome}
-    overall_pass = all(value == "success" for value in outcomes.values())
-    status = "PASS" if overall_pass else "FAIL / INCOMPLETE"
-    source = "unavailable"
-    report = args.required / "required-result.json"
-    if report.is_file() and not report.is_symlink():
-        value = read_json(report)
-        source = str(value.get("source_commit", "unavailable"))
-        if value.get("eligible") is not True and value.get("error"):
-            status += ": " + gate.redact_failure_output(str(value["error"]))[:500]
-    non_success_jobs = []
-    if report.is_file() and not report.is_symlink():
-        required = read_json(report)
-        jobs = required.get("upstream", {})
-        if isinstance(jobs, dict):
-            non_success_jobs = [f"{name}={row.get('result', 'missing')}" for name, row in jobs.items()
-                                if not isinstance(row, dict) or row.get("result") != "success"]
-    artifact_id = args.artifact_id.strip()
-    artifact_digest = args.artifact_digest.strip().lower()
-    artifact_digest = artifact_digest.removeprefix("sha256:")
-    artifact_record_valid = artifact_id.isdigit() and int(artifact_id or "0") > 0 \
-        and len(artifact_digest) == 64 and all(char in "0123456789abcdef" for char in artifact_digest)
-    if outcomes["aggregate"] == "success" and (
-            outcomes["bundle"] != "success" or outcomes["publication"] != "success" or not artifact_record_valid):
-        status = "FAIL / INCOMPLETE"
-    lines = ["## FWRouter CI qualification and artifact result", "", f"- Overall result: **{status}**",
-             f"- Aggregate: `{outcomes['aggregate']}`; bundle build/verification: `{outcomes['bundle']}`; publication: `{outcomes['publication']}`",
-             f"- Source SHA: `{source}`", f"- Run: `{args.run_id}`, attempt `{args.attempt}`",
-             f"- Non-success upstream jobs: `{', '.join(non_success_jobs) if non_success_jobs else 'none recorded'}`",
-             f"- Final artifact ID: `{artifact_id or 'unavailable'}`; digest: `{artifact_digest or 'unavailable'}`",
-             "- Intermediate evidence retention: 1 day; final evidence: 7 days; failed diagnostics: 3 days.",
-             "- Bundle checksums provide integrity checks, not an authenticated signature.", ""]
-    visibility_path = args.required / "visibility.json"
-    visibility_valid = False
-    if visibility_path.is_file() and not visibility_path.is_symlink():
-        import visibility_report
-        visibility = read_json(visibility_path)
-        lines.append(visibility_report.summary(visibility))
-        visibility_valid = (visibility.get("schema") == "fwrouter-ci-visibility/v1"
-                            and visibility.get("qualification_status") == "passed"
-                            and not visibility.get("not_run_selected_files")
-                            and not visibility.get("diagnostic_limitations"))
+    """Write compact, fail-closed human visibility for a completed workflow job."""
+    outcomes = {"aggregate": getattr(args, 'aggregate_outcome', 'unknown'),
+                "bundle": getattr(args, 'bundle_outcome', 'unknown'),
+                "publication": getattr(args, 'publish_outcome', 'unknown')}
+    run_id, attempt = str(getattr(args, 'run_id', '')), str(getattr(args, 'attempt', ''))
+    expected_sha = str(getattr(args, 'expected_sha', '') or '')
+    event, ref = str(getattr(args, 'event', '') or ''), str(getattr(args, 'ref', '') or '')
+    workflow_kind = getattr(args, 'workflow_kind', 'main')
+    manifest = gate.load_manifest()
+    jobs = _summary_json(getattr(args, 'jobs', None))
+    plan_path = getattr(args, 'plan', None)
+    plan = _summary_json(plan_path)
+    plan_valid = False
+    if plan is not None and expected_sha and run_id.isdigit() and attempt.isdigit():
+        try:
+            gate.ensure_plan(plan, manifest, allow_l6=workflow_kind == 'l6')
+            plan_valid = plan.get('source_commit') == expected_sha
+        except (gate.GateError, TypeError, ValueError):
+            plan_valid = False
+    context_valid = bool(plan_valid and len(expected_sha) == 40
+                         and all(char in '0123456789abcdef' for char in expected_sha)
+                         and run_id.isdigit() and attempt.isdigit()
+                         and _summary_context_valid(event, ref, workflow_kind))
+    required = _summary_json(Path(args.required) / 'required-result.json')
+    aggregate = _summary_json(Path(args.required) / 'fwrouter-aggregate.json')
+    visibility = _summary_json(Path(args.required) / 'visibility.json')
+    visibility_problem = 'visibility report is missing, malformed, or has a mismatched digest/identity'
+    identity: dict[str, Any] = {}
+    if plan_valid:
+        identity = {'source_commit': expected_sha, 'plan_digest': plan.get('plan_digest'),
+                    'manifest_digest': plan.get('manifest_digest'), 'manifest_version': plan.get('manifest_version'),
+                    'run_id': run_id, 'run_attempt': attempt}
+    schema = 'fwrouter-l6-required/v1' if workflow_kind == 'l6' else 'fwrouter-parallel-required/v1'
+    required_valid = bool(required is not None and identity and required.get('schema') == schema
+                          and required.get('eligible') is True
+                          and all(type(required.get(key)) is type(value) and required.get(key) == value
+                                  for key, value in identity.items()))
+    recovery_files = {'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
+                      'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'}
+    recovery_required = bool(plan_valid and recovery_files <= set(plan.get('selected_files', [])))
+    if required_valid:
+        if workflow_kind == 'l6':
+            expected_scope = ('main-regression' if ref == 'refs/heads/main'
+                              else 'branch-regression-non-promotional')
+            required_valid = (required.get('qualification_scope') == expected_scope
+                              and required.get('minimum_repeats') == 2
+                              and required.get('safe_recovery_required') is True)
+        else:
+            required_valid = required.get('safe_recovery_required') is recovery_required
+    current_jobs_valid = bool(isinstance(jobs, dict) and set(jobs) == set(parallel_ci.ROLES)
+                              and all(isinstance(row, dict) and row.get('result') in
+                                      {'success', 'failure', 'cancelled', 'skipped'} for row in jobs.values()))
+    if current_jobs_valid and required is not None:
+        required_valid = required_valid and required.get('upstream') == jobs
+    strict_valid = bool(aggregate is not None and identity
+                        and aggregate.get('source_commit') == expected_sha
+                        and aggregate.get('plan_digest') == identity['plan_digest']
+                        and aggregate.get('manifest_version') == identity['manifest_version']
+                        and aggregate.get('selected_files') == sorted(plan.get('selected_files', []))
+                        and aggregate.get('main_smoke_required') is (event == 'push' and ref == 'refs/heads/main'
+                                                                       and workflow_kind != 'l6')
+                        and aggregate.get('host_qualification_status') == 'NOT_VERIFIED'
+                        and aggregate.get('hosted_repeats_required') == (2 if workflow_kind == 'l6' else 1)
+                        and type(aggregate.get('eligible')) is bool
+                        and isinstance(aggregate.get('blocked_reasons'), list)
+                        and isinstance(aggregate.get('missing_levels'), list))
+    visibility_valid = bool(visibility is not None and identity
+                            and visibility.get('schema') == 'fwrouter-ci-visibility/v1'
+                            and visibility.get('source_commit') == expected_sha
+                            and visibility.get('plan_digest') == identity['plan_digest']
+                            and visibility.get('run_id') == run_id
+                            and visibility.get('run_attempt') == attempt
+                            and visibility.get('discovered_suite_file_count') == len(manifest.get('test_files', []))
+                            and type(visibility.get('selected_suite_file_count')) is int
+                            and type(visibility.get('observed_selected_suite_file_count')) is int
+                            and _record_digest_valid(visibility, 'visibility_digest'))
+    if visibility is None:
+        visibility_problem = 'visibility report is missing or malformed'
+    elif visibility.get('schema') != 'fwrouter-ci-visibility/v1':
+        visibility_problem = 'visibility report schema does not match the current contract'
+    elif visibility.get('source_commit') != expected_sha:
+        visibility_problem = 'visibility source SHA does not match the expected workflow SHA'
+    elif visibility.get('plan_digest') != identity.get('plan_digest'):
+        visibility_problem = 'visibility plan digest does not match the current immutable plan'
+    elif visibility.get('run_id') != run_id:
+        visibility_problem = 'visibility run ID does not match this workflow run'
+    elif visibility.get('run_attempt') != attempt:
+        visibility_problem = 'visibility run attempt does not match this workflow attempt'
+    elif not _record_digest_valid(visibility, 'visibility_digest'):
+        visibility_problem = 'visibility digest is invalid'
+    elif visibility.get('discovered_suite_file_count') != len(manifest.get('test_files', [])):
+        visibility_problem = 'discovered suite count does not match the checked-out manifest'
+    if visibility_valid:
+        strict_eligible = aggregate.get('eligible') is True if aggregate else False
+        required_eligible = required.get('eligible') is True if required else False
+        visibility_valid = (visibility.get('strict_aggregate_eligible') is strict_eligible
+                            and visibility.get('required_result_eligible') is required_eligible
+                            and visibility.get('qualification_status') ==
+                            ('passed' if strict_eligible and required_eligible else 'incomplete_or_failed'))
+        executions = visibility.get('executions')
+        statuses = visibility.get('statuses')
+        visibility_pass_valid = False
+        if not isinstance(executions, list) or not isinstance(statuses, dict):
+            visibility_valid = False
+        else:
+            observed_ids = [row.get('node_id') for row in executions if isinstance(row, dict)]
+            observed_statuses = [row.get('status') for row in executions if isinstance(row, dict)]
+            expected_status_counts = {key: sum(value == key for value in observed_statuses)
+                                      for key in ('passed', 'failed', 'skipped', 'blocked', 'not_run')}
+            selected_files = set(plan.get('selected_files', [])) if plan_valid else set()
+            observed_files = {node.split('::', 1)[0] for node in observed_ids if isinstance(node, str)}
+            unique_node_status: dict[str, str] = {}
+            skip_reasons: dict[str, Any] = {}
+            conflicting_nodes: set[str] = set()
+            for row in executions:
+                if not isinstance(row, dict) or not isinstance(row.get('node_id'), str):
+                    continue
+                node = row['node_id']
+                status = row.get('status')
+                if node in unique_node_status and unique_node_status[node] != status:
+                    conflicting_nodes.add(node)
+                else:
+                    unique_node_status[node] = status
+                if status == 'skipped':
+                    reason = row.get('skip_reason')
+                    if node in skip_reasons and skip_reasons[node] != reason:
+                        conflicting_nodes.add(node)
+                    else:
+                        skip_reasons[node] = reason
+            selected_observed_files = selected_files & observed_files
+            not_run_files = sorted(selected_files - selected_observed_files)
+            observed_path_binding_valid = (
+                observed_files <= selected_files
+                and visibility.get('selected_suite_file_count') == len(selected_files)
+                and visibility.get('observed_selected_suite_file_count') == len(selected_observed_files)
+                and visibility.get('not_run_selected_files') == not_run_files)
+            if not observed_path_binding_valid:
+                visibility_problem = 'observed case suite paths/counts do not match the immutable selected plan'
+            try:
+                gate.validate_authorized_node_skips(
+                    manifest, unique_node_status, skip_reasons, required_paths=selected_files)
+                skip_policy_valid = not conflicting_nodes
+            except (gate.GateError, TypeError, ValueError) as exc:
+                skip_policy_valid = False
+                visibility_problem = str(exc)
+            if conflicting_nodes:
+                visibility_problem = 'repeated case IDs have conflicting terminal statuses or SKIP reasons'
+            try:
+                visibility_pass_valid = (skip_policy_valid and gate.policy_complete_node_results(
+                    manifest, unique_node_status, skip_reasons, required_paths=selected_files))
+            except (gate.GateError, TypeError, ValueError):
+                visibility_pass_valid = False
+            visibility_valid = (visibility_valid and len(observed_ids) == len(executions)
+                                and all(isinstance(node, str) for node in observed_ids)
+                                and all(isinstance(value, str) and value in expected_status_counts
+                                        for value in observed_statuses)
+                                and type(visibility.get('unique_test_coverage')) is int
+                                and visibility.get('unique_test_coverage') == len(set(observed_ids))
+                                and type(visibility.get('total_test_executions')) is int
+                                and visibility.get('total_test_executions') == len(executions)
+                                and statuses == expected_status_counts
+                                and observed_path_binding_valid and skip_policy_valid
+                                and type(visibility.get('selected_suite_file_count')) is int
+                                and type(visibility.get('observed_selected_suite_file_count')) is int
+                                and 0 <= visibility['observed_selected_suite_file_count']
+                                <= visibility['selected_suite_file_count']
+                                and isinstance(visibility.get('not_run_selected_files'), list)
+                                and len(visibility['not_run_selected_files'])
+                                <= visibility['selected_suite_file_count'])
+    artifact_id = str(getattr(args, 'artifact_id', '') or '').strip()
+    artifact_digest = str(getattr(args, 'artifact_digest', '') or '').strip().lower().removeprefix('sha256:')
+    artifact_valid = (artifact_id.isdigit() and len(artifact_id) <= 20 and int(artifact_id or '0') > 0 and len(artifact_digest) == 64
+                      and all(char in '0123456789abcdef' for char in artifact_digest))
+    run_outcomes_pass = all(value == 'success' for value in outcomes.values())
+    required_roles = parallel_ci.requirements(plan, main_smoke=(event == 'push' and ref == 'refs/heads/main')) if plan_valid else {}
+    failing_jobs = [role for role in parallel_ci.ROLES if required_roles.get(role)
+                    and current_jobs_valid and jobs[role]['result'] == 'failure']
+    incomplete_jobs = [role for role in parallel_ci.ROLES if required_roles.get(role)
+                       and (not current_jobs_valid or jobs[role]['result'] != 'success')]
+    failing_cases = []
+    if visibility_valid:
+        failing_cases = [row for row in visibility.get('executions', []) if isinstance(row, dict)
+                         and row.get('status') == 'failed']
+    explicit_failure = bool(failing_jobs or failing_cases)
+    if context_valid and explicit_failure and not run_outcomes_pass:
+        status = 'FAIL'
+    elif (context_valid and run_outcomes_pass and current_jobs_valid and not incomplete_jobs
+          and required_valid and strict_valid and aggregate.get('eligible') is True
+          and not aggregate.get('blocked_reasons') and not aggregate.get('missing_levels')
+          and aggregate.get('host_qualification_status') == 'NOT_VERIFIED'
+          and (workflow_kind != 'l6' or aggregate.get('hosted_repeats_required') == 2)
+          and visibility_valid and visibility_pass_valid and visibility.get('qualification_status') == 'passed'
+          and not visibility.get('not_run_selected_files') and not visibility.get('diagnostic_limitations')
+          and artifact_valid):
+        status = 'PASS'
     else:
-        reason = ("NOT RUN because strict aggregate did not pass" if outcomes["aggregate"] != "success"
-                  else "missing after aggregate PASS")
-        lines.append(f"## CI V3 test execution\n\n**Visibility report {reason}; qualification is incomplete.**\n")
-    if outcomes["aggregate"] == "success" and not visibility_valid:
-        status = "FAIL / INCOMPLETE"
-        lines[2] = f"- Overall result: **{status}**"
-    Path(args.output).write_text("\n".join(lines), encoding="utf-8")
-    return 2 if (outcomes["aggregate"] == "success" and (
-        outcomes["bundle"] != "success" or outcomes["publication"] != "success" or not artifact_record_valid
-    )) or (outcomes["aggregate"] == "success" and not visibility_valid) else 0
+        status = 'INCOMPLETE'
+
+    run_url = str(getattr(args, 'run_url', '') or '')
+    if not run_url and os.environ.get('GITHUB_SERVER_URL') and os.environ.get('GITHUB_REPOSITORY') and run_id.isdigit():
+        run_url = f"{os.environ['GITHUB_SERVER_URL'].rstrip('/')}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}"
+    run_url = run_url if run_url.startswith(('https://', 'http://')) and not any(c in run_url for c in '\r\n() ') else ''
+    profile = _summary_profile(event, ref, workflow_kind)
+    job_outcomes = ', '.join(
+        f"{role}={_safe_summary_text(jobs[role].get('result', 'missing'))}"
+        for role in parallel_ci.ROLES if current_jobs_valid
+    ) or 'NOT AVAILABLE'
+    lines = ["## FWRouter CI qualification summary", "", f"- Overall result: **{status}**",
+             f"- Profile: **{_safe_summary_text(profile)}**",
+             f"- Source SHA: `{_safe_summary_text(expected_sha or 'NOT AVAILABLE')}`",
+             f"- Event/ref: `{_safe_summary_text(event or 'NOT AVAILABLE')}` / `{_safe_summary_text(ref or 'NOT AVAILABLE')}`",
+             f"- Run: `{_safe_summary_text(run_id or 'NOT AVAILABLE')}`, attempt `{_safe_summary_text(attempt or 'NOT AVAILABLE')}`",
+             f"- Aggregate / bundle / publication step outcomes: `{_safe_summary_text(outcomes['aggregate'])}` / `"
+             f"{_safe_summary_text(outcomes['bundle'])}` / `{_safe_summary_text(outcomes['publication'])}`",
+             f"- Expected job outcomes: {job_outcomes}",
+             f"- Result bundle artifact ID/digest: `{_safe_summary_text(artifact_id or 'NOT AVAILABLE')}` / `"
+             f"{_safe_summary_text(artifact_digest or 'NOT AVAILABLE')}`"]
+    if run_url:
+        lines.append(f"- [Open this run and its job logs]({run_url})")
+    if artifact_valid and context_valid:
+        artifact_name = (f"fwrouter-l6-evidence-{expected_sha}-{run_id}-{attempt}" if workflow_kind == 'l6'
+                         else f"fwrouter-main-evidence-{expected_sha}-{run_id}-{attempt}"
+                         if event == 'push' and ref == 'refs/heads/main'
+                         else f"fwrouter-pr-evidence-{expected_sha}-{run_id}-{attempt}")
+        lines.append(f"- Independently replayable evidence artifact: `{_safe_summary_text(artifact_name)}`")
+    if not context_valid:
+        lines.append('- Qualification identity: **INCOMPLETE**; plan/source/run/event/ref did not validate against this attempt.')
+    elif status == 'INCOMPLETE' and not visibility_valid:
+        lines.append('- Visibility validation: ' + _safe_summary_text(visibility_problem, 360))
+    if current_jobs_valid and required_roles:
+        lines += ['', '| Required job | Result |', '|---|---|']
+        for role in parallel_ci.ROLES:
+            if required_roles.get(role):
+                lines.append(f"| {role} | {_safe_summary_text(jobs[role]['result'])} |")
+    if failing_jobs:
+        lines.append('- Required jobs with explicit failure: ' + ', '.join(_safe_summary_text(role) for role in failing_jobs) + '.')
+    if required is not None and required.get('error'):
+        lines.append('- Aggregation detail: ' + _safe_summary_text(required['error'], 360))
+    if strict_valid and isinstance(aggregate.get('blocked_reasons'), list):
+        for reason in aggregate['blocked_reasons'][:5]:
+            lines.append('- Qualification detail: ' + _safe_summary_text(reason, 240))
+    if visibility_valid:
+        import visibility_report
+        lines += ['', visibility_report.summary(visibility, profile=profile, run_url=run_url)]
+    else:
+        lines += ['', '## CI test execution', '', '**Observed test counts and coverage: NOT AVAILABLE from a validated current-attempt projection.**',
+                  '- Counts withheld: ' + _safe_summary_text(visibility_problem, 360)]
+    if status != 'PASS' and outcomes.get('publication') != 'success':
+        lines += ['', '- Successful evidence bundle: NOT PUBLISHED; inspect the run logs and 3-day diagnostic artifact if available.']
+    lines += ['', '- The downloadable main/L6 result bundle remains the independently replayable machine evidence; this Job Summary is presentation only.', '']
+    content = '\n'.join(lines)
+    max_bytes = 16 * 1024
+    encoded = content.encode('utf-8')
+    if len(encoded) > max_bytes:
+        content = encoded[:max_bytes - 64].decode('utf-8', errors='ignore') + '\n\n[Summary truncated; consult run logs.]\n'
+    Path(args.output).write_text(content, encoding='utf-8')
+    return 2 if status != 'PASS' else 0
+
+
+def quick_summary(args: argparse.Namespace) -> int:
+    """Render branch-only quick checks without retaining a downloadable artifact."""
+    run_id, attempt = str(args.run_id), str(args.attempt)
+    expected_sha = str(args.expected_sha)
+    event, ref = str(args.event), str(args.ref)
+    try:
+        state = (args.state.read_text(encoding='utf-8').strip()
+                 if not args.state.is_symlink() and args.state.is_file() and args.state.stat().st_size <= 128
+                 else 'unknown')
+    except OSError:
+        state = 'unknown'
+    plan = _summary_json(args.plan)
+    report = _summary_json(args.report)
+    status = 'INCOMPLETE'
+    profile = 'non-promotional branch quick selection'
+    verified = False
+    try:
+        if plan is not None and report is not None:
+            gate.ensure_plan(plan, gate.load_manifest())
+            verified = (event == 'push' and ref.startswith('refs/heads/') and ref != 'refs/heads/main'
+                        and run_id.isdigit() and attempt.isdigit() and len(expected_sha) == 40
+                        and all(char in '0123456789abcdef' for char in expected_sha)
+                        and plan.get('source_commit') == expected_sha
+                        and report.get('source_commit') == expected_sha
+                        and report.get('plan_digest') == plan.get('plan_digest')
+                        and _record_digest_valid(report, 'report_digest'))
+    except (OSError, ValueError, gate.GateError, TypeError):
+        verified = False
+    statuses = report.get('node_status', {}) if isinstance(report, dict) else {}
+    statuses = statuses if isinstance(statuses, dict) else {}
+    counts = {key: sum(value == key for value in statuses.values())
+              for key in ('passed', 'failed', 'skipped', 'blocked', 'not_run')}
+    skip_groups: dict[str, int] = {}
+    if verified and isinstance(report.get('authorized_skip_reasons'), dict):
+        for reason in report['authorized_skip_reasons'].values():
+            code = reason.get('reason_code') if isinstance(reason, dict) else None
+            if isinstance(code, str):
+                skip_groups[code] = skip_groups.get(code, 0) + 1
+    if state == 'unchanged':
+        status = 'NOT RUN'
+    elif verified:
+        if any(value == 'failed' for value in statuses.values()):
+            status = 'FAIL'
+        elif args.execution_outcome == 'success' and report.get('eligible') is True \
+                and report.get('blocked_reasons') == []:
+            status = 'PASS'
+        else:
+            status = 'INCOMPLETE'
+    run_url = str(args.run_url or '')
+    run_url = run_url if run_url.startswith(('https://', 'http://')) and not any(c in run_url for c in '\r\n() ') else ''
+    lines = ["## FWRouter branch quick check", "", f"- Quick-scope result: **{status}** (L0-L1 only; non-promotional)",
+             f"- Profile: **{_safe_summary_text(profile)}**",
+             f"- Source SHA: `{_safe_summary_text(expected_sha or 'NOT AVAILABLE')}`; run `{_safe_summary_text(run_id or 'NOT AVAILABLE')}` / attempt `{_safe_summary_text(attempt or 'NOT AVAILABLE')}`",
+             f"- Event/ref: `{_safe_summary_text(event)}` / `{_safe_summary_text(ref)}`",
+             f"- Test execution: `{_safe_summary_text(args.execution_outcome)}`",
+             f"- Selected suite files: **{len(plan.get('selected_files', [])) if verified else 'NOT AVAILABLE'}**; observed case IDs: **{len(set(statuses)) if verified else 'NOT AVAILABLE'}** unique",
+             f"- Outcomes: PASS {counts['passed'] if verified else 'NOT AVAILABLE'}; FAIL {counts['failed'] if verified else 'NOT AVAILABLE'}; SKIP {counts['skipped'] if verified else 'NOT AVAILABLE'}; BLOCKED {counts['blocked'] if verified else 'NOT AVAILABLE'}; NOT RUN {counts['not_run'] if verified else 'NOT AVAILABLE'}"]
+    lines.append('- Authorized SKIP groups: ' +
+                 (', '.join(f'{_safe_summary_text(key)} ({count})' for key, count in sorted(skip_groups.items()))
+                  if skip_groups else ('none observed' if verified else 'NOT AVAILABLE')))
+    host_status = report.get('host_qualification_status', 'NOT_VERIFIED') if verified else 'NOT AVAILABLE'
+    lines.append(f'- Host qualification: **{_safe_summary_text(host_status)}** (not established by this quick lane).')
+    lines.append('- Line/branch coverage: NOT COLLECTED; L5 regression coverage: NOT AVAILABLE in quick scope.')
+    if run_url:
+        lines.append(f"- [Open this run and its job logs]({run_url})")
+    failed_ids = [(node, value) for node, value in statuses.items()
+                  if value in {'failed', 'blocked', 'not_run'}] if verified else []
+    if failed_ids:
+        lines += ['', '### Non-passing case IDs']
+        for node, value in failed_ids[:12]:
+            lines.append(f"- `{_safe_summary_text(node, 240)}` — {_safe_summary_text(value)}")
+        if len(failed_ids) > 12:
+            lines.append(f"- {len(failed_ids) - 12} additional IDs are in the runner report/logs.")
+    diagnostics = report.get('failure_diagnostics', []) if isinstance(report, dict) else []
+    for item in diagnostics[:4] if isinstance(diagnostics, list) else []:
+        if isinstance(item, dict):
+            cause = item.get('path') or item.get('suite') or item.get('captured_output_redacted') or 'failure details unavailable'
+            lines.append('- Failure detail: ' + _safe_summary_text(cause, 240))
+    blocked = report.get('blocked_reasons', []) if isinstance(report, dict) else []
+    for reason in blocked[:5] if isinstance(blocked, list) else []:
+        if isinstance(reason, str):
+            lines.append('- Failure cause: ' + _safe_summary_text(reason, 240))
+    if state == 'unchanged':
+        lines.append('- Source tree unchanged; test execution was NOT RUN. This is not a qualification result.')
+    elif not verified:
+        lines.append('- Plan/report source, digest, or run context did not validate; counts are NOT AVAILABLE.')
+    lines.append('- This quick branch lane does not establish required CI, main, L6, deployment, or live qualification.')
+    content = '\n'.join(lines) + '\n'
+    encoded = content.encode('utf-8')
+    if len(encoded) > 8192:
+        content = encoded[:8128].decode('utf-8', errors='ignore') + '\n[Summary truncated; consult run logs.]\n'
+    Path(args.output).write_text(content, encoding='utf-8')
+    # This reporting step must not mask the quick test step's own result.
+    return 0
 
 
 def main() -> int:
@@ -1013,14 +1354,33 @@ def main() -> int:
     handoff_parser.add_argument("--ref", required=True)
     summary_parser = commands.add_parser("summary")
     summary_parser.add_argument("--required", type=Path, required=True)
+    summary_parser.add_argument("--plan", type=Path)
+    summary_parser.add_argument("--jobs", type=Path)
     summary_parser.add_argument("--output", required=True)
     summary_parser.add_argument("--run-id", required=True)
     summary_parser.add_argument("--attempt", required=True)
+    summary_parser.add_argument("--expected-sha", default="")
+    summary_parser.add_argument("--event", default="")
+    summary_parser.add_argument("--ref", default="")
+    summary_parser.add_argument("--workflow-kind", choices=("main", "l6"), default="main")
     summary_parser.add_argument("--aggregate-outcome", required=True)
     summary_parser.add_argument("--bundle-outcome", required=True)
     summary_parser.add_argument("--publish-outcome", required=True)
     summary_parser.add_argument("--artifact-id", default="")
     summary_parser.add_argument("--artifact-digest", default="")
+    summary_parser.add_argument("--run-url", default="")
+    quick_summary_parser = commands.add_parser("quick-summary")
+    quick_summary_parser.add_argument("--plan", type=Path, required=True)
+    quick_summary_parser.add_argument("--report", type=Path, required=True)
+    quick_summary_parser.add_argument("--state", type=Path, required=True)
+    quick_summary_parser.add_argument("--output", required=True)
+    quick_summary_parser.add_argument("--expected-sha", required=True)
+    quick_summary_parser.add_argument("--run-id", required=True)
+    quick_summary_parser.add_argument("--attempt", required=True)
+    quick_summary_parser.add_argument("--event", required=True)
+    quick_summary_parser.add_argument("--ref", required=True)
+    quick_summary_parser.add_argument("--execution-outcome", required=True)
+    quick_summary_parser.add_argument("--run-url", default="")
     args = parser.parse_args()
     try:
         if args.command == "build":
@@ -1033,11 +1393,27 @@ def main() -> int:
             print(json.dumps(diagnostics(args), sort_keys=True))
         elif args.command == "handoff":
             print(json.dumps(handoff(args), sort_keys=True))
+        elif args.command == "quick-summary":
+            return quick_summary(args)
         else:
             return summary(args)
         return 0
-    except (OSError, ValueError, KeyError, gate.GateError, subprocess.SubprocessError) as exc:
-        print(f"CI evidence bundle: {gate.redact_failure_output(str(exc))[:1024]}", file=sys.stderr)
+    except Exception as exc:
+        print(f"CI evidence bundle: {gate.redact_failure_output(str(exc))[:512]}", file=sys.stderr)
+        if args.command in {'summary', 'quick-summary'}:
+            status = 'INCOMPLETE'
+            profile = (_summary_profile(getattr(args, 'event', ''), getattr(args, 'ref', ''),
+                                        getattr(args, 'workflow_kind', 'main'))
+                       if args.command == 'summary' else 'non-promotional branch quick selection')
+            sha = getattr(args, 'expected_sha', '') or 'NOT AVAILABLE'
+            run_id, attempt = getattr(args, 'run_id', ''), getattr(args, 'attempt', '')
+            fallback = [f"## FWRouter {'CI qualification' if args.command == 'summary' else 'branch quick check'} summary",
+                        '', f"- Overall result: **{status}**", f"- Profile: **{_safe_summary_text(profile)}**",
+                        f"- Source SHA: `{_safe_summary_text(sha)}`; run `{_safe_summary_text(run_id)}` / attempt `{_safe_summary_text(attempt)}`",
+                        '- Counts, coverage and evidence identity: NOT AVAILABLE; summary validation failed.',
+                        '- Inspect this workflow run and its job logs; this summary does not establish qualification.', '']
+            Path(args.output).write_text('\n'.join(fallback), encoding='utf-8')
+            return 0 if args.command == 'quick-summary' else 2
         return 2
 
 

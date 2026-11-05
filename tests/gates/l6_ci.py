@@ -162,6 +162,7 @@ def aggregate(args):
     required = args.root
     required.mkdir(mode=0o700, parents=True, exist_ok=True)
     jobs = json.loads(os.environ.get('FWROUTER_CI_NEEDS', '{}'))
+    plan = None
     try:
         check_jobs(jobs)
         suffix = f"-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
@@ -185,6 +186,23 @@ def aggregate(args):
     except (OSError, ValueError, KeyError, gate.GateError, subprocess.CalledProcessError) as exc:
         gate.atomic_json(required / 'required-result.json', {'schema': 'fwrouter-l6-required/v1',
                          'eligible': False, 'upstream': jobs, 'error': str(exc)[:3000]})
+        if not (required / 'fwrouter-aggregate.json').exists():
+            gate.atomic_json(required / 'fwrouter-aggregate.json', strict.aggregate_error_report(exc))
+        # Partial visibility is retained for the always-run summary only. The
+        # strict verifier still rejects this incomplete diagnostic projection.
+        try:
+            if plan is None and args.artifacts.is_dir():
+                plan_path = args.artifacts / 'plan/fwrouter-affected-plan.json'
+                if not plan_path.is_file():
+                    candidates = list(args.artifacts.glob('fwrouter-l6-plan-*/fwrouter-affected-plan.json'))
+                    plan_path = candidates[0] if len(candidates) == 1 else plan_path
+                if plan_path.is_file():
+                    plan = load(plan_path)
+            if plan is not None and args.artifacts.is_dir():
+                partial_visibility = visibility_report.collect(args.artifacts, required, plan)
+                gate.atomic_json(required / 'visibility.json', partial_visibility)
+        except Exception:
+            pass
         print(str(exc), file=sys.stderr)
         return 1
 

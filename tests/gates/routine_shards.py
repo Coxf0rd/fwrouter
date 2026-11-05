@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -349,43 +351,68 @@ def write_summary(report: dict[str, Any]) -> str:
     group = report["shard_group"]
     expected = report["expected_suites"]
     executions = {row["path"]: row for row in report["executions"]}
+    statuses = report.get("node_status", {})
+    statuses = statuses if isinstance(statuses, dict) else {}
+    counts = Counter(value if value in {"passed", "failed", "skipped", "blocked", "not_run"} else "blocked"
+                     for value in statuses.values())
+    failures = [(node, status) for node, status in statuses.items()
+                if status in {"failed", "blocked", "not_run"}]
+    skips = Counter()
+    for node, reason in (report.get("authorized_skip_reasons", {}) or {}).items():
+        if isinstance(reason, dict) and isinstance(reason.get("reason_code"), str):
+            skips[reason["reason_code"]] += 1
+        else:
+            skips["reason unavailable"] += 1
+    escape = lambda value: html.escape(str(value).replace("\n", " ").replace("\r", " "), quote=True).replace("|", "&#124;").replace("`", "&#96;")
     rows = [
-        "## FWRouter CI routine shard: " + group,
+        "## FWRouter CI routine shard: " + escape(group),
         "",
-        f"**Shard evidence:** {report['status']} (not full qualification)  ",
-        f"Expected files: {len(expected)}; collected files: {len(report['collected_paths'])}; "
-        f"executed locally: {len(report['executed_paths'])}; deferred to profile jobs: "
-        f"{sum(1 for row in expected if row['execution_profile'])}; expected/collected/executed node IDs: "
-        f"{len(report['expected_node_ids'])}/{len(report['collected_node_ids'])}/"
-        f"{len(report['executed_node_ids'])}; unique node IDs: {report['unique_node_status_count']}; "
-        f"elapsed: {report['duration_seconds']:.3f}s.",
-        "",
-        "| Test suite | Level | Domain | Profile | Status | Seconds | Collected IDs |",
-        "|---|---:|---|---|---|---:|---:|",
+        f"**Shard evidence:** {escape(report.get('status', 'INCOMPLETE'))} (not full qualification)",
+        f"Selected suite files: {len(expected)}; collected: {len(report.get('collected_paths', []))}; "
+        f"executed locally: {len(report.get('executed_paths', []))}; deferred to profile jobs: "
+        f"{sum(1 for row in expected if row.get('execution_profile'))}.",
+        f"Collected/executed case IDs: {len(report.get('collected_node_ids', []))}/"
+        f"{len(report.get('executed_node_ids', []))}; observed unique IDs: {report.get('unique_node_status_count', 'NOT AVAILABLE')}; "
+        f"elapsed: {report.get('duration_seconds', 'NOT AVAILABLE')}s.",
+        f"Observed outcomes: PASS {counts['passed']}; FAIL {counts['failed']}; SKIP {counts['skipped']}; "
+        f"BLOCKED {counts['blocked']}; NOT RUN {counts['not_run']}.",
     ]
-    for item in expected:
-        execution = executions.get(item["path"], {})
-        node_count = sum(1 for node in report["node_status"] if node.split("::", 1)[0] == item["path"])
-        suite_label = html.escape(str(item["suite"])).replace("|", "&#124;")
-        rows.append(f"| `{suite_label}` | {item['primary_level']} | {item['domain']} | "
-                    f"{item['execution_profile'] or 'routine'} | {execution.get('status', 'missing')} | "
-                    f"{float(execution.get('elapsed_seconds', 0.0)):.3f} | {node_count} |")
-        if execution.get("collected_node_ids"):
-            details = {node: report["node_status"].get(node, "missing")
-                       for node in execution["collected_node_ids"]}
-            rows.append(f"| └ IDs | | | | <details><summary>{len(details)} observed</summary><pre>"
-                        f"{html.escape(json.dumps(details, ensure_ascii=False, sort_keys=True))}"
-                        "</pre></details> | | |")
-    rows.extend(["", "### Runner resources", "", "| Snapshot | CPU | RAM available | Disk free |", "|---|---:|---:|---:|"])
-    for label in ("before", "after"):
-        resource = report.get(f"resources_{label}", {})
-        memory = resource.get("memory", {})
-        rows.append(f"| {label} | {resource.get('cpu_count', 'unknown')} | "
-                    f"{memory.get('MemAvailable_bytes', 'unknown')} bytes | "
-                    f"{resource.get('disk_free_bytes', 'unknown')} bytes |")
-    rows.extend(["", f"Cleanup: `{report.get('cleanup', 'unknown')}`.",
-                 f"Process peak RSS: `{report.get('process_peak', {}).get('max_rss_kib', 'unknown')}` KiB.",
-                 "Collected IDs come from same-runner collection/execution receipts. Shell installer smoke is one explicit file-level case, not a method count."])
+    if skips:
+        rows.append("Authorized SKIP groups: " + ", ".join(f"{escape(key)} ({count})" for key, count in sorted(skips.items())) + ".")
+    rows += ["", "### Non-passing case IDs"]
+    for node, status in failures[:12]:
+        node_text = gate.redact_failure_output(str(node)).replace("\n", " ").replace("\r", " ")
+        rows.append(f"- `{escape(node_text[:240])}` — {escape(status)}")
+    if len(failures) > 12:
+        rows.append(f"- {len(failures) - 12} additional non-passing IDs are in the machine shard report.")
+    if not failures:
+        rows.append("- None recorded.")
+    blocked_reasons = report.get("blocked_reasons", [])
+    if isinstance(blocked_reasons, list) and blocked_reasons:
+        rows += ["", "### Failure details"]
+        for reason in blocked_reasons[:5]:
+            redacted = gate.redact_failure_output(str(reason)).replace("\n", " ").replace("\r", " ")
+            rows.append("- " + escape(redacted[:240]))
+        if len(blocked_reasons) > 5:
+            rows.append(f"- {len(blocked_reasons) - 5} additional reasons omitted.")
+    failed_suites = [item for item in expected
+                     if executions.get(item.get("path"), {}).get("status") not in {"passed", "deferred_remote_hosted"}]
+    if failed_suites:
+        rows += ["", "### Non-passing suites"]
+        for item in failed_suites[:8]:
+            result = executions.get(item.get("path"), {})
+            rows.append(f"- `{escape(item.get('suite', item.get('path', 'unknown')))}`: "
+                        f"{escape(result.get('status', 'NOT RUN'))}")
+        if len(failed_suites) > 8:
+            rows.append(f"- {len(failed_suites) - 8} additional suites omitted.")
+    rows.extend(["", f"Cleanup: `{escape(report.get('cleanup', 'unknown'))}`; "
+                 f"process peak RSS: `{report.get('process_peak', {}).get('max_rss_kib', 'unknown')}` KiB.",
+                 "Collected IDs come from same-runner collection/execution receipts. This shard report is not full qualification."])
+    server, repository, run_id = (os.environ.get("GITHUB_SERVER_URL", "").rstrip("/"),
+                                  os.environ.get("GITHUB_REPOSITORY", ""),
+                                  os.environ.get("GITHUB_RUN_ID", ""))
+    if server.startswith(("https://", "http://")) and repository and run_id.isdigit():
+        rows.append(f"[Open this run and job logs]({server}/{repository}/actions/runs/{run_id})")
     return "\n".join(rows) + "\n"
 
 

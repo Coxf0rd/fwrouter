@@ -570,15 +570,30 @@ jobs:
           PUBLISH_OUTCOME: ${{ steps.publish_bundle.outcome }}
           ARTIFACT_ID: ${{ steps.publish_bundle.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.publish_bundle.outputs.artifact-digest }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
         run: |
           set -uo pipefail
           summary_status=0
+          printf '%s' "$FWROUTER_CI_NEEDS" > "$RUNNER_TEMP/job-results.json"
+          plan="$RUNNER_TEMP/evidence/plan/fwrouter-affected-plan.json"
+          if [ ! -f "$plan" ]; then
+            plan="$RUNNER_TEMP/evidence/fwrouter-v2-plan-${RUN_ID}-${RUN_ATTEMPT}/fwrouter-affected-plan.json"
+          fi
           python tests/gates/evidence_bundle.py summary \
             --required "$RUNNER_TEMP/required" --output "$RUNNER_TEMP/ci-summary.md" \
             --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
+            --expected-sha "$EXPECTED_SHA" --event "$EVENT_NAME" --ref "$EVENT_REF" \
+            --plan "$plan" --jobs "$RUNNER_TEMP/job-results.json" \
             --aggregate-outcome "${AGGREGATE_OUTCOME:-unknown}" \
             --bundle-outcome "${BUNDLE_OUTCOME:-unknown}" \
             --publish-outcome "${PUBLISH_OUTCOME:-unknown}" \
             --artifact-id "${ARTIFACT_ID:-}" --artifact-digest "${ARTIFACT_DIGEST:-}" || summary_status=$?
-          cat "$RUNNER_TEMP/ci-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/ci-summary.md" ]; then
+            cat "$RUNNER_TEMP/ci-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## FWRouter CI qualification summary\n\n- Overall result: **INCOMPLETE**\n- Source/run evidence: NOT AVAILABLE. Inspect this run and its job logs.\n' >> "$GITHUB_STEP_SUMMARY"
+            summary_status=2
+          fi
           exit "$summary_status"

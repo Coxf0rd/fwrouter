@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -209,9 +210,30 @@ def process_peak(log_path: Path) -> dict[str, int]:
 
 
 def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
-                   native_profile: str | None = None) -> str:
+                   native_profile: str | None = None, *, l6: bool = False) -> str:
     """Render bounded, non-payload job summary from local runner receipts."""
-    plan = strict.read_json(plan_path)
+    try:
+        if Path(plan_path).is_symlink() or not Path(plan_path).is_file():
+            raise gate.GateError('immutable plan is unavailable')
+        plan = load_plan(plan_path, l6=l6)
+    except (OSError, ValueError, gate.GateError, KeyError, TypeError):
+        try:
+            source_sha = gate.git('rev-parse', 'HEAD')
+        except gate.GateError:
+            source_sha = 'NOT AVAILABLE'
+        title = f"## FWRouter CI {role}" + (f" ({native_profile})" if native_profile else "")
+        lines = [title, '', '**Status: INCOMPLETE** (immutable plan unavailable or invalid; no test counts inferred).',
+                 f"- Checked-out source SHA: `{html.escape(source_sha)}`",
+                 f"- Run/attempt: `{html.escape(os.environ.get('GITHUB_RUN_ID', 'unavailable'))}` / "
+                 f"`{html.escape(os.environ.get('GITHUB_RUN_ATTEMPT', 'unavailable'))}`",
+                 '- Selected suites, case IDs and coverage: NOT AVAILABLE.',
+                 '- Only the strict aggregate establishes qualification.']
+        server, repository, run_id = (os.environ.get('GITHUB_SERVER_URL', '').rstrip('/'),
+                                      os.environ.get('GITHUB_REPOSITORY', ''),
+                                      os.environ.get('GITHUB_RUN_ID', ''))
+        if server.startswith(('https://', 'http://')) and repository and run_id.isdigit():
+            lines.append(f"- [Open this run and job logs]({server}/{repository}/actions/runs/{run_id})")
+        return '\n'.join(lines) + '\n'
     lines = [f"## FWRouter CI {role}" + (f" ({native_profile})" if native_profile else ""), "",
              f"- Status: **{outcome.upper()}**", f"- Source SHA: `{plan.get('source_commit', 'unknown')}`",
              f"- Plan digest: `{plan.get('plan_digest', 'unknown')}`",
@@ -248,9 +270,10 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
     for name in ('hosted-acceptance-report.json', 'qualified-child-receipt.json',
                  'qualified-xray-docker-receipt.json', 'build-summary.json', 'wheel-metadata.json'):
         receipt_paths.extend(sorted(root.rglob(name)))
-    id_statuses: list[tuple[str, str]] = []
+    observed_statuses: list[tuple[str, str]] = []
     cleanup_values: list[str] = []
     receipt_rows = []
+    receipt_details: list[str] = []
     for path in receipt_paths:
         if path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
             continue
@@ -259,11 +282,19 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
         except (OSError, ValueError, gate.GateError):
             continue
         tests = value.get('tests') if isinstance(value.get('tests'), dict) else {}
+        raw_counts = [tests.get('failures'), tests.get('errors'), tests.get('skipped')]
+        counts = [value if type(value) is int and value >= 0 else 'NOT AVAILABLE' for value in raw_counts]
+        failure_count, error_count, skipped_count = counts
+        if (value.get('status') not in {'passed', 'success'}
+                or any(type(count) is int and count > 0 for count in counts)):
+            receipt_details.append(
+                f"{value.get('suite', value.get('scope', path.name))}: status {value.get('status', 'unknown')}; "
+                f"test failures/errors/skips {failure_count}/{error_count}/{skipped_count}")
         statuses = tests.get('node_status') if isinstance(tests.get('node_status'), dict) else {}
         if statuses:
             for node, status in statuses.items():
                 if isinstance(node, str) and isinstance(status, str):
-                    id_statuses.append((node, status))
+                    observed_statuses.append((node, status))
         else:
             # Hosted receipts publish exact IDs but not a per-node status map.
             # Preserve their declared receipt result without inventing PASS for a
@@ -273,7 +304,7 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
             projected_status = 'passed' if receipt_status == 'passed' else 'unverified'
             for node in nodeids:
                 if isinstance(node, str):
-                    id_statuses.append((node, projected_status))
+                    observed_statuses.append((node, projected_status))
         cleanup = value.get('cleanup')
         if isinstance(cleanup, str):
             cleanup_values.append(cleanup)
@@ -294,10 +325,28 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
     if receipt_rows:
         lines += ["", "| Receipt | Suite/profile | Status |", "|---|---|---|"]
         lines += [f"| `{name}` | `{suite}` | `{status}` |" for name, suite, status in receipt_rows]
-    lines += ["", f"Observed test IDs: {len(id_statuses)}; unique IDs: {len({node for node, _ in id_statuses})}."]
-    if id_statuses:
-        lines += ["", "| Test ID | Result |", "|---|---|"]
-        lines += [f"| `{node.replace('|', '&#124;')}` | `{status}` |" for node, status in sorted(id_statuses)]
+    outcome_counts = {key: sum(status == key for _, status in observed_statuses)
+                      for key in ('passed', 'failed', 'skipped', 'blocked', 'not_run', 'unverified')}
+    unique_ids = {node for node, _ in observed_statuses}
+    failure_rows = [(node, status) for node, status in observed_statuses
+                    if status in {'failed', 'blocked', 'not_run'}]
+    escape = lambda value: html.escape(str(value).replace('\n', ' ').replace('\r', ' '), quote=True).replace('|', '&#124;').replace('`', '&#96;')
+    lines += ["", f"Observed case IDs: {len(unique_ids)} unique; {len(observed_statuses)} terminal outcomes; "
+              f"{max(0, len(observed_statuses) - len(unique_ids))} repeated executions.",
+              "Outcomes: " + "; ".join(f"{name.upper()} {count}" for name, count in outcome_counts.items()) + ".",
+              "", "### Non-passing observed case IDs"]
+    for node, status in failure_rows[:12]:
+        node_text = gate.redact_failure_output(node).replace('\n', ' ').replace('\r', ' ')
+        lines.append(f"- `{escape(node_text[:240])}` — {escape(status)}")
+    if len(failure_rows) > 12:
+        lines.append(f"- {len(failure_rows) - 12} additional non-passing IDs are in producer receipts.")
+    if not failure_rows:
+        lines.append("- None recorded.")
+    if receipt_details:
+        lines += ["", "### Failed or incomplete receipts"]
+        lines += ["- " + escape(gate.redact_failure_output(value)[:360]) for value in receipt_details[:8]]
+        if len(receipt_details) > 8:
+            lines.append(f"- {len(receipt_details) - 8} additional receipt summaries omitted.")
     before = root / 'resources-before.json'
     after = root / 'resources-after.json'
     for label, path in (("before", before), ("after", after)):
@@ -312,6 +361,11 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
                 lines.append(f"- Runner resources {label}: unavailable.")
     lines.append(f"- Receipt cleanup values: `{', '.join(sorted(set(cleanup_values))) if cleanup_values else 'no profile cleanup receipt'}`.")
     lines.append("- This job summary is diagnostic visibility; only the strict aggregate establishes qualification.")
+    server, repository, run_id = (os.environ.get('GITHUB_SERVER_URL', '').rstrip('/'),
+                                  os.environ.get('GITHUB_REPOSITORY', ''),
+                                  os.environ.get('GITHUB_RUN_ID', ''))
+    if server.startswith(('https://', 'http://')) and repository and run_id.isdigit():
+        lines.append(f"- [Open this run and job logs]({server}/{repository}/actions/runs/{run_id})")
     return "\n".join(lines) + "\n"
 
 
@@ -461,6 +515,7 @@ def combine_native_profiles(artifact_root: Path, plan: dict[str, Any], profiles:
 def aggregate(args):
     output = Path(args.root); output.mkdir(parents=True, exist_ok=True)
     results = {}
+    artifact_root = Path(args.artifacts)
     try:
         results = json.loads(os.environ.get('FWROUTER_CI_NEEDS', '{}'))
         if not isinstance(results, dict):
@@ -474,7 +529,6 @@ def aggregate(args):
         problems = validate_results(results, required)
         if problems:
             raise gate.GateError('; '.join(problems))
-        artifact_root = Path(args.artifacts)
         prefix = f"fwrouter-v2-{{role}}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
         selected_native_profiles = native_profiles(plan)
         expected_dirs = {prefix.format(role=k) for k, needed in required.items()
@@ -559,6 +613,17 @@ def aggregate(args):
                                   require_main_smoke=args.main_smoke, main_smoke_path=smoke)
         gate.atomic_json(output / 'fwrouter-aggregate.json', report)
         if report.get('eligible') is not True:
+            recovery = {'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
+                        'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'} <= set(plan['selected_files'])
+            gate.atomic_json(output / 'required-result.json', {'schema': 'fwrouter-parallel-required/v1',
+                             **identity(plan), 'eligible': False, 'upstream': results,
+                             'safe_recovery_required': recovery})
+            try:
+                import visibility_report
+                partial_visibility = visibility_report.collect(artifact_root, output, plan)
+                gate.atomic_json(output / 'visibility.json', partial_visibility)
+            except Exception:
+                pass
             return 1
         recovery = {'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
                     'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'} <= set(plan['selected_files'])
@@ -580,6 +645,15 @@ def aggregate(args):
                          'eligible': False, 'upstream': results, 'error': str(exc)[:3000]})
         if not (output / 'fwrouter-aggregate.json').exists():
             gate.atomic_json(output / 'fwrouter-aggregate.json', strict.aggregate_error_report(exc))
+        # Preserve current-attempt observed outcomes for the always-run human
+        # summary. This projection is diagnostic only and cannot qualify a run.
+        try:
+            if 'plan' in locals() and 'artifact_root' in locals() and artifact_root.is_dir():
+                import visibility_report
+                partial_visibility = visibility_report.collect(artifact_root, output, plan)
+                gate.atomic_json(output / 'visibility.json', partial_visibility)
+        except Exception:
+            pass
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -608,7 +682,8 @@ def main():
         elif args.command == 'worker':
             return run_worker(args)
         elif args.command == 'summary':
-            print(worker_summary(args.root, args.plan, args.role, args.outcome, args.native_profile), end='')
+            print(worker_summary(args.root, args.plan, args.role, args.outcome, args.native_profile,
+                                 l6=args.l6), end='')
         else:
             return aggregate(args)
         return 0
