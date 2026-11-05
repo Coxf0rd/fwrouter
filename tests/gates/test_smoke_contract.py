@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,71 @@ SPEC = importlib.util.spec_from_file_location("fwrouter_smoke", PATH)
 assert SPEC and SPEC.loader
 smoke = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(smoke)
+
+
+class _LocalApiServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+
+class _LocalApiHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        spec = self.server.responses.get(self.path)
+        if spec is None:
+            spec = {"status": 404, "body": b"not found"}
+        delay = spec.get("delay_before_headers", 0)
+        if delay:
+            time.sleep(delay)
+        self.send_response(spec.get("status", 200))
+        headers = list(spec.get("headers", []))
+        if spec.get("content_length", "auto") == "auto" and not any(
+                key.lower() == "content-length" for key, _value in headers):
+            headers.append(("Content-Length", str(len(spec.get("body", b"")))))
+        for key, value in headers:
+            self.send_header(key, value)
+        self.end_headers()
+        body = spec.get("body", b"")
+        delay = spec.get("trickle_delay", 0)
+        try:
+            if delay:
+                for byte in body:
+                    self.wfile.write(bytes((byte,)))
+                    self.wfile.flush()
+                    time.sleep(delay)
+            else:
+                self.wfile.write(body)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, _format, *args):
+        return
+
+
+@contextmanager
+def _serve_api(responses):
+    server = _LocalApiServer(("127.0.0.1", 0), _LocalApiHandler)
+    server.responses = responses
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def _body_of_exact_size(payload: dict, size: int, *, padding_path: tuple[str, ...]) -> bytes:
+    value = payload
+    for key in padding_path[:-1]:
+        value = value[key]
+    value[padding_path[-1]] = ""
+    initial = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    value[padding_path[-1]] = "x" * (size - len(initial))
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    if len(body) != size:
+        raise AssertionError(f"could not construct exact body size: {len(body)} != {size}")
+    return body
 
 
 class SmokeContractTests(unittest.TestCase):
@@ -155,14 +222,165 @@ class SmokeContractTests(unittest.TestCase):
             self.assertEqual(200, result["status_code"])
             self.assertTrue(result["api_ok"])
             self.assertEqual(["/health", "/redirect"], api_paths)
-            self.assertIsNone(redirected["status_code"])
+            self.assertEqual(302, redirected["status_code"])
             self.assertFalse(redirected["api_ok"])
+            self.assertEqual("redirect_rejected", redirected["reason"])
         finally:
             for server in (api, proxy):
                 server.shutdown()
                 server.server_close()
             for thread in threads:
                 thread.join(timeout=2)
+
+    def test_default_http_get_preserves_health_cap_and_bounds_state_at_observed_scale(self):
+        health = {"ok": True, "data": {"service": "fwrouter-api", "status": "healthy",
+                  "database": {"status": "healthy", "schema": {"ok": True}}, "padding": ""}}
+        state = {"ok": True, "data": {"state": {"padding": ""}}}
+        production_size = 1_363_679
+        responses = {}
+        bodies = {
+            "/health-exact": _body_of_exact_size(health, smoke.MAX_HTTP_BODY, padding_path=("data", "padding")),
+            "/health-over": _body_of_exact_size(health, smoke.MAX_HTTP_BODY + 1, padding_path=("data", "padding")),
+            "/state-production": _body_of_exact_size(state, production_size, padding_path=("data", "state", "padding")),
+            "/state-exact": _body_of_exact_size(state, smoke.MAX_STATE_HTTP_BODY, padding_path=("data", "state", "padding")),
+            "/state-over": _body_of_exact_size(state, smoke.MAX_STATE_HTTP_BODY + 1, padding_path=("data", "state", "padding")),
+        }
+        for path, body in bodies.items():
+            responses[path] = {"status": 200, "headers": [("Content-Type", "application/json")], "body": body}
+        with _serve_api(responses) as base:
+            health_exact = smoke._default_http_get(base + "/health-exact", 10, "health")
+            health_over = smoke._default_http_get(base + "/health-over", 10, "health")
+            state_production = smoke._default_http_get(base + "/state-production", 10, "state")
+            state_exact = smoke._default_http_get(base + "/state-exact", 10, "state")
+            state_over = smoke._default_http_get(base + "/state-over", 10, "state")
+        self.assertTrue(smoke._api_payload_check(health_exact, "health"))
+        self.assertEqual("body_too_large", health_over["reason"])
+        self.assertTrue(smoke._api_payload_check(state_production, "state"))
+        self.assertTrue(smoke._api_payload_check(state_exact, "state"))
+        self.assertEqual("body_too_large", state_over["reason"])
+        self.assertNotIn("padding", repr(state_production))
+        self.assertNotIn("padding", repr(state_exact))
+
+    def test_default_http_get_rejects_content_length_and_json_failures_safely(self):
+        valid_health = json.dumps({"ok": True, "data": {"service": "fwrouter-api", "status": "healthy",
+                              "database": {"status": "healthy", "schema": {"ok": True}}}}).encode()
+        valid_state = json.dumps({"ok": True, "data": {"state": {}}}).encode()
+        responses = {
+            "/missing-length": {"status": 200, "headers": [("Content-Type", "application/json")],
+                                 "content_length": None, "body": valid_state},
+            "/bad-length": {"status": 200, "headers": [("Content-Length", "not-a-number")],
+                             "content_length": None, "body": valid_state},
+            "/duplicate-length": {"status": 200, "headers": [("Content-Length", str(len(valid_state))),
+                                      ("Content-Length", str(len(valid_state)))],
+                                   "content_length": None, "body": valid_state},
+            "/declared-too-large": {"status": 200, "headers": [("Content-Length", str(smoke.MAX_STATE_HTTP_BODY + 1))],
+                                     "content_length": None, "body": b""},
+            "/truncated": {"status": 200, "headers": [("Content-Length", str(len(valid_state) + 8))],
+                            "content_length": None, "body": valid_state},
+            "/lying-short": {"status": 200, "headers": [("Content-Length", str(len(valid_state) - 1))],
+                              "content_length": None, "body": valid_state},
+            "/malformed-json": {"status": 200, "headers": [("Content-Type", "application/json")],
+                                "body": b'{"ok":true,"data":'},
+            "/nonfinite-json": {"status": 200, "headers": [("Content-Type", "application/json")],
+                                 "body": b'{"ok":NaN,"data":{"state":{}}}'},
+            "/bad-shape": {"status": 200, "headers": [("Content-Type", "application/json")],
+                            "body": b'{"ok":true,"data":[]}'},
+            "/bad-status": {"status": 503, "headers": [("Content-Type", "application/json")],
+                             "body": valid_health},
+        }
+        with _serve_api(responses) as base:
+            results = {path: smoke._default_http_get(base + path, 5,
+                       "health" if path == "/bad-status" else "state") for path in responses}
+        self.assertTrue(smoke._api_payload_check(results["/missing-length"], "state"))
+        self.assertEqual("invalid_content_length", results["/bad-length"]["reason"])
+        self.assertEqual("invalid_content_length", results["/duplicate-length"]["reason"])
+        self.assertEqual("body_too_large", results["/declared-too-large"]["reason"])
+        self.assertEqual("content_length_mismatch", results["/truncated"]["reason"])
+        self.assertEqual("invalid_json", results["/lying-short"]["reason"])
+        self.assertEqual("invalid_json", results["/malformed-json"]["reason"])
+        self.assertEqual("invalid_json", results["/nonfinite-json"]["reason"])
+        self.assertEqual("invalid_json_shape", results["/bad-shape"]["reason"])
+        self.assertEqual("unexpected_http_status", results["/bad-status"]["reason"])
+        self.assertNotIn("not-a-number", repr(results))
+        self.assertNotIn("NaN", repr(results))
+        self.assertNotIn('"data"', json.dumps(results["/malformed-json"]))
+
+    def test_default_http_get_enforces_total_deadline_for_delayed_headers_and_trickled_body(self):
+        valid = json.dumps({"ok": True, "data": {"state": {"status": "healthy"}}}).encode()
+        responses = {
+            "/slow-headers": {"status": 200, "headers": [("Content-Type", "application/json")],
+                              "body": valid, "delay_before_headers": 2},
+            "/trickle-body": {"status": 200, "headers": [("Content-Type", "application/json"),
+                                 ("Content-Length", "64")], "content_length": None,
+                               "body": b"{}", "trickle_delay": 0.75},
+        }
+        with _serve_api(responses) as base:
+            for path in responses:
+                started = time.monotonic()
+                result = smoke._default_http_get(base + path, 1, "state")
+                elapsed = time.monotonic() - started
+                self.assertEqual("timeout", result["reason"])
+                self.assertLess(elapsed, 7)
+
+    def test_http_check_propagates_only_safe_actionable_reasons(self):
+        timeout = smoke._http_check(lambda _url, _timeout: {
+            "status_code": None, "api_ok": False, "fields": {}, "reason": "timeout"},
+            "http://127.0.0.1/health", 1, "health")
+        untrusted = smoke._http_check(lambda _url, _timeout: {
+            "status_code": 200, "api_ok": False, "fields": {}, "reason": "secret-body-value"},
+            "http://127.0.0.1/health", 1, "health")
+        self.assertEqual({"status": "failed", "status_code": None,
+                          "contract": "health_schema_and_database", "reason": "timeout"}, timeout)
+        self.assertEqual("api_contract_mismatch", untrusted["reason"])
+        self.assertNotIn("secret-body-value", repr(untrusted))
+
+    def test_cli_json_reports_live_smoke_pass_and_actionable_failure(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as temp:
+            db = Path(temp) / "state.db"
+            smoke._create_current_schema(db)
+            allowlist = Path(temp) / "failed-units.json"
+            allowlist.write_text("[]", encoding="utf-8")
+            health = json.dumps({"ok": True, "data": {"service": "fwrouter-api", "status": "healthy",
+                           "database": {"status": "healthy", "schema": {"ok": True}}}}).encode()
+            small_state = json.dumps({"ok": True, "data": {"state": {}}}).encode()
+            oversized_state = _body_of_exact_size({"ok": True, "data": {"state": {"padding": ""}}},
+                                                   smoke.MAX_STATE_HTTP_BODY + 1,
+                                                   padding_path=("data", "state", "padding"))
+            responses = []
+            for state_body in (small_state, oversized_state):
+                with _serve_api({
+                    "/api/v2/health": {"status": 200, "headers": [("Content-Type", "application/json")], "body": health},
+                    "/api/v2/state/system": {"status": 200, "headers": [("Content-Type", "application/json")], "body": state_body},
+                }) as base:
+                    stdout = io.StringIO()
+                    args = ["smoke.py", "--profile", "live-readonly", "--opt-in", "--reason", "test-only",
+                            "--api-base-url", base, "--db-path", str(db),
+                            "--failed-units-allowlist-json", str(allowlist)]
+                    execute = smoke._execute
+                    def controlled_command(argv, **kwargs):
+                        if argv and argv[0] == "systemctl":
+                            return "passed", 0, ""
+                        return execute(argv, **kwargs)
+                    with patch.object(smoke.sys, "argv", args), \
+                            patch.object(smoke, "_native_checks", return_value=[
+                                {"name": "native_mihomo", "status": "passed"},
+                                {"name": "native_xray", "status": "passed"},
+                            ]), \
+                            patch.object(smoke, "_execute", side_effect=controlled_command), \
+                            contextlib.redirect_stdout(stdout):
+                        code = smoke.main()
+                    responses.append((code, json.loads(stdout.getvalue())))
+        pass_code, passed = responses[0]
+        fail_code, failed = responses[1]
+        self.assertEqual(0, pass_code, json.dumps(passed, sort_keys=True))
+        self.assertEqual("passed", passed["status"])
+        self.assertEqual(1, fail_code)
+        self.assertEqual("failed", failed["status"])
+        critical = next(row for row in failed["checks"] if row["name"] == "critical_state_api")
+        self.assertEqual("body_too_large", critical["reason"])
+        self.assertNotIn("padding", repr(failed))
 
     def test_readonly_database_rejects_noncanonical_schema_version(self):
         with tempfile.TemporaryDirectory() as temp:

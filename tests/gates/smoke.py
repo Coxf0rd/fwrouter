@@ -14,9 +14,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -25,6 +23,115 @@ INSTALLER = ROOT / "installer/install.sh"
 MAX_TIMEOUT = 30
 MAX_OUTPUT = 16_384
 MAX_HTTP_BODY = 32_768
+# Health is a small status contract.  The state projection is a separate,
+# read-only aggregate of modules, subjects, routing, watchdog, rules, Xray,
+# VPN and diagnostics; keep its larger allowance explicit and finite.
+MAX_STATE_HTTP_BODY = 4 * 1024 * 1024
+
+_HTTP_GET_CHILD = r'''
+import http.client, json, socket, sys
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+url, kind, limit_text, timeout_text = sys.argv[1:]
+limit, timeout = int(limit_text), float(timeout_text)
+
+def emit(status_code=None, api_ok=False, fields=None, reason=None):
+    print(json.dumps({"status_code": status_code, "api_ok": api_ok,
+                      "fields": fields or {}, "reason": reason}, separators=(",", ":")))
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+try:
+    opener = build_opener(ProxyHandler({}), NoRedirect)
+    response = opener.open(Request(url, method="GET"), timeout=timeout)
+except HTTPError as exc:
+    code = exc.code
+    try:
+        exc.close()
+    except Exception:
+        pass
+    emit(status_code=code, reason="redirect_rejected" if 300 <= code < 400 else "unexpected_http_status")
+    raise SystemExit(0)
+except (socket.timeout, TimeoutError):
+    emit(reason="timeout")
+    raise SystemExit(0)
+except URLError as exc:
+    emit(reason="timeout" if isinstance(exc.reason, (socket.timeout, TimeoutError)) else "connection_error")
+    raise SystemExit(0)
+except OSError:
+    emit(reason="connection_error")
+    raise SystemExit(0)
+
+try:
+    status = getattr(response, "status", None)
+    if status != 200:
+        emit(status_code=status, reason="unexpected_http_status")
+        raise SystemExit(0)
+    headers = getattr(response, "headers", None)
+    lengths = headers.get_all("Content-Length", []) if headers is not None else []
+    transfer_encoding = headers.get("Transfer-Encoding") if headers is not None else None
+    declared = None
+    if len(lengths) > 1 or (lengths and transfer_encoding is not None):
+        emit(status_code=status, reason="invalid_content_length")
+        raise SystemExit(0)
+    if lengths:
+        value = lengths[0].strip()
+        if not value.isascii() or not value.isdigit():
+            emit(status_code=status, reason="invalid_content_length")
+            raise SystemExit(0)
+        try:
+            declared = int(value)
+        except ValueError:
+            emit(status_code=status, reason="invalid_content_length")
+            raise SystemExit(0)
+        if declared > limit:
+            emit(status_code=status, reason="body_too_large")
+            raise SystemExit(0)
+    raw = response.read(limit + 1)
+    if len(raw) > limit:
+        emit(status_code=status, reason="body_too_large")
+        raise SystemExit(0)
+    if declared is not None and len(raw) != declared:
+        emit(status_code=status, reason="content_length_mismatch")
+        raise SystemExit(0)
+    try:
+        def reject_constant(_value: str) -> None:
+            raise ValueError("nonstandard JSON constant")
+        payload = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        emit(status_code=status, reason="invalid_json")
+        raise SystemExit(0)
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+        emit(status_code=status, reason="invalid_json_shape")
+        raise SystemExit(0)
+    data = payload["data"]
+    if kind == "health":
+        db = data.get("database") if isinstance(data.get("database"), dict) else {}
+        schema = db.get("schema") if isinstance(db.get("schema"), dict) else {}
+        fields = {"service": data.get("service"), "status": data.get("status"),
+                  "database_status": db.get("status"), "schema_ok": schema.get("ok") is True}
+    else:
+        fields = {"critical_state_present": isinstance(data.get("state"), dict)}
+    emit(status_code=status, api_ok=payload.get("ok") is True, fields=fields,
+         reason=None if payload.get("ok") is True else "api_contract_mismatch")
+except http.client.IncompleteRead:
+    emit(status_code=getattr(response, "status", None),
+         reason="content_length_mismatch" if declared is not None else "incomplete_response_body")
+except (http.client.HTTPException, ValueError, UnicodeError):
+    emit(status_code=getattr(response, "status", None), reason="malformed_http_response")
+except (socket.timeout, TimeoutError):
+    emit(status_code=getattr(response, "status", None), reason="timeout")
+except OSError:
+    emit(status_code=getattr(response, "status", None), reason="connection_error")
+finally:
+    try:
+        response.close()
+    except Exception:
+        pass
+'''
 
 
 class SmokeError(ValueError):
@@ -120,40 +227,59 @@ def _api_payload_check(result: Mapping[str, Any], kind: str) -> bool:
 
 
 def _default_http_get(url: str, timeout: int, kind: str) -> Mapping[str, Any]:
-    """Perform GET only, reject redirects, parse only allowlisted response fields."""
-    class NoRedirect(HTTPRedirectHandler):
-        def redirect_request(self, req: Request, fp: Any, code: int, msg: str,
-                             headers: Any, newurl: str) -> None:
-            return None
+    """Perform one bounded loopback GET and return only allowlisted fields.
+
+    The child process gives the whole request an absolute wall-clock deadline:
+    urllib's socket timeout alone would allow a trickling peer to extend the
+    request indefinitely.  `_execute` reuses the gate's process-group timeout
+    and bounded cleanup; the child never writes the response body to stdout.
+    """
+    limits = {"health": MAX_HTTP_BODY, "state": MAX_STATE_HTTP_BODY}
+    limit = limits.get(kind)
+    if limit is None:
+        return {"status_code": None, "api_ok": False, "fields": {},
+                "reason": "unsupported_contract"}
+    if not isinstance(timeout, (int, float)) or timeout < 1 or timeout > MAX_TIMEOUT:
+        return {"status_code": None, "api_ok": False, "fields": {},
+                "reason": "invalid_timeout"}
+    status, _code, output = _execute(
+        [sys.executable, "-I", "-B", "-c", _HTTP_GET_CHILD,
+         url, kind, str(limit), str(timeout)],
+        timeout=timeout,
+        env={"PATH": os.defpath, "LC_ALL": "C.UTF-8"},
+        cwd=ROOT,
+        runner=subprocess.run,
+    )
+    if status == "timeout":
+        return {"status_code": None, "api_ok": False, "fields": {}, "reason": "timeout"}
+    if status == "output_limit":
+        return {"status_code": None, "api_ok": False, "fields": {},
+                "reason": "reader_output_limit"}
+    if status != "passed":
+        return {"status_code": None, "api_ok": False, "fields": {},
+                "reason": "reader_failed"}
     try:
-        # This helper is specifically for loopback acceptance.  urllib's
-        # default ProxyHandler reads ambient proxy variables and may route a
-        # loopback request through an external proxy unless bypass is configured.
-        response = build_opener(ProxyHandler({}), NoRedirect).open(
-            Request(url, method="GET"), timeout=timeout
-        )
-    except (HTTPError, URLError, OSError):
-        return {"status_code": None, "api_ok": False, "fields": {}}
-    try:
-        raw = response.read(MAX_HTTP_BODY + 1)
-        if len(raw) > MAX_HTTP_BODY or response.status != 200:
-            return {"status_code": response.status, "api_ok": False, "fields": {}}
-        payload = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeError):
-        return {"status_code": getattr(response, "status", None), "api_ok": False, "fields": {}}
-    finally:
-        response.close()
-    if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
-        return {"status_code": 200, "api_ok": False, "fields": {}}
-    data = payload["data"]
-    if kind == "health":
-        db = data.get("database") if isinstance(data.get("database"), dict) else {}
-        schema = db.get("schema") if isinstance(db.get("schema"), dict) else {}
-        fields = {"service": data.get("service"), "status": data.get("status"),
-                  "database_status": db.get("status"), "schema_ok": schema.get("ok") is True}
-    else:
-        fields = {"critical_state_present": isinstance(data.get("state"), dict)}
-    return {"status_code": 200, "api_ok": payload.get("ok") is True, "fields": fields}
+        result = json.loads(output)
+    except (TypeError, ValueError, UnicodeError):
+        return {"status_code": None, "api_ok": False, "fields": {},
+                "reason": "reader_invalid_result"}
+    if (not isinstance(result, dict)
+            or set(result) != {"status_code", "api_ok", "fields", "reason"}
+            or not isinstance(result.get("api_ok"), bool)
+            or not isinstance(result.get("fields"), dict)
+            or (result.get("status_code") is not None
+                and (type(result["status_code"]) is not int
+                     or not 100 <= result["status_code"] <= 599))
+            or result.get("reason") not in {None, "redirect_rejected", "unexpected_http_status",
+                                              "invalid_content_length", "body_too_large",
+                                              "content_length_mismatch", "invalid_json",
+                                              "invalid_json_shape", "api_contract_mismatch",
+                                              "timeout", "connection_error",
+                                              "malformed_http_response",
+                                              "incomplete_response_body"}):
+        return {"status_code": None, "api_ok": False, "fields": {},
+                "reason": "reader_invalid_result"}
+    return result
 
 
 def _http_check(adapter: Callable[..., Mapping[str, Any]] | None, url: str, timeout: int,
@@ -165,9 +291,21 @@ def _http_check(adapter: Callable[..., Mapping[str, Any]] | None, url: str, time
             result = adapter(url, timeout)
         except Exception:
             result = {"status_code": None, "api_ok": False, "fields": {}}
-    return {"status": "passed" if _api_payload_check(result, kind) else "failed",
+    passed = _api_payload_check(result, kind)
+    reason = result.get("reason")
+    allowed_reasons = {"redirect_rejected", "unexpected_http_status", "invalid_content_length",
+                       "body_too_large", "content_length_mismatch", "invalid_json",
+                       "invalid_json_shape", "api_contract_mismatch", "timeout",
+                       "connection_error", "malformed_http_response", "incomplete_response_body",
+                       "reader_output_limit",
+                       "reader_failed", "reader_invalid_result", "unsupported_contract",
+                       "invalid_timeout"}
+    if not passed and reason not in allowed_reasons:
+        reason = "api_contract_mismatch"
+    return {"status": "passed" if passed else "failed",
             "status_code": result.get("status_code") if isinstance(result.get("status_code"), int) else None,
-            "contract": "health_schema_and_database" if kind == "health" else "critical_state_projection"}
+            "contract": "health_schema_and_database" if kind == "health" else "critical_state_projection",
+            "reason": None if passed else reason}
 
 
 def _isolated_fastapi_checks(env: Mapping[str, str], *, runner: Callable[..., Any],
