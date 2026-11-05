@@ -23,6 +23,71 @@ SPEC.loader.exec_module(bundle)
 
 
 class EvidenceBundleTests(unittest.TestCase):
+    def test_unit_worker_measurement_phases_and_handoff_preserve_peak_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan_root = root / "plan"
+            plan_root.mkdir()
+            plan_path = plan_root / "fwrouter-affected-plan.json"
+            manifest = bundle.gate.load_manifest()
+            plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
+                    "manifest_digest": bundle.gate.canonical_digest(manifest),
+                    "manifest_version": manifest["version"], "selected_files": [],
+                    "required_levels": ["L0"], "required_execution_profiles": [],
+                    "regression_policy": {"level": "L0", "reasons": [], "anchors": []}}
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            worker_root = root / "unit"
+            real_verify_producer = bundle.parallel_ci.verify_producer
+            resource = {"cpu_count": 2, "memory": {}, "disk_total_bytes": 4096,
+                        "disk_used_bytes": 1024, "disk_free_bytes": 3072}
+            peaks = {"max_rss_kib": 4096, "cpu_percent": 80}
+
+            def fake_run_command(command, log, *, env=None):
+                output_path = Path(command[command.index("--output") + 1])
+                report = bundle.gate._routine_shard_report(
+                    plan, manifest, "core-state", [], [], {}, [], l0_owned=True,
+                    l0_ok=True, l0_elapsed=0.1, l0_problems=[])
+                report["owned_temp_cleanup"] = {
+                    "status": "removed", "root_name": f"fwrouter-gate-{'a' * 8}-fixture",
+                    "entries": [], "truncated": False, "readonly_directories_restored": 0}
+                bundle.gate.atomic_json(output_path, report)
+                return 0, 9.5
+
+            args = argparse.Namespace(plan=plan_path, root=worker_root, role="unit",
+                                      shard_group="core-state", l6=False)
+            with patch.dict("os.environ", {"RUNNER_TEMP": temporary, "GITHUB_RUN_ID": "123",
+                                            "GITHUB_RUN_ATTEMPT": "1"}, clear=False), \
+                    patch.object(bundle.parallel_ci, "load_plan", return_value=plan), \
+                    patch.object(bundle.parallel_ci, "verify_producer"), \
+                    patch.object(bundle.parallel_ci, "resource_snapshot", return_value=resource), \
+                    patch.object(bundle.parallel_ci, "run_command", side_effect=fake_run_command), \
+                    patch.object(bundle.parallel_ci, "process_peak", return_value=peaks):
+                self.assertEqual(0, bundle.parallel_ci.run_worker(args))
+                measurements = bundle.parallel_ci.load_measurement_receipt(worker_root / "measurements.json")
+                self.assertEqual(["routine_execution", "unit"],
+                                 [phase["phase"] for phase in measurements["phases"]])
+                routine, unit = measurements["phases"]
+                self.assertEqual(0.1, routine["duration_seconds"])
+                self.assertNotIn("max_rss_kib", routine)
+                self.assertEqual(9.5, unit["duration_seconds"])
+                self.assertEqual(4096, unit["max_rss_kib"])
+                self.assertEqual(80, unit["cpu_percent"])
+                self.assertNotIn("unknown", [phase["phase"] for phase in measurements["phases"]])
+                handoff_args = argparse.Namespace(
+                    source=worker_root, destination=root / "unit-handoff", plan=plan_path,
+                    role="unit", shard_group="core-state", outcome="success",
+                    event="pull_request", ref="refs/pull/1/merge")
+                needs = {"plan": True, "build": True, "unit": True, "hosted": False,
+                         "provider": False, "packet": False, "native": False}
+                with patch.object(bundle.gate, "ensure_plan"), patch.object(
+                        bundle.parallel_ci, "requirements", return_value=needs):
+                    bundle.handoff(handoff_args)
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=False):
+                real_verify_producer(root / "unit-handoff", "unit", plan)
+                retained = bundle.parallel_ci.load_measurement_receipt(
+                    root / "unit-handoff" / "measurements.json")
+            self.assertEqual(measurements, retained)
+
     def test_offline_strict_replay_rejects_rehashed_forged_host_pass(self) -> None:
         manifest = bundle.gate.load_manifest()
         plan = bundle.gate.make_plan(
@@ -282,6 +347,14 @@ class EvidenceBundleTests(unittest.TestCase):
             report["shard_digest"] = bundle.gate.canonical_digest(report)
             (source / "shard.json").write_text(json.dumps(report) + "\n", encoding="utf-8")
             (source / "timings.json").write_text('[{"seconds":1}]\n', encoding="utf-8")
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=False):
+                bundle.gate.atomic_json(source / "measurements.json", bundle.parallel_ci.measurement_receipt(
+                    plan, "unit", [{"phase": "routine_execution", "seconds": 0.25, "exit": 0}],
+                    shard_group="core-state",
+                    resources_before={"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                      "disk_used_bytes": 1, "disk_free_bytes": 3},
+                    resources_after={"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                     "disk_used_bytes": 1, "disk_free_bytes": 3}))
             (source / "runner.log").write_text("verbose output", encoding="utf-8")
             (source / "capture.pcap").write_bytes(b"raw packet data")
             plan_path.write_text(json.dumps(plan), encoding="utf-8")
@@ -296,10 +369,11 @@ class EvidenceBundleTests(unittest.TestCase):
                 result = bundle.handoff(args)
                 bundle.parallel_ci.verify_producer(destination, "unit", plan)
             self.assertEqual("success", result["outcome"])
-            self.assertEqual({"shard.json", "producer.json"},
+            self.assertEqual({"shard.json", "measurements.json", "producer.json"},
                              {path.name for path in destination.iterdir()})
             self.assertTrue((source / "runner.log").exists())
             self.assertTrue((source / "capture.pcap").exists())
+            self.assertIn("measurements.json", result["copied"])
             self.assertNotIn("timings.json", result["copied"])
 
             failed_destination = root / "failed-handoff"
@@ -312,7 +386,7 @@ class EvidenceBundleTests(unittest.TestCase):
                 failed = bundle.handoff(failed_args)
                 failed_envelope = bundle.read_json(failed_destination / "producer.json")
                 self.assertEqual("failure", failed_envelope["outcome"])
-                self.assertEqual({"shard.json", "producer.json"},
+                self.assertEqual({"shard.json", "measurements.json", "producer.json"},
                                  {path.name for path in failed_destination.iterdir()})
             self.assertEqual("failure", failed["outcome"])
 

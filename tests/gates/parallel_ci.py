@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import html
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -163,6 +164,10 @@ def prepare_plan(args):
 ROLES = ('plan', 'build', 'unit', 'hosted', 'provider', 'packet', 'native')
 MAX_FILES = 6000
 MAX_BYTES = 256 * 1024 * 1024
+MEASUREMENTS_SCHEMA = 'fwrouter-ci-measurements/v1'
+MAX_MEASUREMENT_BYTES = 64 * 1024
+NOT_MEASURED_PHASES = ['workflow.checkout', 'workflow.dependencies',
+                       'workflow.artifact_transfer', 'launcher.cleanup']
 
 
 def identity(plan):
@@ -247,6 +252,16 @@ def verify_producer(root, role, plan):
         raise gate.GateError(f'{role}: producer identity/status does not match this workflow attempt')
     if value.get('files') != file_inventory(root):
         raise gate.GateError(f'{role}: missing, duplicated, extra or modified producer files')
+    if 'measurements.json' in value['files']:
+        measurement = load_measurement_receipt(Path(root) / 'measurements.json')
+        validate_measurement_receipt(
+            measurement, plan, role,
+            shard_group=measurement.get('shard_group'),
+            native_profile=measurement.get('native_profile'))
+        if role == 'unit':
+            shard_report = strict.read_json(Path(root) / 'shard.json')
+            if measurement.get('shard_group') != shard_report.get('shard_group'):
+                raise gate.GateError('routine measurement shard differs from its sealed shard report')
     for name in value['files']:
         p = PurePosixPath(name)
         if p.is_absolute() or '..' in p.parts:
@@ -344,6 +359,122 @@ def process_peak(log_path: Path) -> dict[str, int]:
     return result
 
 
+def measurement_receipt(plan: dict[str, Any], role: str, phases: list[dict[str, Any]], *,
+                        shard_group: str | None = None, native_profile: str | None = None,
+                        resources_before: dict[str, Any] | None = None,
+                        resources_after: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Create bounded source/run-bound measurements; these never establish test status."""
+    rows = []
+    names = set()
+    for phase in phases:
+        name, seconds, exit_code = phase.get('phase'), phase.get('seconds'), phase.get('exit')
+        if (not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', name) or name in names
+                or not isinstance(seconds, (int, float)) or isinstance(seconds, bool)
+                or not math.isfinite(float(seconds)) or seconds < 0
+                or not isinstance(exit_code, int) or isinstance(exit_code, bool)):
+            raise gate.GateError('worker measurement phase is malformed or duplicated')
+        names.add(name)
+        row = {'phase': name, 'duration_seconds': round(float(seconds), 3), 'exit_code': exit_code}
+        for key in ('cpu_percent', 'max_rss_kib'):
+            value = phase.get(key)
+            if value is not None:
+                if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                        or not math.isfinite(float(value)) or value < 0):
+                    raise gate.GateError('worker measurement resource value is invalid')
+                row[key] = value
+        rows.append(row)
+    if role == 'unit':
+        if shard_group not in gate.ROUTINE_SHARD_GROUPS or native_profile is not None:
+            raise gate.GateError('routine measurement context is invalid')
+    elif role == 'native':
+        if native_profile not in {'qcp', 'xray'} or shard_group is not None:
+            raise gate.GateError('native measurement context is invalid')
+    elif role not in {'hosted', 'provider', 'packet'} or shard_group is not None or native_profile is not None:
+        raise gate.GateError('worker measurement role context is invalid')
+    value = {'schema': MEASUREMENTS_SCHEMA, **identity(plan), 'role': role,
+             'shard_group': shard_group, 'native_profile': native_profile,
+             'phases': rows, 'resources_before': resources_before,
+             'resources_after': resources_after,
+             'not_measured': NOT_MEASURED_PHASES}
+    validate_measurement_receipt(value, plan, role, shard_group=shard_group,
+                                 native_profile=native_profile)
+    if len(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()) > MAX_MEASUREMENT_BYTES:
+        raise gate.GateError('worker measurement receipt exceeds size bound')
+    return value
+
+
+def validate_measurement_receipt(value: Any, plan: dict[str, Any], role: str, *,
+                                 shard_group: str | None = None,
+                                 native_profile: str | None = None) -> None:
+    if role == 'unit':
+        context_valid = shard_group in gate.ROUTINE_SHARD_GROUPS and native_profile is None
+    elif role == 'native':
+        context_valid = native_profile in {'qcp', 'xray'} and shard_group is None
+    else:
+        context_valid = role in {'hosted', 'provider', 'packet'} and shard_group is None and native_profile is None
+    if (not isinstance(value, dict)
+            or set(value) != {'schema', 'source_commit', 'plan_digest', 'manifest_digest',
+                              'manifest_version', 'run_id', 'run_attempt', 'role',
+                              'shard_group', 'native_profile', 'phases', 'resources_before',
+                              'resources_after', 'not_measured'}
+            or value.get('schema') != MEASUREMENTS_SCHEMA
+            or any(value.get(key) != expected for key, expected in identity(plan).items())
+            or value.get('role') != role or value.get('shard_group') != shard_group
+            or value.get('native_profile') != native_profile
+            or not context_valid
+            or value.get('not_measured') != NOT_MEASURED_PHASES
+            or not isinstance(value.get('phases'), list) or len(value['phases']) > 32):
+        raise gate.GateError('worker measurement identity or envelope is invalid')
+    phases = value['phases']
+    names = set()
+    for phase in phases:
+        if not isinstance(phase, dict):
+            raise gate.GateError('worker measurement phase is invalid')
+        name = phase.get('phase')
+        seconds, exit_code = phase.get('duration_seconds'), phase.get('exit_code')
+        if (not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', name) or name in names
+                or not isinstance(seconds, (int, float)) or isinstance(seconds, bool)
+                or not math.isfinite(float(seconds)) or seconds < 0
+                or not isinstance(exit_code, int) or isinstance(exit_code, bool)
+                or set(phase) - {'phase', 'duration_seconds', 'exit_code', 'cpu_percent', 'max_rss_kib'}):
+            raise gate.GateError('worker measurement phase is malformed or duplicated')
+        names.add(name)
+        for key in ('cpu_percent', 'max_rss_kib'):
+            metric = phase.get(key)
+            if metric is not None and (not isinstance(metric, (int, float)) or isinstance(metric, bool)
+                                       or not math.isfinite(float(metric)) or metric < 0):
+                raise gate.GateError('worker measurement resource value is invalid')
+    for key in ('resources_before', 'resources_after'):
+        snapshot = value.get(key)
+        if not isinstance(snapshot, dict) or set(snapshot) != {
+                'cpu_count', 'memory', 'disk_total_bytes', 'disk_used_bytes', 'disk_free_bytes'}:
+            raise gate.GateError('worker resource snapshot is invalid')
+        numeric_values = [snapshot.get('cpu_count'), snapshot.get('disk_total_bytes'),
+                          snapshot.get('disk_used_bytes'), snapshot.get('disk_free_bytes')]
+        memory = snapshot.get('memory')
+        if not isinstance(memory, dict) or set(memory) - {
+                'MemTotal_bytes', 'MemAvailable_bytes', 'SwapTotal_bytes', 'SwapFree_bytes'}:
+            raise gate.GateError('worker memory snapshot is invalid')
+        numeric_values.extend(memory.values())
+        if any(not isinstance(number, int) or isinstance(number, bool) or number < 0
+               for number in numeric_values):
+            raise gate.GateError('worker resource snapshot contains invalid numeric values')
+
+
+def load_measurement_receipt(path: Path) -> dict[str, Any]:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_MEASUREMENT_BYTES:
+        raise gate.GateError('worker measurement receipt is missing, unsafe or oversized')
+    return strict.read_json(path)
+
+
+def format_seconds(value: Any) -> str:
+    if (not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(float(value)) or value < 0):
+        return 'NOT AVAILABLE'
+    return f'{float(value):.3f}'
+
+
 def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
                    native_profile: str | None = None, *, l6: bool = False) -> str:
     """Render bounded, non-payload job summary from local runner receipts."""
@@ -396,9 +527,23 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
             if isinstance(timings, list):
                 lines += ["", "| Stage | Result | Seconds | Peak RSS KiB |", "|---|---:|---:|---:|"]
                 lines += [f"| {item.get('stage', 'unknown')} | {item.get('exit', 'unknown')} | "
-                          f"{float(item.get('seconds', 0)):.3f} | "
+                          f"{format_seconds(item.get('seconds'))} | "
                           f"{process_peak(root / (str(item.get('stage', 'unknown')) + '.log')).get('max_rss_kib', 'n/a')} |"
                           for item in timings if isinstance(item, dict)]
+            measurement_path = root / 'measurements.json'
+            if measurement_path.is_file() and not measurement_path.is_symlink():
+                try:
+                    if measurement_path.stat().st_size > MAX_MEASUREMENT_BYTES:
+                        raise gate.GateError('worker measurement receipt exceeds size bound')
+                    measurement = strict.read_json(measurement_path)
+                    validate_measurement_receipt(measurement, plan, role,
+                                                 shard_group=measurement.get('shard_group'),
+                                                 native_profile=native_profile)
+                    lines.append(f"- Measured worker phases: {len(measurement['phases'])}; workflow checkout/dependencies/artifact transfer and launcher cleanup: NOT MEASURED.")
+                except (OSError, ValueError, TypeError, gate.GateError):
+                    lines.append("- Worker measurements: unavailable or invalid; timing is not qualification evidence.")
+            else:
+                lines.append("- Worker measurement receipt: NOT MEASURED; checkout/dependencies/artifact transfer and launcher cleanup: NOT MEASURED.")
         except (OSError, ValueError, TypeError):
             lines += ["", "Stage timings: unavailable or malformed."]
     receipt_paths = []
@@ -531,6 +676,10 @@ def run_worker(args):
         times.append({'stage': 'provision', 'seconds': elapsed, 'exit': code})
         if code:
             gate.atomic_json(root / 'timings.json', times)
+            gate.atomic_json(root / 'measurements.json', measurement_receipt(
+                plan, args.role, _measurement_phases(times, root), native_profile=getattr(args, 'native_profile', None),
+                resources_before=strict.read_json(root / 'resources-before.json'),
+                resources_after=resource_snapshot(root)))
             return code
         for line in env_file.read_text().splitlines():
             key, value = line.split('=', 1)
@@ -570,6 +719,26 @@ def run_worker(args):
                     shutil.copytree(source, root / source.name)
     gate.atomic_json(root / 'timings.json', times)
     gate.atomic_json(root / 'resources-after.json', resource_snapshot(root))
+    if args.role == 'unit':
+        shard_report = strict.read_json(shard_path) if shard_path.is_file() else {}
+        routine_duration = shard_report.get('duration_seconds')
+        if (not isinstance(routine_duration, (int, float)) or isinstance(routine_duration, bool)
+                or not math.isfinite(float(routine_duration)) or routine_duration < 0):
+            raise gate.GateError('routine shard duration is unavailable for measurement receipt')
+        if shard_report.get('status') not in {'passed', 'failed'}:
+            raise gate.GateError('routine shard outcome is unavailable for measurement receipt')
+        measured = [{'phase': 'routine_execution',
+                     'seconds': routine_duration,
+                     'exit': 0 if shard_report['status'] == 'passed' else 1}]
+        measured += times
+    else:
+        measured = times
+    gate.atomic_json(root / 'measurements.json', measurement_receipt(
+        plan, args.role, _measurement_phases(measured, root),
+        shard_group=getattr(args, 'shard_group', None),
+        native_profile=getattr(args, 'native_profile', None),
+        resources_before=strict.read_json(root / 'resources-before.json'),
+        resources_after=strict.read_json(root / 'resources-after.json')))
     if args.role == 'unit' and shard_path.is_file():
         report = strict.read_json(shard_path)
         report['run_id'] = os.environ['GITHUB_RUN_ID']
@@ -594,6 +763,19 @@ def run_worker(args):
         if report['status'] != 'passed':
             status = status or 1
     return status
+
+
+def _measurement_phases(timings: list[dict[str, Any]], root: Path) -> list[dict[str, Any]]:
+    phases = []
+    for item in timings:
+        row = {'phase': str(item.get('phase', item.get('stage', 'unknown'))),
+               'seconds': item.get('seconds'), 'exit': item.get('exit')}
+        # Only command rows have a corresponding GNU-time log. A routine-suite
+        # total is nested within the unit command wall and has no separate peak.
+        if 'stage' in item:
+            row.update(process_peak(root / (row['phase'] + '.log')))
+        phases.append(row)
+    return phases
 
 
 def one(root, pattern):
@@ -628,6 +810,9 @@ def combine_native_profiles(artifact_root: Path, plan: dict[str, Any], profiles:
     for index, profile in enumerate(profiles):
         source = Path(artifact_root) / prefix.format(role=f"native-{profile}")
         verify_producer(source, "native", plan)
+        if (source / 'measurements.json').is_file():
+            validate_measurement_receipt(load_measurement_receipt(source / 'measurements.json'),
+                                         plan, 'native', native_profile=profile)
         runtime = strict.read_json(source / "runtime-inputs.json")
         strict.validate_runtime_inputs(runtime)
         manifests.append(runtime)

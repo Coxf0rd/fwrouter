@@ -104,6 +104,38 @@ def _fixture(*, mandatory_all=False):
 
 
 class RoutineShardContractTests(unittest.TestCase):
+    def test_measurement_receipt_binds_identity_and_rejects_invalid_phases(self):
+        plan, _, _, _ = _fixture()
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            receipt = parallel_ci.measurement_receipt(
+                plan, "unit", [{"phase": "routine_execution", "seconds": 0.25, "exit": 0}],
+                shard_group="core-state", resources_before=_resource(), resources_after=_resource())
+            parallel_ci.validate_measurement_receipt(receipt, plan, "unit", shard_group="core-state")
+        altered = copy.deepcopy(receipt)
+        altered["run_attempt"] = "3"
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            with self.assertRaisesRegex(gate.GateError, "identity"):
+                parallel_ci.validate_measurement_receipt(altered, plan, "unit", shard_group="core-state")
+        duplicated = copy.deepcopy(receipt)
+        duplicated["phases"].append(copy.deepcopy(duplicated["phases"][0]))
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            with self.assertRaisesRegex(gate.GateError, "duplicated"):
+                parallel_ci.validate_measurement_receipt(duplicated, plan, "unit", shard_group="core-state")
+        nonfinite = copy.deepcopy(receipt)
+        nonfinite["phases"][0]["duration_seconds"] = float("nan")
+        with patch.dict("os.environ", {"GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": ATTEMPT}):
+            with self.assertRaisesRegex(gate.GateError, "malformed"):
+                parallel_ci.validate_measurement_receipt(nonfinite, plan, "unit", shard_group="core-state")
+            invalid_context = copy.deepcopy(receipt)
+            invalid_context["shard_group"] = "unregistered"
+            with self.assertRaisesRegex(gate.GateError, "identity"):
+                parallel_ci.validate_measurement_receipt(invalid_context, plan, "unit",
+                                                         shard_group="unregistered")
+            with self.assertRaisesRegex(gate.GateError, "malformed"):
+                parallel_ci.measurement_receipt(
+                    plan, "unit", [{"phase": "x" * 65, "seconds": 0, "exit": 0}],
+                    shard_group="core-state", resources_before=_resource(), resources_after=_resource())
+
     def test_routine_shard_summary_is_bounded_and_shows_only_nonpassing_ids(self):
         report = {
             'shard_group': 'core-state', 'status': 'failed',

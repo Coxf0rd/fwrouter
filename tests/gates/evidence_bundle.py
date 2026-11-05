@@ -58,7 +58,7 @@ SAFE_RECEIPTS = {
     "qualified-child-receipt.json", "qualified-xray-docker-receipt.json",
     "profile.json",
     "fwrouter-aggregate.json", "required-result.json", "qualification.json", "stage.json",
-    "manifest.json", "source.tar", "producer.json",
+    "manifest.json", "source.tar", "producer.json", "measurements.json",
 }
 FORBIDDEN_SUFFIXES = {".pcap", ".pcapng", ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12"}
 FORBIDDEN_NAMES = {".env", "config.json", "config.yaml", "config.yml", "private.key"}
@@ -279,7 +279,14 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
     }
     if needed.get("unit"):
         for group in gate.ROUTINE_SHARD_GROUPS:
+            shard_root = evidence / "unit" / "shards" / group
+            parallel_ci.verify_producer(shard_root, "unit", plan)
+            files = read_json(shard_root / "producer.json").get("files", {})
             paths["unit"].extend((f"shards/{group}/shard.json", f"shards/{group}/producer.json"))
+            if "measurements.json" in files:
+                parallel_ci.validate_measurement_receipt(parallel_ci.load_measurement_receipt(shard_root / "measurements.json"),
+                                                         plan, "unit", shard_group=group)
+                paths["unit"].append(f"shards/{group}/measurements.json")
     wheels = sorted((evidence / "build/build").glob("*.whl"))
     if needed.get("build"):
         if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
@@ -291,6 +298,12 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
             if len(reports) != 1 or any(p.is_symlink() or not p.is_file() for p in reports):
                 raise gate.GateError(f"{role} must contain exactly one safe hosted report")
             paths[role] = [p.relative_to(evidence / role).as_posix() for p in reports] + ["runtime-inputs.json"]
+            measurement = evidence / role / "measurements.json"
+            if measurement.is_file() and not measurement.is_symlink():
+                parallel_ci.validate_measurement_receipt(parallel_ci.load_measurement_receipt(measurement), plan, role)
+                paths[role].append("measurements.json")
+            elif measurement.exists() or measurement.is_symlink():
+                raise gate.GateError(f"{role} worker measurement receipt is unsafe")
     if needed.get("native"):
         native_paths = ["runtime-inputs.json"]
         manifest_rows = {row["path"]: row for row in gate.load_manifest()["test_files"]}
@@ -314,6 +327,10 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
                 raise gate.GateError(f"native profile {profile_name} must retain exactly one sealed receipt")
             sibling = str(Path(receipts[0]).with_name("profile.json"))
             expected_files = {"runtime-inputs.json", receipts[0], sibling}
+            if "measurements.json" in files:
+                parallel_ci.validate_measurement_receipt(parallel_ci.load_measurement_receipt(profile_root / "measurements.json"),
+                                                         plan, "native", native_profile=profile_name)
+                expected_files.add("measurements.json")
             if set(files) != expected_files:
                 raise gate.GateError(
                     f"native profile {profile_name} has missing or unapproved sealed files")
@@ -447,6 +464,13 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
         if group not in gate.ROUTINE_SHARD_GROUPS:
             raise gate.GateError("unit evidence handoff requires a supported --shard-group")
         candidates = ["shard.json"]
+        measurement = source / "measurements.json"
+        if measurement.exists() or measurement.is_symlink():
+            if measurement.is_symlink() or not measurement.is_file():
+                raise gate.GateError("unit worker measurement receipt is unsafe")
+            parallel_ci.validate_measurement_receipt(parallel_ci.load_measurement_receipt(measurement), plan, "unit",
+                                                     shard_group=group)
+            candidates.append("measurements.json")
         if args.outcome == "success":
             report = read_json(source / "shard.json")
             rows = routine_shards.expected_by_group(plan, gate.load_manifest())[group]
@@ -463,6 +487,12 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
         candidates.extend(p.relative_to(source).as_posix() for p in reports)
         if args.outcome == "success" and len(reports) != 1:
             raise gate.GateError(f"{args.role} success must supply exactly one strict hosted report")
+        measurement = source / "measurements.json"
+        if measurement.exists() or measurement.is_symlink():
+            if measurement.is_symlink() or not measurement.is_file():
+                raise gate.GateError(f"{args.role} worker measurement receipt is unsafe")
+            parallel_ci.validate_measurement_receipt(parallel_ci.load_measurement_receipt(measurement), plan, args.role)
+            candidates.append("measurements.json")
     else:
         candidates = ["runtime-inputs.json"]
         selected = set(plan.get("selected_files", []))
@@ -499,6 +529,13 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
                     raise gate.GateError("native success requires the Docker-Xray sibling profile.json")
                 if profile.is_file() and not profile.is_symlink():
                     candidates.append(profile.relative_to(source).as_posix())
+        measurement = source / "measurements.json"
+        if measurement.exists() or measurement.is_symlink():
+            if measurement.is_symlink() or not measurement.is_file():
+                raise gate.GateError("native worker measurement receipt is unsafe")
+            parallel_ci.validate_measurement_receipt(parallel_ci.load_measurement_receipt(measurement), plan, "native",
+                                                     native_profile=native_profile)
+            candidates.append("measurements.json")
 
     if args.destination.is_symlink():
         raise gate.GateError("handoff destination is unsafe")

@@ -84,7 +84,12 @@ def check_native_files(root, profile, plan):
     files = value['files']
     name = 'qualified-child-receipt.json' if profile == 'qcp' else 'qualified-xray-docker-receipt.json'
     receipts = [path for path in files if Path(path).name == name]
-    if len(receipts) != 1 or set(files) != {'runtime-inputs.json', receipts[0], str(Path(receipts[0]).with_name('profile.json'))}:
+    expected = {'runtime-inputs.json', receipts[0], str(Path(receipts[0]).with_name('profile.json'))} if len(receipts) == 1 else set()
+    if 'measurements.json' in files:
+        parallel.validate_measurement_receipt(parallel.load_measurement_receipt(root / 'measurements.json'), plan,
+                                              'native', native_profile=profile)
+        expected.add('measurements.json')
+    if len(receipts) != 1 or set(files) != expected:
         raise gate.GateError('L6 native child has missing or unapproved evidence')
 
 
@@ -99,11 +104,20 @@ def replay(evidence, plan, jobs):
             files = strict.read_json(root / 'producer.json')['files']
             if role == 'plan' and set(files) != {'fwrouter-affected-plan.json'}:
                 raise gate.GateError('unexpected L6 planner evidence')
-            if role == 'unit' and set(files) != {'shard.json'}:
-                raise gate.GateError('unexpected L6 routine evidence')
+            if role == 'unit':
+                expected = {'shard.json'}
+                if 'measurements.json' in files:
+                    parallel.validate_measurement_receipt(parallel.load_measurement_receipt(root / 'measurements.json'),
+                                                          plan, 'unit', shard_group=child.removeprefix('unit-'))
+                    expected.add('measurements.json')
+                if set(files) != expected:
+                    raise gate.GateError('unexpected L6 routine evidence')
             if role in HOSTED:
                 receipts = [name for name in files if Path(name).name == 'hosted-acceptance-report.json']
-                if len(receipts) != 1 or set(files) != {'runtime-inputs.json', receipts[0]}:
+                expected = {'runtime-inputs.json', receipts[0], 'measurements.json'} if len(receipts) == 1 and 'measurements.json' in files else {'runtime-inputs.json', receipts[0]} if len(receipts) == 1 else set()
+                if 'measurements.json' in files:
+                    parallel.validate_measurement_receipt(parallel.load_measurement_receipt(root / 'measurements.json'), plan, role)
+                if len(receipts) != 1 or set(files) != expected:
                     raise gate.GateError('unexpected L6 hosted evidence')
             if role == 'native':
                 check_native_files(root, child.removeprefix('native-'), plan)
