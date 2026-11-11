@@ -44,7 +44,7 @@ def test_configured_scanners_match_legacy_splitlines_reference(monkeypatch, tmp_
     config_path = tmp_path / "config.yaml"
     config_path.write_text(text, encoding="utf-8")
     adapter = MihomoHttpAdapter(config_path=config_path, contours_path=tmp_path / "missing.yaml")
-    adapter.check_port = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    adapter._listener_socket_snapshot = lambda **_kwargs: None  # type: ignore[method-assign]
     optimized = {
         "scalar": adapter._config_top_level_scalar("secret", text=text),
         "ports": adapter._scan_listener_ports(text=text),
@@ -78,7 +78,7 @@ def test_late_headers_use_legacy_splitlines_path_with_equivalent_output(monkeypa
     path = tmp_path / "config.yaml"
     path.write_text(text, encoding="utf-8")
     adapter = MihomoHttpAdapter(config_path=path, contours_path=tmp_path / "missing.yaml")
-    adapter.check_port = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    adapter._listener_socket_snapshot = lambda **_kwargs: None  # type: ignore[method-assign]
     optimized = adapter._config_runtime_details(config_text=text)
     monkeypatch.setattr(mihomo_module, "_iter_config_lines", lambda source: iter(source.splitlines()))
     reference = adapter._config_runtime_details(config_text=text)
@@ -98,7 +98,7 @@ def test_literal_absence_guards_preserve_nested_and_commented_values(monkeypatch
     path = tmp_path / "config.yaml"
     path.write_text(text, encoding="utf-8")
     adapter = MihomoHttpAdapter(config_path=path, contours_path=tmp_path / "missing.yaml")
-    adapter.check_port = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    adapter._listener_socket_snapshot = lambda **_kwargs: None  # type: ignore[method-assign]
     optimized = {
         "scalar": adapter._config_top_level_scalar("bind-address", text=text),
         "ports": adapter._scan_listener_ports(text=text),
@@ -369,13 +369,32 @@ def test_native_socket_observation_remains_fresh_for_each_configured_read(tmp_pa
         encoding="utf-8",
     )
     adapter = MihomoHttpAdapter(config_path=config_path, contours_path=tmp_path / "missing.yaml")
-    observed: list[tuple[int, str, float]] = []
+    snapshots = [
+        (
+            "tcp LISTEN 0 1 0.0.0.0:7892 *:* ino:1 sk:1\n"
+            "udp UNCONN 0 0 0.0.0.0:7893 *:* ino:2 sk:2\n"
+        ),
+        "udp UNCONN 0 0 0.0.0.0:7893 *:* ino:2 sk:2\n",
+        (
+            "tcp LISTEN 0 1 0.0.0.0:7892 *:* ino:1 sk:1\n"
+            "udp UNCONN 0 0 0.0.0.0:7893 *:* ino:2 sk:2\n"
+        ),
+    ]
+    observed: list[set[int]] = []
 
-    def check_port(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:
-        observed.append((port, host, timeout))
-        return True
+    def socket_snapshot(*, ports: set[int]) -> str:
+        observed.append(set(ports))
+        return snapshots.pop(0)
 
-    adapter.check_port = check_port  # type: ignore[method-assign]
-    for _ in range(3):
-        adapter._config_runtime_details()
-    assert [port for port, _host, _timeout in observed] == [7892, 7893] * 3
+    adapter._listener_socket_snapshot = socket_snapshot  # type: ignore[method-assign]
+    adapter.check_port = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("transparent health must not connect to the listeners")
+    )  # type: ignore[method-assign]
+    results = [adapter._config_runtime_details() for _ in range(3)]
+
+    assert observed == [{7892, 7893}] * 3
+    assert [
+        (result["transparent_tcp_listener_socket_present"], result["transparent_udp_listener_socket_present"])
+        for result in results
+    ] == [(True, True), (False, True), (True, True)]
+    assert snapshots == []

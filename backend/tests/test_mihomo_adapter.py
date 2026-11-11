@@ -702,7 +702,19 @@ def test_mihomo_health_uses_managed_split_listeners_as_canonical_source(tmp_path
     _write_yaml(contours_path, {"transparent_vpn": {"ready": True}})
 
     adapter = MihomoHttpAdapter(base_url=DEFAULT_BASE_URL, config_path=config_path, contours_path=contours_path)
-    adapter.check_port = lambda port, host="127.0.0.1", timeout=1.0: True  # type: ignore[method-assign]
+    socket_snapshots = 0
+
+    def socket_snapshot(*, ports: set[int]) -> str:
+        nonlocal socket_snapshots
+        socket_snapshots += 1
+        assert ports == {5202, 5203}
+        return (
+            "tcp LISTEN 0 4096 0.0.0.0:5202 0.0.0.0:* ino:1 sk:1\n"
+            "udp UNCONN 0 0 0.0.0.0:5203 0.0.0.0:* ino:2 sk:2\n"
+        )
+
+    adapter._listener_socket_snapshot = socket_snapshot  # type: ignore[method-assign]
+    adapter.check_port = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not connect to transparent listeners"))  # type: ignore[method-assign]
     adapter._get_json = lambda path: (  # type: ignore[method-assign]
         {"version": "test"}
         if path == "/version"
@@ -723,6 +735,11 @@ def test_mihomo_health_uses_managed_split_listeners_as_canonical_source(tmp_path
     assert health.details["config"]["fwrouter_contours"]["transparent_vpn"]["transparent_tcp_ready"] is True
     assert health.details["config"]["fwrouter_contours"]["transparent_vpn"]["transparent_udp_ready"] is True
     assert health.details["transparent_runtime"]["transparent_tcp_session_materialized"] is True
+    assert health.details["config"]["transparent_tcp_listener_socket_present"] is True
+    assert health.details["config"]["transparent_udp_listener_socket_present"] is True
+    assert socket_snapshots == 1
+    assert adapter.health().runtime_state == MihomoRuntimeState.RUNNING
+    assert socket_snapshots == 2
 
 
 def test_mihomo_health_accepts_rule_based_transparent_listeners(tmp_path: Path) -> None:
@@ -742,7 +759,11 @@ def test_mihomo_health_accepts_rule_based_transparent_listeners(tmp_path: Path) 
     _write_yaml(contours_path, {"transparent_vpn": {"ready": True}})
 
     adapter = MihomoHttpAdapter(base_url=DEFAULT_BASE_URL, config_path=config_path, contours_path=contours_path)
-    adapter.check_port = lambda port, host="127.0.0.1", timeout=1.0: True  # type: ignore[method-assign]
+    adapter._listener_socket_snapshot = lambda **_kwargs: (  # type: ignore[method-assign]
+        "tcp LISTEN 0 4096 0.0.0.0:5202 0.0.0.0:* ino:1 sk:1\n"
+        "udp UNCONN 0 0 0.0.0.0:5203 0.0.0.0:* ino:2 sk:2\n"
+    )
+    adapter.check_port = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not connect to transparent listeners"))  # type: ignore[method-assign]
     adapter._get_json = lambda path: (  # type: ignore[method-assign]
         {"version": "test"}
         if path == "/version"
@@ -759,6 +780,117 @@ def test_mihomo_health_accepts_rule_based_transparent_listeners(tmp_path: Path) 
     assert transparent["listener_proxy"] is None
     assert transparent["transparent_tcp_ready"] is True
     assert transparent["transparent_udp_ready"] is True
+
+
+def test_transparent_listener_presence_requires_protocol_port_and_exact_bind() -> None:
+    adapter = MihomoHttpAdapter()
+    snapshot = (
+        "tcp LISTEN 0 4096 0.0.0.0:61001 0.0.0.0:* ino:1 sk:1\n"
+        "udp UNCONN 0 0 [::]:61002 [::]:* ino:2 sk:2 v6only:0\n"
+    )
+
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61001, protocol="tcp", snapshot=snapshot
+    ) is True
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61002, protocol="udp", snapshot=snapshot
+    ) is True
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61001, protocol="udp", snapshot=snapshot
+    ) is False
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61002, protocol="tcp", snapshot=snapshot
+    ) is False
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61003, protocol="tcp", snapshot=snapshot
+    ) is False
+
+
+def test_transparent_listener_presence_rejects_wrong_binding_and_ambiguous_dual_stack() -> None:
+    adapter = MihomoHttpAdapter()
+    loopback = "tcp LISTEN 0 4096 127.0.0.1:61001 0.0.0.0:* ino:1 sk:1\n"
+    wrong_address = "tcp LISTEN 0 4096 192.0.2.1:61001 0.0.0.0:* ino:1 sk:1\n"
+    dual_stack = "udp UNCONN 0 0 *:61002 *:* ino:2 sk:2 v6only:0\n"
+    v6_only = "udp UNCONN 0 0 [::]:61002 [::]:* ino:2 sk:2 v6only:1\n"
+    ambiguous = "udp UNCONN 0 0 *:61002 *:* ino:2 sk:2\n"
+
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61001, protocol="tcp", snapshot=loopback
+    ) is False
+    assert adapter._transparent_listener_socket_present(
+        bind="198.51.100.2", port=61001, protocol="tcp", snapshot=wrong_address
+    ) is False
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61002, protocol="udp", snapshot=dual_stack
+    ) is True
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61002, protocol="udp", snapshot=v6_only
+    ) is False
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=61002, protocol="udp", snapshot=ambiguous
+    ) is False
+    assert adapter._transparent_listener_socket_present(
+        bind="127.0.0.1", port=61001, protocol="tcp", snapshot=loopback
+    ) is False
+
+
+def test_transparent_listener_presence_fails_closed_when_ss_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = MihomoHttpAdapter()
+    monkeypatch.setattr(adapter, "_listener_socket_snapshot", lambda **_kwargs: None)
+
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=5202, protocol="tcp", snapshot=adapter._listener_socket_snapshot(ports={5202})
+    ) is False
+    assert adapter._transparent_listener_socket_present(
+        bind="0.0.0.0", port=5203, protocol="udp", snapshot=adapter._listener_socket_snapshot(ports={5203})
+    ) is False
+
+
+def test_listener_socket_snapshot_is_bounded_filtered_and_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = MihomoHttpAdapter()
+    calls: list[tuple[list[str], float]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        calls.append((command, kwargs["timeout"]))
+        return type("Result", (), {"returncode": 0, "stdout": "tcp LISTEN 0 1 0.0.0.0:5202 *:*\\n"})()
+
+    monkeypatch.setattr(mihomo_module.subprocess, "run", run)
+
+    assert adapter._listener_socket_snapshot(ports={5202, 5203}) == "tcp LISTEN 0 1 0.0.0.0:5202 *:*\\n"
+    assert calls == [(["ss", "-H", "-n", "-l", "-t", "-u", "-e", "( sport = :5202 or sport = :5203 )"], 1.0)]
+
+
+def test_listener_socket_snapshot_fails_closed_on_command_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = MihomoHttpAdapter()
+    monkeypatch.setattr(
+        mihomo_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"returncode": 1, "stdout": ""})(),
+    )
+    assert adapter._listener_socket_snapshot(ports={5202}) is None
+
+    def timeout(*_args: Any, **_kwargs: Any) -> Any:
+        raise mihomo_module.subprocess.TimeoutExpired("ss", 1.0)
+
+    monkeypatch.setattr(mihomo_module.subprocess, "run", timeout)
+    assert adapter._listener_socket_snapshot(ports={5203}) is None
+
+    monkeypatch.setattr(
+        mihomo_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ss unavailable")),
+    )
+    assert adapter._listener_socket_snapshot(ports={5202}) is None
+
+
+def test_listener_socket_snapshot_rejects_oversized_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = MihomoHttpAdapter()
+    monkeypatch.setattr(
+        mihomo_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"returncode": 0, "stdout": "x" * (64 * 1024 + 1)})(),
+    )
+    assert adapter._listener_socket_snapshot(ports={5202}) is None
 
 
 def test_apply_server_to_selector_treats_controller_404_as_missing_selector(tmp_path: Path) -> None:

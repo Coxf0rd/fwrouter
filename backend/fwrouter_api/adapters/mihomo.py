@@ -12,6 +12,7 @@ import ipaddress
 import json
 import re
 import socket
+import subprocess
 import threading
 import httpx
 import yaml
@@ -645,11 +646,104 @@ class MihomoHttpAdapter(MihomoAdapter):
         *,
         bind: str | None,
         port: int | None,
+        protocol: str,
+        snapshot: str | None,
     ) -> bool:
-        if not _transparent_bind_address_valid(bind) or not isinstance(port, int) or port <= 0:
+        if (
+            not _transparent_bind_address_valid(bind)
+            or not isinstance(port, int)
+            or isinstance(port, bool)
+            or port <= 0
+            or port > 65535
+        ):
             return False
-        target_host = "127.0.0.1" if str(bind).strip() == TRANSPARENT_TPROXY_LISTENER_BIND else str(bind).strip()
-        return self.check_port(port, host=target_host, timeout=0.5)
+        if snapshot is None:
+            return False
+        return self._listener_snapshot_contains(
+            snapshot,
+            bind=str(bind).strip(),
+            port=port,
+            protocol=protocol,
+        )
+
+    @staticmethod
+    def _listener_snapshot_contains(
+        snapshot: str,
+        *,
+        bind: str,
+        port: int,
+        protocol: str,
+    ) -> bool:
+        if protocol not in {"tcp", "udp"} or not 1 <= port <= 65535:
+            return False
+        expected_port = str(port)
+        expected_state = "LISTEN" if protocol == "tcp" else "UNCONN"
+        expected_protocols = {"tcp", "tcp4", "tcp6"} if protocol == "tcp" else {"udp", "udp4", "udp6"}
+        for line in snapshot.splitlines():
+            fields = line.split()
+            # `ss -l` emits TCP LISTEN and bound UDP UNCONN rows. Other
+            # protocols/states cannot satisfy either listener contract.
+            if not fields:
+                continue
+            if fields[0] in expected_protocols:
+                if len(fields) < 6 or fields[1] != expected_state:
+                    continue
+                state_index = 1
+            else:
+                if len(fields) < 5 or fields[0] != expected_state:
+                    continue
+                state_index = 0
+            endpoint = fields[state_index + 3]
+            address, separator, local_port = endpoint.rpartition(":")
+            if not separator or local_port != expected_port:
+                continue
+
+            ipv6_only_marker = next((field for field in fields[state_index + 5:] if field.startswith("v6only:")), None)
+            ipv6 = address.startswith("[") or ipv6_only_marker is not None
+            if address.startswith("[") and address.endswith("]"):
+                address = address[1:-1]
+            if bind == TRANSPARENT_TPROXY_LISTENER_BIND:
+                # IPv4 wildcard is exact. An IPv6 wildcard is acceptable only
+                # when ss explicitly reports dual-stack coverage. Ambiguous
+                # `*` output and missing socket-option evidence fail closed.
+                if address == "0.0.0.0" and not ipv6:
+                    return True
+                if address in {"*", "::"} and ipv6_only_marker == "v6only:0":
+                    return True
+                continue
+
+            # For a specific configured address require that exact address;
+            # accepting a wildcard here would hide an unintended exposure.
+            if address == bind:
+                return True
+        return False
+
+    @staticmethod
+    def _listener_socket_snapshot(*, ports: set[int]) -> str | None:
+        """Return a bounded passive socket snapshot for selected listener ports."""
+        if not ports or any(
+            not isinstance(port, int)
+            or isinstance(port, bool)
+            or port < 1
+            or port > 65535
+            for port in ports
+        ):
+            return None
+        port_filter = "( " + " or ".join(f"sport = :{port}" for port in sorted(ports)) + " )"
+        try:
+            result = subprocess.run(
+                ["ss", "-H", "-n", "-l", "-t", "-u", "-e", port_filter],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0 or len(result.stdout) > 64 * 1024:
+            return None
+        return result.stdout
 
     def _transparent_session_observation(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         connections = payload.get("connections") if isinstance(payload, dict) else None
@@ -783,13 +877,29 @@ class MihomoHttpAdapter(MihomoAdapter):
         transparent_udp_listener_present = isinstance(transparent_tproxy_listener, dict)
         transparent_tcp_listener_bind_valid = _transparent_bind_address_valid(transparent_redir_bind)
         transparent_udp_listener_bind_valid = _transparent_bind_address_valid(transparent_tproxy_bind)
+        candidate_ports = {
+            port
+            for bind, port in (
+                (transparent_redir_bind, redir_port),
+                (transparent_tproxy_bind, tproxy_port),
+            )
+            if _transparent_bind_address_valid(bind)
+            and isinstance(port, int)
+            and not isinstance(port, bool)
+            and 0 < port <= 65535
+        }
+        socket_snapshot = self._listener_socket_snapshot(ports=candidate_ports) if candidate_ports else None
         transparent_tcp_listener_socket_present = self._transparent_listener_socket_present(
             bind=transparent_redir_bind,
             port=redir_port,
+            protocol="tcp",
+            snapshot=socket_snapshot,
         )
         transparent_udp_listener_socket_present = self._transparent_listener_socket_present(
             bind=transparent_tproxy_bind,
             port=tproxy_port,
+            protocol="udp",
+            snapshot=socket_snapshot,
         )
         transparent_contours = dict(contours)
         transparent_vpn = dict(transparent_contours.get("transparent_vpn") or {})
