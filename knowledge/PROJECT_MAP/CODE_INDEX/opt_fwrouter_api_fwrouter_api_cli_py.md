@@ -36,9 +36,12 @@ Console entrypoint `fwrouter` for read-only operational commands.
   plan digest and `--confirm CORE_IP_RECEIPT_REATTEST`; it changes only the
   existing Core receipt's IP semantic digest after full strict Core readback
   and `_core_ip_facts()` checks. Its narrow shared-lease admission independently
-  pins the executing source tool and installed backend, and requires the exact
-  complete ordinary schema-2 lifecycle checkpoint to match the installed OLD
-  backend; pending, absent, newer-schema or mismatched checkpoints fail closed.
+  pins the executing source tool and installed backend, and requires an exact
+  complete ordinary schema-2 or schema-4 lifecycle checkpoint to match the
+  installed OLD backend; pending, absent, unsupported-schema or mismatched
+  checkpoints fail closed. Schema 4 is admitted only with null maintenance and
+  runtime-quiescence operations. The CLI does not call or weaken general
+  startup admission.
   It does not install the tool, modify the backend selector, run Core apply,
   update generation/checkpoint state, or relax normal native proof. The CLI
   process acquires the shared maintenance lease; this does not claim that a

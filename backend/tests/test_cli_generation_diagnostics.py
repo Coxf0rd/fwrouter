@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 import sys
 import types
 from contextlib import nullcontext
@@ -9,6 +10,23 @@ from contextlib import nullcontext
 import pytest
 
 from fwrouter_api import cli
+
+
+def test_core_owner_checkpoint_key_sets_match_installer_schema_contract() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    path = repo_root / "installer" / "controlled_backend_lifecycle.py"
+    spec = importlib.util.spec_from_file_location("core_owner_lifecycle_schema_test", path)
+    assert spec is not None and spec.loader is not None
+    lifecycle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lifecycle)
+
+    schema2_keys = {
+        "schema", "operation_id", "status", "created_at", "backend_manifest",
+        "backend_manifest_sha256", "active_units", "pending_units",
+        "initial_backend_manifest_sha256", "source_transitions",
+    }
+    assert schema2_keys == lifecycle.PREVIOUS_CHECKPOINT_KEYS
+    assert schema2_keys | {"maintenance_operation", "runtime_quiescence"} == lifecycle.CHECKPOINT_KEYS
 
 
 def _install_legacy_admission_cli(monkeypatch, *, admission_result=None, plan_result=None):
@@ -267,13 +285,27 @@ def _install_core_owner_checkpoint(
         "fwrouter-subscription-refresh.service", "fwrouter-traffic-collect.service",
         "fwrouter-api.service",
     )}
+    operation_id = str(uuid.uuid4())
     checkpoint = {
-        "schema": schema, "operation_id": str(uuid.uuid4()), "status": status,
+        "schema": schema, "operation_id": operation_id, "status": status,
         "created_at": "2026-10-29T00:00:00Z", "backend_manifest": manifest,
         "backend_manifest_sha256": digest, "active_units": active_units,
         "pending_units": [], "initial_backend_manifest_sha256": digest,
         "source_transitions": [],
     }
+    if schema == 4:
+        initial_digest = "f" * 64
+        checkpoint.update(
+            initial_backend_manifest_sha256=initial_digest,
+            source_transitions=[{
+                "operation_id": operation_id,
+                "from_manifest_sha256": initial_digest,
+                "to_manifest_sha256": digest,
+                "created_at": "2026-10-29T00:01:00Z",
+            }],
+            maintenance_operation=None,
+            runtime_quiescence=None,
+        )
     _, path, _ = _lifecycle_paths(state_root)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -352,6 +384,128 @@ def test_core_ip_receipt_reattest_cli_admits_new_tool_against_complete_old_check
     }
     assert output["status"] == "PASS"
     assert generic_admission_called is False
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_core_ip_receipt_reattest_cli_admits_complete_schema4_checkpoint(
+    monkeypatch, capsys, tmp_path, apply,
+) -> None:
+    from fwrouter_api.services import maintenance_lifecycle_admission, native_proof
+
+    tool_digest, installed_digest = _core_owner_fixture(monkeypatch, tmp_path, schema=4)
+    generic_admission_called = False
+
+    def generic_lease(_root):
+        nonlocal generic_admission_called
+        generic_admission_called = True
+        raise AssertionError("Core owner command must not use generic startup manifest admission")
+
+    monkeypatch.setattr(maintenance_lifecycle_admission, "runtime_shared_lease", generic_lease)
+    captured: dict[str, object] = {}
+
+    def fake_reattest(**kwargs):
+        captured.update(kwargs)
+        return {"status": "PASS", "action": "REATTEST", "plan_sha256": "d" * 64,
+                "receipt_sha256": "e" * 64}
+
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt", fake_reattest)
+    args = [
+        "core", "ip-receipt-reattest", "--apply" if apply else "--plan",
+        "--expected-tool-manifest-sha256", tool_digest,
+        "--expected-installed-backend-manifest-sha256", installed_digest,
+    ]
+    if apply:
+        args.extend(("--expected-plan-sha256", "c" * 64,
+                     "--confirm", "CORE_IP_RECEIPT_REATTEST"))
+    exit_code = cli.main(args)
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output["status"] == "PASS"
+    assert captured == {
+        "expected_tool_manifest_sha256": tool_digest,
+        "expected_installed_backend_manifest_sha256": installed_digest,
+        "apply": apply,
+        "expected_plan_sha256": "c" * 64 if apply else None,
+        "confirmation": "CORE_IP_RECEIPT_REATTEST" if apply else None,
+    }
+    assert generic_admission_called is False
+
+
+@pytest.mark.parametrize(
+    ("schema", "mutation", "expected_reason"),
+    [
+        (1, None, "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (3, None, "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (5, None, "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (True, None, "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (2, "missing_key", "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (2, "unexpected_key", "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (2, "incomplete_status", "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (2, "pending_unit", "CORE_OWNER_CHECKPOINT_INVALID"),
+        (4, "missing_key", "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (4, "missing_maintenance_key", "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (4, "unexpected_key", "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (4, "incomplete_status", "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED"),
+        (4, "maintenance_operation", "CORE_OWNER_CHECKPOINT_INVALID"),
+        (4, "runtime_quiescence", "CORE_OWNER_CHECKPOINT_INVALID"),
+        (4, "pending_unit", "CORE_OWNER_CHECKPOINT_INVALID"),
+        (4, "operation_uuid", "CORE_OWNER_CHECKPOINT_INVALID"),
+        (4, "manifest_digest", "CORE_OWNER_CHECKPOINT_INVALID"),
+        (4, "transition_operation_uuid", "CORE_OWNER_CHECKPOINT_INVALID"),
+    ],
+)
+def test_core_ip_receipt_reattest_cli_rejects_unsafe_checkpoint_shapes(
+    monkeypatch, capsys, tmp_path, schema, mutation, expected_reason,
+) -> None:
+    from fwrouter_api.services import maintenance_lifecycle_admission, native_proof
+
+    tool_digest, installed_digest = _core_owner_fixture(monkeypatch, tmp_path, schema=schema)
+    state_root = tmp_path / "state-root"
+    _, checkpoint_path, _ = maintenance_lifecycle_admission._lifecycle_paths(state_root)
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    if mutation == "missing_key":
+        checkpoint.pop("runtime_quiescence" if schema == 4 else "source_transitions")
+    elif mutation == "missing_maintenance_key":
+        checkpoint.pop("maintenance_operation")
+    elif mutation == "unexpected_key":
+        checkpoint["phase"] = "complete"
+    elif mutation == "incomplete_status":
+        checkpoint["status"] = "pending"
+    elif mutation == "maintenance_operation":
+        checkpoint["maintenance_operation"] = {"operation_id": "not-null"}
+    elif mutation == "runtime_quiescence":
+        checkpoint["runtime_quiescence"] = {"status": "complete"}
+    elif mutation == "pending_unit":
+        checkpoint["pending_units"] = ["fwrouter-api.service"]
+    elif mutation == "operation_uuid":
+        checkpoint["operation_id"] = "not-a-uuid"
+    elif mutation == "manifest_digest":
+        checkpoint["backend_manifest_sha256"] = "0" * 64
+    elif mutation == "transition_operation_uuid":
+        checkpoint["source_transitions"][0]["operation_id"] = (
+            "00000000-0000-0000-0000-000000000000"
+        )
+    checkpoint_path.write_text(json.dumps(checkpoint, sort_keys=True), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+
+    called = False
+
+    def fake_reattest(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt", fake_reattest)
+    assert cli.main([
+        "core", "ip-receipt-reattest", "--plan",
+        "--expected-tool-manifest-sha256", tool_digest,
+        "--expected-installed-backend-manifest-sha256", installed_digest,
+    ]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "BLOCKED", "reason": expected_reason,
+    }
+    assert called is False
 
 
 def test_core_ip_receipt_reattest_cli_rejects_pending_checkpoint(monkeypatch, capsys, tmp_path) -> None:

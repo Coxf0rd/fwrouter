@@ -420,7 +420,7 @@ def _validate_core_owner_complete_checkpoint(
     *,
     expected_installed_backend_manifest_sha256: str,
 ) -> None:
-    """Admit the immutable source tool only against a completed schema-2 OLD tree.
+    """Admit the immutable source tool against a completed schema-2 or 4 OLD tree.
 
     The general startup gate intentionally compares the executing backend with
     the lifecycle checkpoint. This narrowly scoped owner command executes a
@@ -429,15 +429,23 @@ def _validate_core_owner_complete_checkpoint(
     """
     if checkpoint is None:
         raise MaintenanceAdmissionError("CORE_OWNER_LIFECYCLE_CHECKPOINT_REQUIRED")
-    expected_keys = {
+    schema2_keys = {
         "schema", "operation_id", "status", "created_at", "backend_manifest",
         "backend_manifest_sha256", "active_units", "pending_units",
         "initial_backend_manifest_sha256", "source_transitions",
     }
-    if (set(checkpoint) != expected_keys or type(checkpoint.get("schema")) is not int
-            or checkpoint.get("schema") != 2
-            or checkpoint.get("status") != "complete"):
+    schema4_keys = schema2_keys | {"maintenance_operation", "runtime_quiescence"}
+    schema = checkpoint.get("schema")
+    if type(schema) is not int or schema not in {2, 4}:
         raise MaintenanceAdmissionError("CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED")
+    expected_keys = schema2_keys if schema == 2 else schema4_keys
+    if set(checkpoint) != expected_keys or checkpoint.get("status") != "complete":
+        raise MaintenanceAdmissionError("CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED")
+    if schema == 4 and (
+        checkpoint.get("maintenance_operation") is not None
+        or checkpoint.get("runtime_quiescence") is not None
+    ):
+        raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
     try:
         operation_id = str(uuid.UUID(str(checkpoint.get("operation_id"))))
     except (ValueError, TypeError, AttributeError) as exc:
@@ -507,6 +515,7 @@ def _validate_core_owner_complete_checkpoint(
             or any(not isinstance(name, str) or type(active) is not bool
                    for name, active in units.items())
             or not isinstance(pending, list)
+            or pending
             or any(not isinstance(unit, str) or unit not in LOCK_UNITS for unit in pending)
             or len(pending) != len(set(pending))):
         raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
@@ -524,7 +533,7 @@ def core_owner_shared_lease(
     """Hold the existing shared lease for a Core owner tool pinned separately from OLD.
 
     Unlike ``runtime_shared_lease``, this admits only a complete ordinary schema-2
-    lifecycle checkpoint matching the fixed installed backend. The executing
+    or schema-4 lifecycle checkpoint matching the fixed installed backend. The executing
     tool must independently match its supplied exact manifest pin. No checkpoint,
     selector, fence or installed file is written by this admission.
     """
