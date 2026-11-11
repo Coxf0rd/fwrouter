@@ -128,9 +128,21 @@ def test_mihomo_runtime_rejects_scalar_metadata_mismatch_before_loading_rules_or
     }
 
 
+@pytest.mark.parametrize(
+    ("tcp_listener_present", "udp_listener_present", "expected_ok"),
+    [
+        (True, True, True),
+        (False, True, False),
+        (True, False, False),
+        (False, False, False),
+    ],
+)
 def test_mihomo_runtime_matching_scalar_metadata_keeps_policy_and_native_checks(
     monkeypatch,
     tmp_path: Path,
+    tcp_listener_present: bool,
+    udp_listener_present: bool,
+    expected_ok: bool,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     routing = {
@@ -191,8 +203,8 @@ def test_mihomo_runtime_matching_scalar_metadata_keeps_policy_and_native_checks(
                 "config": {"fwrouter_contours": {"transparent_vpn": {
                     "transparent_tcp_ready": True,
                     "transparent_udp_ready": True,
-                    "transparent_tcp_listener_socket_present": True,
-                    "transparent_udp_listener_socket_present": True,
+                    "transparent_tcp_listener_socket_present": tcp_listener_present,
+                    "transparent_udp_listener_socket_present": udp_listener_present,
                 }}},
             },
         ),
@@ -200,10 +212,10 @@ def test_mihomo_runtime_matching_scalar_metadata_keeps_policy_and_native_checks(
 
     result = mihomo_config_status_service.mihomo_runtime_satisfies_routing(routing)
 
-    assert result["ok"] is True
+    assert result["ok"] is expected_ok
     assert result["metadata_ok"] is True
     assert result["selector_native_membership_ok"] is True
-    assert result["transparent_ok"] is True
+    assert result["transparent_ok"] is expected_ok
     assert health_calls == [True]
 
 
