@@ -64,6 +64,50 @@ without reinstalling. An earlier one-off rollout wrapper may intentionally
 refuse to create another operation after its first checkpoint completes; use
 this public entrypoint for repeatable local source updates.
 
+The updater stores one root-owned `deployment-identity.json` beside the existing
+controlled-rollout checkpoint. It records requested Git source identity separately
+from the last completed backend/UI/host content identity, plus the updater
+component's own provenance. Missing metadata on an older installation reads as
+`UNKNOWN`; `--check` only reads it and never creates or updates it. Ordinary local
+Git provenance does not mean Stable qualification. D1 records native proof and
+deployment acceptance as `NOT_VERIFIED`, because native proof is not integrated
+into this updater lifecycle. A lifecycle operation with pending timers stays
+pending and is not promoted to the last completed install.
+
+The explicit updater-module transition requires the prepared host's existing
+`/usr/bin/gh` and a root operator to pin and confirm the exact current Main commit,
+successful Main workflow run/attempt, evidence artifact ID/digest, and installed
+old updater SHA-256. It queries the fixed `Coxf0rd/fwrouter` GitHub API, downloads
+the pinned artifact to bounded temporary storage, verifies its API digest, and
+runs the exact-source `tests/gates/evidence_bundle.py verify --require-main`
+verifier only after its full declared source inventory and the candidate updater,
+lock/lifecycle helpers, and wrapper match the pinned Git blobs. It does not
+install `gh` or access the network during `--check`. The wrapper must already
+match the candidate byte-for-byte; this bootstrap replaces one Python module
+atomically and rejects wrapper ABI changes. It leaves backend/UI/host installation
+and application last-verified identity untouched. To bootstrap an older installed
+updater that does not yet know this option, use the separately reviewed existing
+installer command `install.sh --deploy --component deploy` from the qualified
+source; that installer atomically replaces the module and preserves an identical
+wrapper.
+
+After the selected checkout is configured and independently checked against the
+GitHub API, invoke the explicit transition with all reviewed pins:
+
+```bash
+sudo /usr/local/sbin/fwrouter-deploy --self-upgrade \
+  --main-sha '<40-character Main SHA>' --confirm-main-sha '<same Main SHA>' \
+  --run-id '<successful Main run ID>' --run-attempt '<run attempt>' \
+  --artifact-id '<Main evidence artifact ID>' --artifact-digest 'sha256:<API digest>' \
+  --expected-installed-module-sha256 '<current updater module SHA-256>'
+```
+
+An interrupted updater transition can resume offline only with the exact same
+source path/SHA, run/attempt, artifact ID/digest, old module hash, candidate hash,
+and wrapper hash recorded in its root-owned pending identity. It cannot be rebased
+onto a newer Main or different pins. `--check` reports that transition as pending;
+normal application deployment refuses to overwrite it.
+
 If the repository is already present, update the source tree before deploying:
 
 ```bash

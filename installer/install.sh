@@ -195,6 +195,60 @@ install_file() {
   cp "$src" "$dst"
 }
 
+install_deploy_module_atomically() {
+  src="$1"
+  dst="$2"
+  require_path "$src" "deployment updater source"
+  dst_dir=$(dirname "$dst")
+  mkdir -p "$dst_dir"
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
+    [ -f "$dst" ] && [ ! -L "$dst" ] \
+      && [ "$(stat -c '%u' -- "$dst")" = "$(id -u)" ] \
+      && [ "$(stat -c '%h' -- "$dst")" = "1" ] \
+      && [ "$(stat -c '%a' -- "$dst")" = "644" ] || {
+      echo "install.sh: existing deployment updater is unsafe" >&2
+      return 1
+    }
+  fi
+  tmp=$(mktemp "$dst_dir/.local-deploy-updater.XXXXXX") || return 1
+  if install -m 0644 "$src" "$tmp" && sync -f "$tmp" && mv -f "$tmp" "$dst" && sync -f "$dst_dir"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+install_deploy_wrapper_atomically() {
+  src="$1"
+  dst="$2"
+  require_path "$src" "deployment wrapper source"
+  dst_dir=$(dirname "$dst")
+  mkdir -p "$dst_dir"
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
+    [ -f "$dst" ] && [ ! -L "$dst" ] || {
+      echo "install.sh: existing deployment wrapper is not a regular file" >&2
+      return 1
+    }
+    [ "$(stat -c '%u' -- "$dst")" = "$(id -u)" ] \
+      && [ "$(stat -c '%h' -- "$dst")" = "1" ] \
+      && [ "$(stat -c '%a' -- "$dst")" = "755" ] || {
+      echo "install.sh: existing deployment wrapper has unsafe owner, links or mode" >&2
+      return 1
+    }
+    if cmp -s "$src" "$dst"; then
+      return 0
+    fi
+    echo "install.sh: refusing to replace a different deployment wrapper" >&2
+    return 1
+  fi
+  tmp=$(mktemp "$dst_dir/.fwrouter-deploy-wrapper.XXXXXX") || return 1
+  if install -m 0755 "$src" "$tmp" && sync -f "$tmp" && mv -f "$tmp" "$dst" && sync -f "$dst_dir"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 ensure_executable() {
   path="$1"
   if [ -f "$path" ]; then
@@ -211,8 +265,8 @@ want_component() {
   return 1
 }
 
-if [ "$DEPENDENCIES_PREPARED" = "1" ] && { [ -z "$COMPONENT_LOCK_FD" ] || { ! want_component backend && ! want_component ui && [ "$SELECTIVE_HOST" != "1" ]; }; }; then
-  echo "install.sh: internal lock-runner options require a backend/UI/selective-host component lock" >&2
+if [ "$DEPENDENCIES_PREPARED" = "1" ] && { [ -z "$COMPONENT_LOCK_FD" ] || { ! want_component backend && ! want_component ui && ! want_component deploy && [ "$SELECTIVE_HOST" != "1" ]; }; }; then
+  echo "install.sh: internal lock-runner options require a backend/UI/deploy/selective-host component lock" >&2
   exit 1
 fi
 
@@ -298,11 +352,31 @@ install_homeassistant() {
 }
 
 install_deploy_command() {
-  install_file "$REPO_ROOT/installer/local_deploy.py" \
-    "$(target_path usr/local/libexec/fwrouter/local_deploy.py)"
-  install_file "$REPO_ROOT/host/sbin/fwrouter-deploy" \
-    "$(target_path usr/local/sbin/fwrouter-deploy)"
-  ensure_executable "$(target_path usr/local/sbin/fwrouter-deploy)"
+  module_target="$(target_path usr/local/libexec/fwrouter/local_deploy.py)"
+  wrapper_target="$(target_path usr/local/sbin/fwrouter-deploy)"
+  wrapper_source="$REPO_ROOT/host/sbin/fwrouter-deploy"
+  require_path "$wrapper_source" "deployment wrapper source"
+  if [ -e "$module_target" ] || [ -L "$module_target" ]; then
+    [ -f "$module_target" ] && [ ! -L "$module_target" ] \
+      && [ "$(stat -c '%u' -- "$module_target")" = "$(id -u)" ] \
+      && [ "$(stat -c '%h' -- "$module_target")" = "1" ] \
+      && [ "$(stat -c '%a' -- "$module_target")" = "644" ] || {
+      echo "install.sh: existing deployment updater is unsafe" >&2
+      exit 1
+    }
+  fi
+  if [ -e "$wrapper_target" ] || [ -L "$wrapper_target" ]; then
+    [ -f "$wrapper_target" ] && [ ! -L "$wrapper_target" ] \
+      && [ "$(stat -c '%u' -- "$wrapper_target")" = "$(id -u)" ] \
+      && [ "$(stat -c '%h' -- "$wrapper_target")" = "1" ] \
+      && [ "$(stat -c '%a' -- "$wrapper_target")" = "755" ] \
+      && cmp -s "$wrapper_source" "$wrapper_target" || {
+      echo "install.sh: existing deployment wrapper is unsafe or differs from source" >&2
+      exit 1
+    }
+  fi
+  install_deploy_module_atomically "$REPO_ROOT/installer/local_deploy.py" "$module_target"
+  install_deploy_wrapper_atomically "$wrapper_source" "$wrapper_target"
 }
 
 install_host() {
@@ -343,7 +417,8 @@ fi
 # Backend/UI source operations and selective host publication use the common
 # component lock. Selective host deploy also holds the exclusive maintenance
 # lease and exits before any generic installer post-actions.
-if want_component backend || want_component ui || [ "$SELECTIVE_HOST" = "1" ]; then
+if want_component backend || want_component ui || [ "$SELECTIVE_HOST" = "1" ] \
+  || want_explicit_component deploy; then
   if want_component backend; then
     REQUIRED_MAINTENANCE_LOCK_MODE="exclusive"
   elif [ "$SELECTIVE_HOST" = "1" ]; then
@@ -394,6 +469,11 @@ want_component host && install_host
 want_component docs && install_docs
 want_explicit_component homeassistant && install_homeassistant
 want_explicit_component deploy && install_deploy_command
+
+if [ "$COMPONENTS" = " deploy" ]; then
+  echo "Installed FWRouter deployment command into $TARGET_ROOT"
+  exit 0
+fi
 
 if [ -x "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" ]; then
   sh "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" \
