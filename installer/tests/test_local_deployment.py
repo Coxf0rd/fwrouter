@@ -406,8 +406,19 @@ def test_old_source_lookup_and_archive_ignore_hostile_git_environment(
     selected_source = pristine_checkout(old_source.parent / "verified-old-source")
     foreign_source = pristine_checkout(old_source.parent / "foreign-replacement-source")
     selected_lifecycle, _lock, _ui = deploy._source_modules(selected_source, paths)
-    selected_commit = subprocess.check_output(
+    # Force this fixture's selected HEAD to be installer/docs-only, even if
+    # the repository HEAD used by CI happened to change backend files.
+    readme_path = selected_source / "installer/README.md"
+    readme_path.write_bytes(readme_path.read_bytes() + b"\nD1 hostile Git environment fixture\n")
+    command(["/usr/bin/git", "-C", str(selected_source), "add", "installer/README.md"])
+    command(["/usr/bin/git", "-C", str(selected_source), "-c", "user.name=FWRouter Test",
+             "-c", "user.email=fwrouter-test@example.invalid", "commit", "--quiet",
+             "-m", "installer-only fixture head"])
+    selected_head = subprocess.check_output(
         ["/usr/bin/git", "-C", str(selected_source), "rev-parse", "HEAD"], text=True).strip()
+    selected_commit = deploy._find_source_commit(
+        selected_source, paths.target("opt/fwrouter-api"), selected_lifecycle)
+    assert selected_commit != selected_head
 
     helper_path = foreign_source / "installer/controlled_backend_lifecycle.py"
     helper_path.write_bytes(helper_path.read_bytes() + b"\n# foreign replacement helper\n")
