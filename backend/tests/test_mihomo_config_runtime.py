@@ -1656,6 +1656,8 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
     native_proof_ok: bool,
     verification_callback_ok: bool | None = None,
     fixed_restart_wiring: bool = False,
+    promotion_result: dict | None = None,
+    recovery_result: dict | None = None,
 ) -> dict:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1671,7 +1673,10 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
     candidate_config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
     base_path = Path(mihomo_config_service._resolved_base_config_path())
     candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
-    _write_yaml(base_path, {"rules": ["MATCH,REJECT"]} if fixed_restart_wiring else candidate_config)
+    _write_yaml(
+        base_path,
+        {"rules": ["MATCH,REJECT"]} if fixed_restart_wiring or promotion_result is not None else candidate_config,
+    )
     restart_calls: list[str] = []
     materialization_callback = lambda **kwargs: {"ok": False}
 
@@ -1689,6 +1694,19 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         return {"ok": True, "action": action}
 
     monkeypatch.setattr(mihomo_config_service, "restart_mihomo_container", _fake_restart_mihomo_container)
+    if promotion_result is not None:
+        monkeypatch.setattr(
+            mihomo_reconcile_service,
+            "promote_mihomo_candidate_config",
+            lambda **_kwargs: promotion_result,
+        )
+    recovery_calls: list[dict] = []
+    if recovery_result is not None:
+        monkeypatch.setattr(
+            mihomo_reconcile_service,
+            "restore_mihomo_reconcile_checkpoint",
+            lambda checkpoint, **kwargs: recovery_calls.append(kwargs) or recovery_result,
+        )
     monkeypatch.setattr(mihomo_config_service, "get_mihomo_config_status", lambda **kwargs: {
         "base_config": candidate_config,
         "candidate_config": candidate_config,
@@ -1760,7 +1778,24 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         verification_callback=verification_callback,
     )
 
-    if verification_callback_ok is False:
+    if promotion_result is not None:
+        assert result["ok"] is False
+        assert result["stage"] == "promotion"
+        assert result["error_code"] == promotion_result.get("error_code")
+        assert result["promoted"] == promotion_result
+        assert result["container"] == {"ok": False, "action": "none", "reason": "promotion_failed"}
+        assert result["reconcile_action"] == "none"
+        assert result["reconcile_reason"] == "promotion_failed"
+        assert restart_calls == []
+        assert yaml.safe_load(base_path.read_text(encoding="utf-8")) == {"rules": ["MATCH,REJECT"]}
+        assert native_proof_calls == []
+        if promotion_result.get("promoted") is True:
+            assert recovery_result is not None
+            assert result["generation_recovery"] == recovery_result
+            assert len(recovery_calls) == 1
+        else:
+            assert recovery_calls == []
+    elif verification_callback_ok is False:
         assert result["ok"] is False
         assert result["stage"] == "verification"
         assert result.get("reentry_generation_fence") is None
@@ -1786,7 +1821,8 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         assert result["stage"] == "native_udp_policy_readback"
         assert result["reconcile_reason"] == "native_policy_or_fence_unconfirmed"
     assert restart_calls == []
-    assert bool(native_proof_calls) == (verification_callback_ok is not False)
+    if promotion_result is None:
+        assert bool(native_proof_calls) == (verification_callback_ok is not False)
     return result
 
 
@@ -1800,6 +1836,41 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         tmp_path,
         format_only_candidate=False,
         native_proof_ok=True,
+    )
+
+
+def test_reconcile_mihomo_runtime_does_not_restart_when_promotion_is_rejected(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    rejected = {
+        "ok": False,
+        "promoted": False,
+        "error_code": "MIHOMO_CANDIDATE_INVENTORY_ADMISSION_FAILED",
+        "error_message": "candidate admission changed",
+    }
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+        promotion_result=rejected,
+    )
+
+
+
+def test_reconcile_mihomo_runtime_recovers_partial_promotion_without_restart(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    recovery = {"ok": True, "recovered": True}
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+        promotion_result={"ok": False, "promoted": True, "error_code": "MIHOMO_POST_PROMOTION_PROOF_FAILED"},
+        recovery_result=recovery,
     )
 
 
