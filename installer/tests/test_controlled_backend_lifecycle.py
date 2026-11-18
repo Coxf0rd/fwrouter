@@ -39,6 +39,9 @@ class FakeSystemd:
                 self.active.add(self.start_job_on_stop)
                 self.start_job_on_stop = None
             return subprocess.CompletedProcess(argv, 0, "", "")
+        if action == "clean":
+            assert argv[2:] == ["--what=state", unit]
+            return subprocess.CompletedProcess(argv, 0, "", "")
         if action == "start":
             if unit in self.fail_start:
                 return subprocess.CompletedProcess(argv, 1, "", "injected start failure")
@@ -988,6 +991,86 @@ def test_persistent_timer_restore_requires_explicit_catchup_acknowledgement(tmp_
     result = _run(tmp_path, "resume", systemd, allow_timer_catchup=True)
     assert result["status"] == "complete"
     assert timer in systemd.active
+
+
+def test_deployment_restore_clears_missed_timer_state_without_acknowledgement(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    timer = "fwrouter-subscription-refresh.timer"
+    gateway = "fwrouter-xray-sub-gateway.service"
+    systemd = FakeSystemd({"fwrouter-api.service", gateway, timer})
+    _run(tmp_path, "stop", systemd)
+    systemd.active.add("fwrouter-api.service")
+    source, target = _paths(tmp_path)
+    _install_fixture(source, target)
+
+    state_dir = tmp_path / "rollout-state"
+    checkpoint = lifecycle._read_checkpoint(state_dir / "pending.json")
+    monkeypatch.setattr(lifecycle, "_api_health", lambda: True)
+    monkeypatch.setattr(lifecycle, "_backend_manifest", lambda _path: checkpoint["backend_manifest"])
+    monkeypatch.setattr(lifecycle, "_verify_export", lambda _manifest: None)
+    monkeypatch.setattr(lifecycle, "_is_active", lambda unit: unit in systemd.active)
+    monkeypatch.setattr(lifecycle, "_preflight_timer_restore", lambda _root, _units: {timer: True})
+    monkeypatch.setattr(lifecycle, "_traffic_timer_update_required", lambda _root: False)
+    monkeypatch.setattr(lifecycle, "_systemctl", lambda action, unit, *options: systemd.run(
+        ["/usr/bin/systemctl", action, *options, unit]))
+    result = lifecycle._resume(SimpleNamespace(allow_timer_catchup=False, restore_timers=True), state_dir)
+
+    assert result["status"] == "complete"
+    assert timer in systemd.active
+    assert ("/usr/bin/systemctl", "clean", "--what=state", timer) in systemd.calls
+
+
+def test_traffic_timer_migrates_only_the_exact_supported_old_unit(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target_dir = tmp_path / "systemd"
+    target_dir.mkdir()
+    target = target_dir / "fwrouter-traffic-collect.timer"
+    target.write_bytes((lifecycle.Path(__file__).parents[2] / "host/systemd" /
+                        "fwrouter-traffic-collect.timer").read_bytes().replace(
+                            b"OnCalendar=*-*-* *:*:00\n", b"OnBootSec=2min\nOnUnitActiveSec=60s\n"
+                        ).replace(b"Persistent=false", b"Persistent=true"))
+    target.chmod(0o644)
+    monkeypatch.setattr(lifecycle, "TIMER_UNIT_DIR", target_dir)
+    monkeypatch.setattr(lifecycle, "TIMER_UNIT_OWNER_UID", os.geteuid())
+    legacy = {
+        "LoadState": "loaded", "FragmentPath": str(target), "DropInPaths": "", "Persistent": "yes",
+        "Unit": "fwrouter-traffic-collect.service", "TimersCalendar": "", "TimersMonotonic": "2min",
+        "OnClockChange": "no", "OnTimezoneChange": "no", "NeedDaemonReload": "no",
+    }
+    migrated = {
+        "LoadState": "loaded", "FragmentPath": str(target), "DropInPaths": "", "Persistent": "no",
+        "Unit": "fwrouter-traffic-collect.service", "TimersCalendar": "*-*-* *:*:00",
+        "TimersMonotonic": "", "OnClockChange": "no", "OnTimezoneChange": "no",
+        "NeedDaemonReload": "no",
+    }
+    reloads = []
+    monkeypatch.setattr(lifecycle, "_timer_properties", lambda _unit: migrated if reloads else legacy)
+    monkeypatch.setattr(lifecycle, "_is_active", lambda _unit: False)
+    def reload_only(argv, **_kwargs):
+        assert argv == ["/usr/bin/systemctl", "daemon-reload"]
+        reloads.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(lifecycle.subprocess, "run", reload_only)
+    root = lifecycle.Path(__file__).parents[2]
+    assert lifecycle._traffic_timer_update_required(root)
+    assert not reloads
+
+    clean_required = lifecycle._prepare_timer_restore(
+        "fwrouter-traffic-collect.timer", root)
+
+    assert clean_required is False
+    assert not lifecycle._traffic_timer_update_required(root)
+    assert target.read_bytes() == (lifecycle.Path(__file__).parents[2] / "host/systemd" /
+                                   "fwrouter-traffic-collect.timer").read_bytes()
+
+
+def test_custom_timer_dropin_is_rejected_before_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lifecycle, "_timer_properties", lambda _unit: {
+        "LoadState": "loaded", "FragmentPath": "/etc/systemd/system/fwrouter-maintenance.timer",
+        "DropInPaths": "/etc/systemd/system/fwrouter-maintenance.timer.d/custom.conf",
+        "Persistent": "yes"})
+    with pytest.raises(lifecycle.LifecycleError, match="drop-in"):
+        lifecycle._prepare_timer_restore("fwrouter-maintenance.timer", lifecycle.Path(__file__).parents[2])
 
 
 def test_checkpoint_path_and_host_guard_are_not_overwritten(tmp_path: Path) -> None:

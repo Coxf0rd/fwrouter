@@ -26,9 +26,33 @@ Source-tree installer and validation tools.
 
 `homeassistant` copies only the FWRouter package and action script into `/app/config/homeassistant`. It is opt-in and excluded from `all`, because Home Assistant is an external service. It does not restart or reload Home Assistant; validate configuration and restart HA separately after deployment.
 
-`deploy` installs the public local deployment command at `/usr/local/sbin/fwrouter-deploy` and its Python module under `/usr/local/libexec/fwrouter`. The module is staged in the destination directory and fsynced before atomic replacement. An existing wrapper is preserved only when it is a safe regular file exactly matching the source; wrapper drift fails before the module is changed. A deploy-only invocation uses the common component lock and exits after installing these command files, without running backend bootstrap, `.env` normalization, or other generic installer post-actions. It does not select a source, copy FWRouter components, or configure a service. The operator selects one root-owned clean standard Git checkout with `fwrouter-deploy --configure-source /absolute/path`; linked worktrees, alternate object stores, writable entries, and links are rejected. `fwrouter-deploy --check` is read-only. The default invocation applies backend/UI through the existing installer and lifecycle owner; persistent timers remain pending unless `--allow-timer-catchup` is explicitly supplied. Successful completion verifies backend/UI/host identity, API health, Gateway listener, and active Xray/Mihomo units. It does not fetch source or run on a schedule.
+`deploy` installs the updater at `/usr/local/sbin/fwrouter-deploy` and its Python module under `/usr/local/libexec/fwrouter`. The deploy-only installer uses the common component lock and atomically publishes the module. It preserves the existing wrapper when its type, ownership, mode and bytes match the selected source.
 
-The D1 `--self-upgrade` operation is opt-in and only replaces the updater module, never the wrapper or application components. It requires exact root-pinned current-Main SHA/run/attempt/artifact/digest/old-module inputs, fixed-host GitHub API metadata through the existing `/usr/bin/gh`, and the exact-source Main evidence verifier. It uses the existing component lock with a shared maintenance lease, writes a pending updater transition to the same deployment identity record, atomically replaces the module, verifies readback, and then marks that transition complete. After a pending record exists, only the same recorded pins and source path can resume; that resume uses the root-owned record created after full qualification and does not require a fresh Main/artifact fetch. Regular `--check` has no GitHub CLI or network dependency, reports a pending updater transition without writes, and reads legacy missing identity as `UNKNOWN`. Application deployment cannot overwrite a pending updater transition.
+```sh
+sudo fwrouter-deploy --stable
+fwrouter-deploy --dev
+fwrouter-deploy --dev --source /path/to/fwrouter
+sudo fwrouter-deploy --check
+```
+
+`--stable` uses the fixed FWRouter GitHub origin for Main and the Actions API for the exact Main push, run attempt, jobs and sealed evidence. It requires working Git and `gh` access. The strict offline verifier runs against the exact temporary source after checking the downloaded archive's GitHub SHA-256. An unqualified current Main blocks deployment. Source and CI staging live in a private directory under `/tmp` and are cleaned up on exit. The durable admission record carries the exact previously qualified SHA and evidence identity for retry, so recovery can fetch that SHA and rebuild its source after the staging directory is gone. The original application and lifecycle owners retain custody of installed files and checkpoints. The updater uses the D1 module-only bootstrap when needed. A wrapper change requires the compatible installer procedure.
+
+`--dev` reads the current Git worktree or `--source`, captures tracked and nonignored untracked file content and executable modes, and reports the base SHA, dirty state and digest. It refuses to install until an isolated Development runtime is available. `--acknowledge-stable-replacement` records explicit operator intent for that future contract and cannot bypass this refusal.
+
+Stable supports the established backend, UI and selective host deployment scope. Schema verification uses the installed strict schema-27 read-only command. Legacy structural mismatches remain an admission failure. Backend changes require an independently approved recovery backup bound to the installed backend content manifest. Configure the optional root-owned mode-0600 `/etc/fwrouter/deploy-acceptance.json` with these fields when approved by the runtime and recovery operators.
+
+| Field | Value |
+| --- | --- |
+| `schema` | `fwrouter-deploy-acceptance/v1` |
+| `xray_image`, `mihomo_image` | Independently approved immutable Docker image configuration IDs, prefixed with `sha256:` |
+| `ui_port`, `ui_path` | Loopback HTTP endpoint for the installed UI index |
+| `recovery` | For backend publication, an object with `backup_path`, `backup_sha256` and `installed_backend_sha256` from the approved recovery plan |
+
+The updater verifies the backup before backend publication and uses existing exact-source lifecycle recovery. It checks UI availability and calls the installed read-only native proof owner with independently approved runtime pins. Missing pins, an unavailable probe, or missing current owner receipts leave acceptance incomplete. Stable reports CI, file identity, lifecycle, health and native acceptance independently, including on a content NOOP. `--json` emits structured output and `--verbose` includes diagnostic details. The explicit modes use exit 0 for success or a fully accepted NOOP, 1 for failure, 2 for invalid arguments, 3 for incomplete verification and 130 for interruption. `--check` inspects local state without fetching or changing it.
+
+During Stable resume, the existing lifecycle owner restores previously active timers after verifying their stock units and discarding missed calendar triggers. The old traffic timer is migrated to a nonpersistent minute schedule because starting its elapsed boot timer could immediately run collection. Enablement is preserved and previously inactive timers stay inactive. The legacy configured-source and explicit timer catch-up commands remain available for D1 operations.
+
+Explicit D1 `--self-upgrade` replaces only the updater module and accepts the original exact root-pinned SHA, run, attempt, artifact, digest and old-module inputs. Stable supplies those facts from its automatic qualification. Both forms use the same component lock, shared maintenance lease and durable updater transition record. An interruption resumes only the originally pinned source and module transition. Legacy missing installation identity remains `UNKNOWN`.
 
 ## Selective host publication
 

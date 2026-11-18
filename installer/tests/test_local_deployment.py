@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -92,7 +93,7 @@ def test_component_install_and_real_check_entrypoint_are_local_and_read_only(
         "root=Path(sys.argv[1]); p=local_deploy.Paths(config=root/'etc/fwrouter/deploy-source.json', "
         "target_root=root, state_dir=root/'var/lib/fwrouter-v2/state/controlled-rollout', "
         "owner_uid=__import__('os').geteuid(), test_driver=True, api_healthy=False); "
-        "raise SystemExit(local_deploy.main(['--check'], paths_override=p))"
+        "raise SystemExit(local_deploy.main(['--check', '--json'], paths_override=p))"
     )
     result = subprocess.run([sys.executable, "-c", driver, str(target)], cwd=module.parent,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
@@ -112,6 +113,292 @@ def test_component_install_and_real_check_entrypoint_are_local_and_read_only(
     assert error_result.returncode == 1
     assert "source config" in error_result.stderr
     paths.config.write_bytes(config_before)
+
+
+def test_dev_captures_dirty_untracked_content_without_runtime_or_remote_calls(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    tracked = source / "README.md"
+    tracked.write_text("Development content\n")
+    untracked = source / "ui/staged-development.js"
+    untracked.write_text("console.log('first')\n")
+    index = source / ".git/index"
+    index_before = index.read_bytes()
+    monkeypatch.setattr(deploy, "_gh_api", lambda *args: pytest.fail("Development queried GitHub"))
+    monkeypatch.setattr(deploy, "_read_identity", lambda *args: pytest.fail("Development read Stable identity"))
+    args = ["--dev", "--source", str(source), "--acknowledge-stable-replacement", "--json"]
+    assert deploy.main(args, paths_override=paths) == 3
+    first = json.loads(capsys.readouterr().out)
+    assert first["result"] == "INCOMPLETE"
+    assert first["source"]["dirty"] is True
+    assert first["source"]["provenance"] == "local_development_worktree"
+    assert first["stages"]["CI"]["status"] == "SKIP"
+    assert not paths.state_dir.exists()
+    untracked.write_text("console.log('second')\n")
+    assert deploy.main(args, paths_override=paths) == 3
+    second = json.loads(capsys.readouterr().out)
+    assert first["source"]["content_sha256"] != second["source"]["content_sha256"]
+    assert first["source"]["git_sha"] == second["source"]["git_sha"]
+    assert index.read_bytes() == index_before
+    assert tracked.read_text() == "Development content\n"
+
+
+def test_dev_rejects_change_between_fenced_content_passes(deployment_fixture, monkeypatch) -> None:
+    deploy, _paths, _, source, *_ = deployment_fixture
+    extra = source / "ui/volatile.js"
+    extra.write_text("before")
+    collect = deploy._dev_content
+
+    def mutate_after_capture(*args):
+        result = collect(*args)
+        extra.write_text("after")
+        return result
+
+    monkeypatch.setattr(deploy, "_dev_content", mutate_after_capture)
+    with pytest.raises(deploy.DeploymentError, match="changed during capture"):
+        deploy._development_source(source)
+
+
+def _qualification(sha):
+    return {"source_sha": sha, "run_id": 101, "run_attempt": 2, "artifact_id": 303,
+            "artifact_digest": "sha256:" + "a" * 64}
+
+
+@pytest.mark.parametrize("scenario", ["valid", "missing_run", "failed_run", "pending_run", "stale_artifact",
+                                     "incomplete_jobs", "forged_metadata", "invalid_bundle"])
+def test_automatic_stable_qualification_rejects_unqualified_evidence(
+        deployment_fixture, monkeypatch, tmp_path, scenario) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    sha = deploy._source_commit(source, paths.owner_uid)
+    expected = _qualification(sha)
+    run = {"id": 101, "run_attempt": 2, "event": "push", "head_branch": "main", "head_sha": sha,
+           "status": "completed", "conclusion": "success", "path": deploy.MAIN_WORKFLOW,
+           "repository": {"full_name": "Coxf0rd/fwrouter"}}
+    if scenario == "failed_run":
+        run["conclusion"] = "failure"
+    if scenario == "pending_run":
+        run.update(status="in_progress", conclusion=None)
+    artifact = {"id": 303, "expired": scenario == "stale_artifact", "digest": expected["artifact_digest"],
+                "name": f"fwrouter-main-evidence-{sha}-101-2", "workflow_run":
+                    {"id": 101, "head_sha": "b" * 40 if scenario == "forged_metadata" else sha, "head_branch": "main"}}
+    calls = []
+
+    def provider(endpoint):
+        calls.append(endpoint)
+        if "/workflows/" in endpoint:
+            rows = [] if scenario == "missing_run" else [run]
+            return {"total_count": len(rows), "workflow_runs": rows}
+        if endpoint.endswith("/101"):
+            return run
+        if "/attempts/2/jobs" in endpoint:
+            return {"total_count": 2 if scenario == "incomplete_jobs" else 1,
+                    "jobs": [{"name": "Affected L0-L5 with hosted profiles",
+                              "status": "completed", "conclusion": "success"}]}
+        if "/101/artifacts" in endpoint:
+            return {"total_count": 1, "artifacts": [artifact]}
+        if endpoint.endswith("/artifacts/303"):
+            return artifact
+        if endpoint.endswith("/commits/main"):
+            return {"sha": sha}
+        pytest.fail(f"unexpected GitHub read {endpoint}")
+
+    verified = []
+
+    def verify_bundle(*args):
+        verified.append(args[-1])
+        if scenario == "invalid_bundle":
+            raise deploy.DeploymentError("offline bundle failed")
+
+    monkeypatch.setattr(deploy, "_gh_api", provider)
+    monkeypatch.setattr(deploy, "_verify_main_bundle", verify_bundle)
+    if scenario == "valid":
+        assert deploy._stable_qualification(source, sha, tmp_path, paths.owner_uid) == expected
+        assert verified == [expected]
+        assert len([call for call in calls if "/attempts/2/jobs" in call]) == 2
+    else:
+        with pytest.raises(deploy.DeploymentError):
+            deploy._stable_qualification(source, sha, tmp_path, paths.owner_uid)
+
+
+def test_stable_eligibility_report_keeps_noop_and_health_separate(deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, old_source, _marker, _env, _active, calls, owner_driver, system_driver = deployment_fixture
+    source = pristine_checkout(old_source.parent / "selected")
+    sha = deploy._source_commit(source, paths.owner_uid)
+    evidence = _qualification(sha)
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+
+    @contextmanager
+    def fixture_source(_paths, recovery):
+        assert recovery is None
+        yield deploy.StableSource(source, evidence)
+
+    monkeypatch.setattr(deploy, "_temporary_main", fixture_source)
+    args = ["--stable", "--json"]
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 3
+    first = json.loads(capsys.readouterr().out)
+    assert first["status"] == "INCOMPLETE"
+    assert first["stages"]["CI"]["status"] == "PASS"
+    assert first["installed_content"] == "VERIFIED"
+    assert first["native_proof"]["status"] == "NOT_VERIFIED"
+    assert first["installed_version"] == sha
+    assert first["deployment_identity"]["last_verified_install"]["path"] == deploy.MAIN_ORIGIN
+    assert str(source) not in json.dumps(first["deployment_identity"])
+    assert "stable_admission" not in first["deployment_identity"]
+    before = calls.copy()
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 3
+    second = json.loads(capsys.readouterr().out)
+    assert second["content_noop"] is True and second["installed_content"] == "VERIFIED"
+    assert calls == before
+    unhealthy = deploy.replace(paths, runtime_healthy=False)
+    assert deploy.main(args, paths_override=unhealthy) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "FAILED"
+    assert calls == before
+
+
+def test_stable_staging_recovers_exact_source_and_cleans_up_after_interrupt(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, origin, *_ = deployment_fixture
+    sha = deploy._source_commit(origin, paths.owner_uid)
+    evidence = _qualification(sha)
+    command(["/usr/bin/git", "-C", str(origin), "update-ref", "refs/heads/main", sha])
+    monkeypatch.setattr(deploy, "MAIN_ORIGIN", str(origin))
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda *_: evidence)
+    with pytest.raises(KeyboardInterrupt):
+        with deploy._temporary_main(paths, None) as selection:
+            stage = selection.root.parent
+            assert stage.parent == Path("/tmp")
+            assert selection.commit == sha
+            assert stage.exists()
+            raise KeyboardInterrupt
+    assert not stage.exists()
+    monkeypatch.setattr(deploy, "_current_main", lambda: pytest.fail("recovery selected a different Main"))
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda *_: pytest.fail("durable qualification was ignored"))
+    with deploy._temporary_main(paths, evidence) as recovered:
+        stage = recovered.root.parent
+        assert deploy._source_commit(recovered.root, paths.owner_uid) == sha
+    assert not stage.exists()
+
+
+def test_stable_completes_previously_recorded_install_after_owner_success(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, old_source, _marker, _env, _active, calls, owner_driver, system_driver = deployment_fixture
+    source = pristine_checkout(old_source.parent / "selected")
+    sha = deploy._source_commit(source, paths.owner_uid)
+    evidence = _qualification(sha)
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+
+    @contextmanager
+    def fixture_source(_paths, recovery):
+        assert recovery in (None, evidence)
+        yield deploy.StableSource(source, evidence)
+
+    monkeypatch.setattr(deploy, "_temporary_main", fixture_source)
+    original = deploy._write_identity
+    interrupted = False
+
+    def crash_after_lifecycle(paths_arg, record):
+        nonlocal interrupted
+        if not interrupted and (record["operation"] or {}).get("status") == "VERIFIED_CONTENT":
+            interrupted = True
+            raise KeyboardInterrupt
+        return original(paths_arg, record)
+
+    monkeypatch.setattr(deploy, "_write_identity", crash_after_lifecycle)
+    args = ["--stable", "--json"]
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 130
+    assert json.loads(capsys.readouterr().out)["status"] == "INCOMPLETE"
+    assert deploy._read_identity(paths)["stable_admission"] == evidence
+    before = calls.copy()
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["installed_content"] == "VERIFIED"
+    assert result["installed_version"] == sha
+    assert "stable_admission" not in result["deployment_identity"]
+    assert calls == before
+
+
+def test_human_and_verbose_check_avoid_dumping_identity(deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, *_ = deployment_fixture
+    monkeypatch.setattr(deploy, "_gh_api", lambda *args: pytest.fail("--check queried GitHub"))
+    assert deploy.main(["--stable", "--check", "--verbose"], paths_override=paths) == 3
+    rendered = capsys.readouterr().out
+    assert "FWRouter Deployment — STABLE" in rendered
+    assert "installed version is UNKNOWN" in rendered
+    assert "deployment_identity" not in rendered
+    assert not paths.state_dir.exists()
+
+
+def test_stable_check_inspects_configured_health_without_remote_actions(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    sha = deploy._source_commit(source, paths.owner_uid)
+    deploy._write_config(paths.config, source, sha, paths.owner_uid)
+    monkeypatch.setattr(deploy, "_gh_api", lambda *_: pytest.fail("--check queried GitHub"))
+    paths = deploy.replace(paths, runtime_healthy=False)
+    assert deploy.main(["--stable", "--check", "--json"], paths_override=paths) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["health"]["API"]["status"] == "PASS"
+    assert result["health"]["Runtime"]["status"] == "FAIL"
+    assert not paths.state_dir.exists()
+
+
+def test_stable_host_environment_cannot_inherit_database_overrides(deployment_fixture, monkeypatch) -> None:
+    deploy, *_ = deployment_fixture
+    for name in ("FWROUTER_STATE_DIR", "STATE_DIR", "SYSTEMD_BUS_ADDRESS"):
+        monkeypatch.setenv(name, "/tmp/fixture-override")
+    command = [sys.executable, "-I", "-B", "-c",
+               "import os; print({key: os.environ.get(key) for key in "
+               "('FWROUTER_STATE_DIR', 'STATE_DIR', 'SYSTEMD_BUS_ADDRESS')})"]
+    result = deploy._run(command, host_environment=True)
+    assert result.returncode == 0
+    assert result.stdout == "{'FWROUTER_STATE_DIR': None, 'STATE_DIR': None, 'SYSTEMD_BUS_ADDRESS': None}\n"
+
+
+def test_stable_service_state_refuses_an_environment_file_override(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, _, _marker, env, *_ = deployment_fixture
+    owner = SimpleNamespace(API_UNIT="fwrouter-api.service")
+    properties = (f"EnvironmentFiles={env} (ignore_errors=yes)\n"
+                  "LoadState=loaded\nEnvironment=\nDropInPaths=\nPassEnvironment=\nMainPID=0\n")
+
+    def query(argv, **kwargs):
+        assert kwargs["host_environment"]
+        assert argv[0:2] == ["/usr/bin/systemctl", "show"]
+        return subprocess.CompletedProcess(argv, 0, properties, "")
+
+    monkeypatch.setattr(deploy, "_run", query)
+    deploy._stable_service_state(paths, owner)
+    baseline = properties
+    properties = "EnvironmentFiles=/tmp/unknown.env (ignore_errors=no)\n" + baseline
+    with pytest.raises(deploy.DeploymentError, match="outside the supported Stable state-root contract"):
+        deploy._stable_service_state(paths, owner)
+    properties = baseline
+    env.write_text("STATE_DIR=/tmp/alternate-db\n")
+    with pytest.raises(deploy.DeploymentError, match="environment file overrides"):
+        deploy._stable_service_state(paths, owner)
+
+
+def test_stable_preflight_requires_both_exact_schema_checks(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    monkeypatch.setattr(deploy, "_stable_service_state", lambda *_: None)
+    owner = SimpleNamespace(_verified_backend_interpreter=lambda: Path(sys.executable))
+    calls = []
+
+    def run(argv, **kwargs):
+        assert kwargs["host_environment"]
+        assert argv[-4:] == ["database", "upgrade", "--expected-schema", "27"]
+        calls.append(argv)
+        if "-m" in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "ok": True, "status": "already_current", "current_schema": 27,
+                "target_schema": 27, "database_changed": False}), "")
+        return subprocess.CompletedProcess(argv, 1, '{"error_code":"DATABASE_SCHEMA_PREFLIGHT_FAILED"}', "")
+
+    monkeypatch.setattr(deploy, "_run", run)
+    with pytest.raises(deploy.DeploymentError, match=r"\(selected\) DATABASE_SCHEMA_PREFLIGHT_FAILED"):
+        deploy._strict_database_preflight(paths, owner, source)
+    assert len(calls) == 2
 
 
 def test_deploy_component_bootstrap_is_atomic_and_rejects_wrapper_drift(tmp_path: Path, request) -> None:
@@ -277,7 +564,7 @@ def test_self_upgrade_retries_atomic_replacement_left_pending_after_interruption
         deploy._self_upgrade(paths, source, sha, args)
     assert module_path.read_bytes() == (source / "installer/local_deploy.py").read_bytes()
     assert deploy._read_identity(paths)["operation"]["status"] == "PENDING"
-    assert deploy.main(["--check"], paths_override=paths) == 0
+    assert deploy.main(["--check", "--json"], paths_override=paths) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["status"] == "UPDATER_SELF_UPGRADE_PENDING"
     before_rejected_apply = (paths.state_dir / "deployment-identity.json").read_bytes()
     with pytest.raises(deploy.DeploymentError, match="exact pinned transition"):
@@ -793,7 +1080,7 @@ def test_stop_failure_after_owner_checkpoint_publishes_retryable_incomplete_iden
     assert identity["operation"]["last_completed_stage"] == "lifecycle_stop"
     deploy._write_config(paths.config, selected_source, commit, paths.owner_uid)
     identity_before_check = identity_path.read_bytes()
-    assert deploy.main(["--check"], paths_override=paths) == 0
+    assert deploy.main(["--check", "--json"], paths_override=paths) == 0
     check_result = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert check_result["status"] == "TRANSFER_PENDING_OPERATION"
     assert identity_path.read_bytes() == identity_before_check

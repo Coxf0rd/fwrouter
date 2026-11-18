@@ -47,6 +47,8 @@ MIHOMO_CACHE_DB = Path("/var/lib/fwrouter-v2/mihomo/cache.db")
 MIHOMO_CONFIG_IMAGE = "metacubex/mihomo:v1.19.31"
 MIHOMO_UNIT_FILE = Path("/etc/systemd/system/fwrouter-mihomo.service")
 MIHOMO_UNIT_SHA256 = "9467c8b563cdfba9be8b30f6974e8f2ec6c157ebbe4c8f2abab17b7881fed8a2"
+TIMER_UNIT_DIR = Path("/etc/systemd/system")
+LEGACY_TRAFFIC_TIMER_SHA256 = "5c1e6145a9cdcf2efa1cc22381d0dcaf8c0b4f90c14f881baf4beebb8ec51897"
 DOCKER_INSPECT_FORMAT = (
     '{{.Id}}|{{.Image}}|{{.Config.Image}}|{{.State.Running}}|'
     '{{.HostConfig.RestartPolicy.Name}}|{{.HostConfig.NetworkMode}}|'
@@ -1082,17 +1084,247 @@ def _transfer(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
             "source_transition_count": len(checkpoint["source_transitions"])}
 
 
-def _systemctl(action: str, unit: str) -> None:
+def _systemctl(action: str, unit: str, *options: str) -> None:
     if unit not in ALLOWED_UNITS:
         raise LifecycleError("refusing non-allowlisted systemd unit")
+    if options and (action != "clean" or options != ("--what=state",)):
+        raise LifecycleError("refusing unsupported systemd unit operation options")
     try:
-        result = subprocess.run(["/usr/bin/systemctl", action, unit], check=False,
+        result = subprocess.run(["/usr/bin/systemctl", action, *options, unit], check=False,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         raise LifecycleError(f"systemctl {action} failed for {unit}") from exc
     if result.returncode != 0:
         raise LifecycleError(f"systemctl {action} failed for {unit}")
+
+
+def _timer_properties(unit: str) -> dict[str, str]:
+    if unit not in PERSISTENT_TIMERS:
+        raise LifecycleError("refusing to inspect a non-allowlisted timer")
+    values: dict[str, str] = {}
+    for prop in ("LoadState", "FragmentPath", "DropInPaths", "Persistent", "Unit",
+                 "TimersCalendar", "TimersMonotonic", "OnClockChange", "OnTimezoneChange",
+                 "NeedDaemonReload"):
+        try:
+            result = subprocess.run(["/usr/bin/systemctl", "show", f"--property={prop}",
+                                     "--value", unit], check=False,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LifecycleError(f"cannot inspect timer configuration for {unit}") from exc
+        if result.returncode != 0 or len(result.stdout) > 512:
+            raise LifecycleError(f"cannot inspect timer configuration for {unit}")
+        values[prop] = result.stdout.strip()
+    if (values["LoadState"] != "loaded"
+            or values["FragmentPath"] != str(TIMER_UNIT_DIR / unit)
+            or values["DropInPaths"] not in {"", "-"}):
+        raise LifecycleError(f"timer {unit} has an unknown fragment or custom drop-in")
+    return values
+
+
+TIMER_UNIT_OWNER_UID = 0
+
+
+def _atomic_timer_replace(path: Path, new_bytes: bytes, expected_old_sha256: str) -> None:
+    try:
+        parent = TIMER_UNIT_DIR.lstat()
+        if (not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode)
+                or parent.st_uid != TIMER_UNIT_OWNER_UID or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise LifecycleError("systemd timer directory has unsafe ownership or permissions")
+        before = path.lstat()
+        if (not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)
+                or before.st_uid != TIMER_UNIT_OWNER_UID or stat.S_IMODE(before.st_mode) != 0o644
+                or before.st_nlink != 1):
+            raise LifecycleError("traffic timer file has unsafe owner, mode, type or links")
+        read_fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(read_fd)
+            if ((opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or opened.st_uid != TIMER_UNIT_OWNER_UID or opened.st_nlink != 1):
+                raise LifecycleError("traffic timer changed before safe read")
+            chunks = bytearray()
+            while block := os.read(read_fd, 65536):
+                chunks.extend(block)
+                if len(chunks) > 65536:
+                    raise LifecycleError("traffic timer exceeds its size bound")
+            after = os.fstat(read_fd)
+            if (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+                raise LifecycleError("traffic timer changed during safe read")
+            old_digest = hashlib.sha256(chunks).hexdigest()
+        finally:
+            os.close(read_fd)
+        new_digest = hashlib.sha256(new_bytes).hexdigest()
+        if old_digest == new_digest:
+            return
+        if old_digest != expected_old_sha256:
+            raise LifecycleError("traffic timer differs from both the supported old and new unit")
+        fd, temporary_name = tempfile.mkstemp(prefix=".fwrouter-traffic-timer.", dir=path.parent)
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(fd, 0o644)
+            os.fchown(fd, TIMER_UNIT_OWNER_UID, -1)
+            with os.fdopen(fd, "wb", closefd=True) as output:
+                output.write(new_bytes)
+                output.flush()
+                os.fsync(output.fileno())
+            current = path.lstat()
+            if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+                raise LifecycleError("traffic timer changed before atomic replacement")
+            os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            if hashlib.sha256(_read_trusted_timer(path)).hexdigest() != new_digest:
+                raise LifecycleError("traffic timer replacement failed read-back verification")
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        raise LifecycleError("cannot safely update the traffic timer unit") from exc
+
+
+def _read_trusted_timer(path: Path) -> bytes:
+    try:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != TIMER_UNIT_OWNER_UID or stat.S_IMODE(info.st_mode) != 0o644 or info.st_nlink != 1):
+            raise LifecycleError("installed timer has unsafe owner, mode, type or links")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                raise LifecycleError("installed timer changed before safe read")
+            data = bytearray()
+            while block := os.read(fd, 65536):
+                data.extend(block)
+                if len(data) > 65536:
+                    raise LifecycleError("installed timer exceeds its size bound")
+            after = os.fstat(fd)
+            if (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+                raise LifecycleError("installed timer changed during safe read")
+            return bytes(data)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise LifecycleError("cannot safely read installed timer") from exc
+
+
+def _stock_traffic_timer(source_bytes: bytes) -> bool:
+    expected = (
+        b"[Unit]\nDescription=Run FWRouter v2 traffic accounting collect every minute\n\n"
+        b"[Timer]\nOnCalendar=*-*-* *:*:00\nAccuracySec=1s\nPersistent=false\n"
+        b"Unit=fwrouter-traffic-collect.service\n\n[Install]\nWantedBy=timers.target\n"
+    )
+    return source_bytes == expected
+
+
+def _migrated_traffic_timer(properties: dict[str, str]) -> bool:
+    return (properties.get("Persistent") == "no" and bool(properties.get("TimersCalendar"))
+            and not properties.get("TimersMonotonic")
+            and properties.get("Unit") == "fwrouter-traffic-collect.service"
+            and properties.get("OnClockChange") == "no"
+            and properties.get("OnTimezoneChange") == "no")
+
+
+def _preflight_timer_restore(source_root: Path, active_units: dict[str, Any]) -> dict[str, bool]:
+    """Read-only verification for timers that this operation needs to restore."""
+    clean_required: dict[str, bool] = {}
+    for unit in PERSISTENT_TIMERS:
+        if not active_units.get(unit):
+            continue
+        properties = _timer_properties(unit)
+        if (properties["LoadState"] != "loaded"
+                or properties["FragmentPath"] != str(TIMER_UNIT_DIR / unit)
+                or properties["DropInPaths"] not in {"", "-"}
+                or properties["Unit"] != unit.removesuffix(".timer") + ".service"
+                or properties["OnClockChange"] != "no"
+                or properties["OnTimezoneChange"] != "no"):
+            raise LifecycleError(f"timer {unit} has an unknown fragment, drop-in or trigger")
+        target = TIMER_UNIT_DIR / unit
+        try:
+            source_bytes = (source_root / "host/systemd" / unit).read_bytes()
+            target_bytes = _read_trusted_timer(target)
+        except OSError as exc:
+            raise LifecycleError(f"stock timer source or installed unit is unavailable: {unit}") from exc
+        if unit == "fwrouter-traffic-collect.timer":
+            if not _stock_traffic_timer(source_bytes):
+                raise LifecycleError("selected traffic timer differs from the fixed no-catch-up schedule")
+            old_digest = hashlib.sha256(target_bytes).hexdigest()
+            source_digest = hashlib.sha256(source_bytes).hexdigest()
+            legacy = old_digest == LEGACY_TRAFFIC_TIMER_SHA256
+            if old_digest not in {LEGACY_TRAFFIC_TIMER_SHA256, source_digest}:
+                raise LifecycleError("traffic timer differs from both the supported old and new unit")
+            if legacy:
+                if (properties["Persistent"] != "yes" or not properties["TimersMonotonic"]
+                        or properties["TimersCalendar"] or properties["NeedDaemonReload"] == "yes"):
+                    raise LifecycleError("legacy traffic timer effective schedule is unexpected")
+            elif properties["NeedDaemonReload"] == "yes":
+                if (properties["Persistent"] != "yes" or not properties["TimersMonotonic"]
+                        or properties["TimersCalendar"]):
+                    raise LifecycleError("traffic timer pending reload does not match the supported legacy schedule")
+            elif not _migrated_traffic_timer(properties):
+                raise LifecycleError("migrated traffic timer effective schedule is unexpected")
+            clean_required[unit] = False
+        else:
+            if (target_bytes != source_bytes or properties["Persistent"] != "yes"
+                    or not properties["TimersCalendar"] or properties["TimersMonotonic"]
+                    or properties["NeedDaemonReload"] == "yes"):
+                raise LifecycleError(f"calendar timer is not the selected stock schedule: {unit}")
+            clean_required[unit] = True
+    return clean_required
+
+
+def _prepare_timer_restore(unit: str, source_root: Path) -> bool:
+    """Validate installed timer and migrate only the exact supported traffic unit."""
+    active = {name: name == unit for name in PERSISTENT_TIMERS}
+    clean_required = _preflight_timer_restore(source_root, active)[unit]
+    target = TIMER_UNIT_DIR / unit
+    if unit == "fwrouter-traffic-collect.timer":
+        source_bytes = (source_root / "host/systemd" / unit).read_bytes()
+        target_digest = hashlib.sha256(_read_trusted_timer(target)).hexdigest()
+        if target_digest == LEGACY_TRAFFIC_TIMER_SHA256:
+            if _is_active(unit):
+                raise LifecycleError("traffic timer must be inactive before its schedule migration")
+            _atomic_timer_replace(target, source_bytes, LEGACY_TRAFFIC_TIMER_SHA256)
+            try:
+                result = subprocess.run(["/usr/bin/systemctl", "daemon-reload"], check=False,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, timeout=30)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise LifecycleError("systemd failed to reload the migrated traffic timer") from exc
+            if result.returncode != 0:
+                raise LifecycleError("systemd failed to reload the migrated traffic timer")
+            if not _migrated_traffic_timer(_timer_properties(unit)):
+                raise LifecycleError("systemd did not load the migrated traffic timer schedule")
+        elif _timer_properties(unit)["NeedDaemonReload"] == "yes":
+            if _is_active(unit):
+                raise LifecycleError("traffic timer must be inactive before schedule reload")
+            try:
+                result = subprocess.run(["/usr/bin/systemctl", "daemon-reload"], check=False,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, timeout=30)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise LifecycleError("systemd failed to load the migrated traffic timer") from exc
+            properties = _timer_properties(unit) if result.returncode == 0 else {}
+            if result.returncode != 0 or not _migrated_traffic_timer(properties):
+                raise LifecycleError("systemd did not load the migrated traffic timer schedule")
+    return clean_required
+
+
+def _traffic_timer_update_required(source_root: Path) -> bool:
+    """Identify a pending stock traffic-timer migration, including while disabled."""
+    unit = "fwrouter-traffic-collect.timer"
+    target = TIMER_UNIT_DIR / unit
+    if not os.path.lexists(target):
+        return False
+    _preflight_timer_restore(source_root, {unit: True})
+    return (hashlib.sha256(_read_trusted_timer(target)).hexdigest() == LEGACY_TRAFFIC_TIMER_SHA256
+            or _timer_properties(unit)["NeedDaemonReload"] == "yes")
 
 
 def _is_active(unit: str) -> bool:
@@ -1381,13 +1613,27 @@ def _resume(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
 
     active_units = checkpoint["active_units"]
     pending = list(checkpoint["pending_units"])
+    timer_clean_required: dict[str, bool] = {}
+    if getattr(args, "restore_timers", False):
+        source_root = Path(__file__).resolve().parents[1]
+        timer_clean_required = _preflight_timer_restore(source_root, active_units)
+        traffic = "fwrouter-traffic-collect.timer"
+        if not active_units.get(traffic) and _traffic_timer_update_required(source_root):
+            _prepare_timer_restore(traffic, source_root)
+        for timer in PERSISTENT_TIMERS:
+            if active_units.get(timer):
+                _prepare_timer_restore(timer, source_root)
     for unit in RESTORE_ORDER:
         if not active_units.get(unit):
             continue
-        if unit in PERSISTENT_TIMERS and not args.allow_timer_catchup:
-            if not _is_active(unit) and unit not in pending:
-                pending.append(unit)
-            continue
+        if unit in PERSISTENT_TIMERS:
+            if not args.allow_timer_catchup and not getattr(args, "restore_timers", False):
+                if not _is_active(unit) and unit not in pending:
+                    pending.append(unit)
+                continue
+            if (not _is_active(unit) and not args.allow_timer_catchup
+                    and timer_clean_required.get(unit, False)):
+                _systemctl("clean", unit, "--what=state")
         if not _is_active(unit):
             _systemctl("start", unit)
         if not _is_active(unit):
@@ -1420,11 +1666,17 @@ def run_command(argv: list[str] | None = None) -> dict[str, Any]:
                         help="release the exact pinned container while NEW API writers remain stopped")
     parser.add_argument("--allow-timer-catchup", action="store_true",
                         help="explicitly allow reactivation of previously active Persistent=true timers")
+    parser.add_argument("--restore-timers", action="store_true",
+                        help="restore previously active timers after clearing their missed-trigger state")
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         raise LifecycleError("controlled backend lifecycle must run as root")
     if args.allow_timer_catchup and args.command != "resume":
         raise LifecycleError("--allow-timer-catchup applies only to resume")
+    if args.restore_timers and args.command != "resume":
+        raise LifecycleError("--restore-timers applies only to resume")
+    if args.restore_timers and args.allow_timer_catchup:
+        raise LifecycleError("--restore-timers and --allow-timer-catchup are mutually exclusive")
     if args.jit_owner_quiescence and args.command != "release-mihomo":
         raise LifecycleError("--jit-owner-quiescence applies only to release-mihomo")
     if args.command == "transfer" and not all((args.expected_operation_id,
