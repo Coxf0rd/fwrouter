@@ -1697,7 +1697,16 @@ def reconcile_mihomo_runtime(
                 "generation_verification_callback": generation_materialization_callback,
                 "operation_id": operation_id,
             })
-        restarted = restart_mihomo_container(**restart_kwargs)
+        if promoted.get("ok") is True:
+            restarted = restart_mihomo_container(**restart_kwargs)
+        else:
+            # Do not activate a candidate whose promotion failed. Existing recovery
+            # below handles any partial promotion that reports promoted=True.
+            restarted = {
+                "ok": False,
+                "action": "none",
+                "reason": "promotion_failed",
+            }
         recovery_checkpoint["runtime_incarnation_after"] = _mihomo_incarnation()
     verification = None
     if bool(promoted.get("ok")) and bool(restarted.get("ok")) and callable(verification_callback):
@@ -1803,11 +1812,13 @@ def reconcile_mihomo_runtime(
     result = {
         "ok": verified,
         "operation_id": operation_id,
-        "stage": ("generation_receipt_publication" if fixed_receipt_publication_failed else
+        "stage": ("promotion" if promoted.get("ok") is not True else
+                  ("generation_receipt_publication" if fixed_receipt_publication_failed else
                   ("generation_publication_revalidation" if publication_revalidation_failed else
-                   ("verification" if verification is not None and not verification.get("ok") else None))),
-        "error_code": ("MIHOMO_GENERATION_RECEIPT_PUBLICATION_FAILED" if fixed_receipt_publication_failed else
-                       ("MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION" if publication_revalidation_failed else None)),
+                   ("verification" if verification is not None and not verification.get("ok") else None)))),
+        "error_code": (promoted.get("error_code") if promoted.get("ok") is not True else
+                       ("MIHOMO_GENERATION_RECEIPT_PUBLICATION_FAILED" if fixed_receipt_publication_failed else
+                       ("MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION" if publication_revalidation_failed else None))),
         "verification_callback_result": verification,
         "last_good_retained": bool(recovery.get("recovered")) if recovery is not None else (not bool(promoted.get("promoted")) if not promoted.get("ok") else False),
         "checkpoint_retained": (
@@ -1821,8 +1832,8 @@ def reconcile_mihomo_runtime(
         "config_validation": config_validation,
         "promoted": promoted,
         "container": restarted,
-        "reconcile_action": restart_action,
-        "reconcile_reason": "structural_change",
+        "reconcile_action": "none" if promoted.get("ok") is not True else restart_action,
+        "reconcile_reason": "promotion_failed" if promoted.get("ok") is not True else "structural_change",
         "state_consistency_ok": True,
         "config": _build_config_status_summary(
             base_path=base_path,

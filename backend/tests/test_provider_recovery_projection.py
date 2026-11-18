@@ -148,3 +148,263 @@ def test_shared_routing_drift_compares_live_direct_to_emergency_override(monkeyp
     )
     assert apply_orchestrator._live_applied_nft_artifact_consistency is canonical_artifact_probe
     assert intent["desired_mode"] == "vpn"
+
+
+@pytest.mark.parametrize(
+    ("applied_ready", "current_ready", "expected_drift"),
+    [
+        (False, True, True), (True, False, True), (True, True, False),
+        (False, False, False), (None, True, True), (False, None, True),
+    ],
+)
+def test_selective_policy_readiness_change_is_routing_drift(
+    monkeypatch, applied_ready, current_ready, expected_drift,
+):
+    from fwrouter_api.services import apply_orchestrator_drift
+
+    routing = {
+        "desired_mode": "selective",
+        "applied_mode": "selective",
+        "selective_default": "direct",
+    }
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "selective", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "_probe_live_artifact_consistency",
+        lambda: {"detected": False, "checked": True},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "read_applied_manifest",
+        lambda: {"global_preflight": {
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_policy_ready": applied_ready,
+            "selective_degraded": not applied_ready,
+        }},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "build_global_preflight",
+        lambda **_kwargs: {
+            "selective_vpn_policy_ready": current_ready,
+            "selective_degraded": not current_ready,
+        },
+    )
+
+    drift = apply_orchestrator_drift._current_routing_drift(routing=routing)
+
+    assert drift["detected"] is expected_drift
+    readiness_valid = isinstance(applied_ready, bool) and isinstance(current_ready, bool)
+    assert drift["policy_readiness_drift"]["checked"] is readiness_valid
+    assert drift["policy_readiness_drift"]["current_ready"] is current_ready
+    assert drift["policy_readiness_drift"]["state"] == (
+        "compared" if readiness_valid else "unknown"
+    )
+    assert drift["code"] == (
+        "SELECTIVE_VPN_POLICY_READINESS_DRIFT" if expected_drift else None
+    )
+
+
+def test_runtime_convergence_reapplies_selective_policy_after_recovery(monkeypatch):
+    from fwrouter_api.services import apply_orchestrator_drift, apply_orchestrator_public
+    from fwrouter_api.services import provider_recovery
+
+    routing = {
+        "desired_mode": "selective",
+        "applied_mode": "selective",
+        "selective_default": "direct",
+    }
+    monkeypatch.setattr(apply_orchestrator_public, "get_routing_snapshot", lambda: routing)
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "selective", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "_probe_live_artifact_consistency",
+        lambda: {"detected": False, "checked": True},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "read_applied_manifest",
+        lambda: {"global_preflight": {
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_policy_ready": False,
+            "selective_degraded": True,
+        }},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "build_global_preflight",
+        lambda **_kwargs: {
+            "selective_vpn_policy_ready": True,
+            "selective_degraded": False,
+        },
+    )
+    monkeypatch.setattr(provider_recovery, "emergency_override", lambda: None)
+    applied = []
+    monkeypatch.setattr(
+        apply_orchestrator_public, "set_global_mode",
+        lambda mode, **kwargs: applied.append((mode, kwargs)) or {"ok": True},
+    )
+
+    result = apply_orchestrator_public.reconcile_current_routing_if_drift(
+        requested_by="runtime_convergence_scheduler",
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "reapply_global_mode"
+    assert result["drift"]["policy_readiness_drift"]["detected"] is True
+    assert applied == [("selective", {"requested_by": "runtime_convergence_scheduler"})]
+
+
+def test_scoped_selective_readiness_drift_reconciles_under_global_direct(monkeypatch):
+    from fwrouter_api.services import apply_orchestrator_drift, apply_orchestrator_public
+
+    routing = {
+        "desired_mode": "direct",
+        "applied_mode": "direct",
+        "selective_default": "direct",
+    }
+    monkeypatch.setattr(apply_orchestrator_public, "get_routing_snapshot", lambda: routing)
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "direct", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "_probe_live_artifact_consistency",
+        lambda: {"detected": False, "checked": True},
+    )
+    applied_manifest = {
+        "subjects": [{
+            "is_active": True,
+            "effective_state": {"effective_mode": "selective"},
+        }],
+        "global_preflight": {
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_policy_ready": False,
+            "selective_degraded": True,
+        },
+    }
+    monkeypatch.setattr(apply_orchestrator_drift, "read_applied_manifest", lambda: applied_manifest)
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "build_global_preflight",
+        lambda **_kwargs: {
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_policy_ready": True,
+            "selective_degraded": False,
+        },
+    )
+    applied = []
+
+    def _apply_once(mode, **kwargs):
+        applied.append((mode, kwargs))
+        applied_manifest["global_preflight"]["selective_vpn_policy_ready"] = True
+        applied_manifest["global_preflight"]["selective_degraded"] = False
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        apply_orchestrator_public, "set_global_mode",
+        _apply_once,
+    )
+
+    result = apply_orchestrator_public.reconcile_current_routing_if_drift(
+        requested_by="runtime_convergence_scheduler",
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "reapply_global_mode"
+    assert applied == [("direct", {"requested_by": "runtime_convergence_scheduler"})]
+
+    second = apply_orchestrator_public.reconcile_current_routing_if_drift(
+        requested_by="runtime_convergence_scheduler",
+    )
+    assert second["ok"] is True
+    assert second["action"] == "none"
+    assert applied == [("direct", {"requested_by": "runtime_convergence_scheduler"})]
+
+
+def test_selective_mode_with_missing_readiness_receipt_requests_guarded_refresh(monkeypatch):
+    from fwrouter_api.services import apply_orchestrator_drift
+
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "selective", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "_probe_live_artifact_consistency",
+        lambda: {"detected": False, "checked": True},
+    )
+    monkeypatch.setattr(apply_orchestrator_drift, "read_applied_manifest", lambda: None)
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "build_global_preflight",
+        lambda **_kwargs: {
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_policy_ready": True,
+            "selective_degraded": False,
+        },
+    )
+
+    drift = apply_orchestrator_drift._current_routing_drift(routing={
+        "desired_mode": "selective", "applied_mode": "selective",
+        "selective_default": "direct",
+    })
+
+    assert drift["detected"] is True
+    assert drift["policy_readiness_drift"] == {
+        "detected": True, "checked": False, "state": "unknown",
+        "applied_ready": None, "current_ready": True,
+        "applied_degraded": None, "current_degraded": False,
+    }
+
+
+def test_pure_direct_without_scoped_selective_policy_skips_readiness_probe(monkeypatch):
+    from fwrouter_api.services import apply_orchestrator_drift
+
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "direct", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "_probe_live_artifact_consistency",
+        lambda: {"detected": False, "checked": True},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "read_applied_manifest", lambda: {"subjects": []},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "build_global_preflight",
+        lambda **_kwargs: pytest.fail("pure Direct has no selective VPN policy to probe"),
+    )
+
+    drift = apply_orchestrator_drift._current_routing_drift(routing={
+        "desired_mode": "direct", "applied_mode": "direct",
+        "selective_default": "direct",
+    })
+
+    assert drift["detected"] is False
+    assert drift["policy_readiness_drift"]["state"] == "not_applicable"
+
+
+def test_failed_reconciliation_apply_is_not_reported_as_success(monkeypatch):
+    from fwrouter_api.services import apply_orchestrator_public
+    from fwrouter_api.services import provider_recovery
+
+    monkeypatch.setattr(apply_orchestrator_public, "get_routing_snapshot", lambda: {
+        "desired_mode": "selective", "applied_mode": "selective",
+    })
+    monkeypatch.setattr(
+        apply_orchestrator_public, "_current_routing_drift",
+        lambda **_kwargs: {"detected": True, "code": "SELECTIVE_VPN_POLICY_READINESS_DRIFT"},
+    )
+    monkeypatch.setattr(provider_recovery, "emergency_override", lambda: None)
+    monkeypatch.setattr(
+        apply_orchestrator_public, "set_global_mode",
+        lambda *_args, **_kwargs: {"ok": False, "code": "APPLY_FAILED", "message": "apply failed"},
+    )
+
+    result = apply_orchestrator_public.reconcile_current_routing_if_drift(
+        requested_by="runtime_convergence_scheduler",
+    )
+
+    assert result["ok"] is False
+    assert result["action"] == "reapply_global_mode"
+    assert result["error_code"] == "APPLY_FAILED"
+    assert result["error_message"] == "apply failed"

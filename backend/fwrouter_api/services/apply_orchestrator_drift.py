@@ -11,6 +11,7 @@ from fwrouter_api.services.apply_orchestrator_constants import (
 )
 
 from fwrouter_api.services.dataplane_global import (
+    build_global_preflight,
     read_applied_manifest as read_applied_manifest,
 )
 from fwrouter_api.services.dataplane_live import (
@@ -49,12 +50,98 @@ def _current_routing_drift(*, routing: dict[str, Any] | None = None) -> dict[str
         )
     )
     live_artifact_matches = not bool(live_artifact_consistency.get("detected"))
-    drift_detected = not matches_intent or not live_artifact_matches
+    # A selective ruleset can remain byte-for-byte installed while its VPN
+    # health contract changes. The installed artifact still matches itself,
+    # but its degraded DROP/JUMP decision is stale. Compare the applied
+    # preflight receipt with current readiness and route changes through the
+    # normal guarded apply owner.
+    policy_readiness_drift: dict[str, Any] = {
+        "detected": False, "checked": False, "state": "not_applicable",
+    }
+    applied_manifest = read_applied_manifest()
+    applied_preflight = (
+        applied_manifest.get("global_preflight")
+        if isinstance(applied_manifest, dict)
+        else None
+    )
+    applied_rules = (
+        applied_preflight.get("selective_rules")
+        if isinstance(applied_preflight, dict)
+        else None
+    )
+    applied_subjects = (
+        applied_manifest.get("subjects") if isinstance(applied_manifest, dict) else None
+    )
+    scoped_selective_subjects = False
+    if isinstance(applied_subjects, list):
+        for subject in applied_subjects:
+            if not isinstance(subject, dict) or not bool(subject.get("is_active")):
+                continue
+            effective_state = subject.get("effective_state")
+            effective_mode = (
+                effective_state.get("effective_mode")
+                if isinstance(effective_state, dict)
+                else ""
+            )
+            path = str(
+                subject.get("dataplane_path")
+                or (
+                    effective_state.get("dataplane_path")
+                    if isinstance(effective_state, dict)
+                    else ""
+                )
+                or (effective_mode if effective_mode in {"direct", "vpn", "selective"} else "")
+                or ""
+            ).strip().lower()
+            if path == "selective":
+                scoped_selective_subjects = True
+                break
+    if expected_mode == "selective" or scoped_selective_subjects:
+        current_preflight = build_global_preflight(routing=resolved_routing)
+        current_rules = current_preflight.get("selective_rules")
+        vpn_policy_required = (
+            (
+                isinstance(applied_rules, dict)
+                and applied_rules.get("requires_vpn_runtime") is True
+            )
+            or (
+                isinstance(current_rules, dict)
+                and current_rules.get("requires_vpn_runtime") is True
+            )
+        )
+        if vpn_policy_required:
+            applied_ready = (
+                applied_preflight.get("selective_vpn_policy_ready")
+                if isinstance(applied_preflight, dict) else None
+            )
+            current_ready = current_preflight.get("selective_vpn_policy_ready")
+            readiness_valid = isinstance(applied_ready, bool) and isinstance(current_ready, bool)
+            policy_readiness_drift = {
+                # Refresh an incomplete receipt through the guarded apply path.
+                # Rendering remains fail-closed when current readiness is false.
+                "detected": (applied_ready != current_ready) if readiness_valid else True,
+                "checked": readiness_valid,
+                "state": "compared" if readiness_valid else "unknown",
+                "applied_ready": applied_ready if readiness_valid else None,
+                "current_ready": current_ready if isinstance(current_ready, bool) else None,
+                "applied_degraded": (
+                    applied_preflight.get("selective_degraded")
+                    if isinstance(applied_preflight, dict) else None
+                ),
+                "current_degraded": current_preflight.get("selective_degraded"),
+            }
+    drift_detected = (
+        not matches_intent
+        or not live_artifact_matches
+        or bool(policy_readiness_drift.get("detected"))
+    )
     drift_code = None
     if not matches_intent:
         drift_code = GLOBAL_ROUTING_DRIFT_CODE
     elif not live_artifact_matches:
         drift_code = LIVE_DATAPLANE_ARTIFACT_DRIFT_CODE
+    elif policy_readiness_drift.get("detected"):
+        drift_code = "SELECTIVE_VPN_POLICY_READINESS_DRIFT"
     return {
         "detected": drift_detected,
         "code": drift_code,
@@ -65,6 +152,7 @@ def _current_routing_drift(*, routing: dict[str, Any] | None = None) -> dict[str
         "live_mode": live_mode,
         "live_selective_default": live_selective_default,
         "live_artifact_consistency": live_artifact_consistency,
+        "policy_readiness_drift": policy_readiness_drift,
     }
 
 
