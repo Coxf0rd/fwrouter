@@ -24,7 +24,12 @@ from fwrouter_api.services.logs import (
 )
 
 
-def _current_routing_drift(*, routing: dict[str, Any] | None = None) -> dict[str, Any]:
+def _current_routing_drift(
+    *,
+    routing: dict[str, Any] | None = None,
+    check_policy_readiness: bool = False,
+) -> dict[str, Any]:
+    """Inspect persisted/live drift; fresh policy readiness is opt-in for convergence."""
     resolved_routing = dict(routing or get_routing_snapshot() or {})
     live_probe = probe_live_global_mode()
     live_artifact_consistency = _probe_live_artifact_consistency()
@@ -96,7 +101,9 @@ def _current_routing_drift(*, routing: dict[str, Any] | None = None) -> dict[str
             if path == "selective":
                 scoped_selective_subjects = True
                 break
-    if expected_mode == "selective" or scoped_selective_subjects:
+    if check_policy_readiness and (
+        expected_mode == "selective" or scoped_selective_subjects
+    ):
         current_preflight = build_global_preflight(routing=resolved_routing)
         current_rules = current_preflight.get("selective_rules")
         vpn_policy_required = (

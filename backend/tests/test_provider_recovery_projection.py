@@ -191,7 +191,9 @@ def test_selective_policy_readiness_change_is_routing_drift(
         },
     )
 
-    drift = apply_orchestrator_drift._current_routing_drift(routing=routing)
+    drift = apply_orchestrator_drift._current_routing_drift(
+        routing=routing, check_policy_readiness=True,
+    )
 
     assert drift["detected"] is expected_drift
     readiness_valid = isinstance(applied_ready, bool) and isinstance(current_ready, bool)
@@ -203,6 +205,40 @@ def test_selective_policy_readiness_change_is_routing_drift(
     assert drift["code"] == (
         "SELECTIVE_VPN_POLICY_READINESS_DRIFT" if expected_drift else None
     )
+
+
+def test_selective_policy_readiness_is_checked_only_by_runtime_reconciliation(monkeypatch):
+    from fwrouter_api.services import apply_orchestrator_drift
+
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "selective", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "_probe_live_artifact_consistency",
+        lambda: {"detected": False, "checked": True},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "read_applied_manifest",
+        lambda: {"global_preflight": {
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_policy_ready": False,
+        }},
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_drift, "build_global_preflight",
+        lambda **_kwargs: pytest.fail(
+            "ordinary drift inspection must not run live policy readiness preflight"
+        ),
+    )
+
+    drift = apply_orchestrator_drift._current_routing_drift(routing={
+        "desired_mode": "selective", "applied_mode": "selective",
+        "selective_default": "direct",
+    })
+
+    assert drift["detected"] is False
+    assert drift["policy_readiness_drift"]["state"] == "not_applicable"
 
 
 def test_runtime_convergence_reapplies_selective_policy_after_recovery(monkeypatch):
@@ -345,7 +381,7 @@ def test_selective_mode_with_missing_readiness_receipt_requests_guarded_refresh(
     drift = apply_orchestrator_drift._current_routing_drift(routing={
         "desired_mode": "selective", "applied_mode": "selective",
         "selective_default": "direct",
-    })
+    }, check_policy_readiness=True)
 
     assert drift["detected"] is True
     assert drift["policy_readiness_drift"] == {

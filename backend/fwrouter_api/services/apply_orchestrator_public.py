@@ -221,7 +221,8 @@ def reconcile_current_routing_if_drift(
     """Reapply the persisted routing intent only when live dataplane drift exists."""
 
     routing = get_routing_snapshot() or ensure_routing_global_state()
-    drift = _current_routing_drift(routing=routing)
+    # Runtime convergence owns fresh readiness probes; API mutations run their own preflight.
+    drift = _current_routing_drift(routing=routing, check_policy_readiness=True)
     if not drift.get("detected"):
         return {
             "ok": True,
