@@ -649,7 +649,6 @@ def _cleanup_lifecycle_owner_capsules(paths: Paths, result: dict) -> None:
 def _read_lifecycle_owner_capsule(paths: Paths, source_sha: str, *, pin: dict | None = None,
                                  verify_installed_updater: bool = True) -> tuple[dict, Path]:
     identity = _read_identity(paths)
-    stable = identity.get("stable_current") or {}
     owners = identity.get("lifecycle_owners") or {}
     pin = pin or owners.get(source_sha)
     stable_match = any((identity.get(name) or {}).get("source_sha") == source_sha
