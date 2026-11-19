@@ -149,6 +149,8 @@ def _validate_database_file(
     connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
     connection.row_factory = sqlite3.Row
     try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("BEGIN")
         integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
         schema = inspect_database_schema(
