@@ -61,7 +61,8 @@ FWROUTER_UPGRADE_RESULT="$(
   sudo git clone --quiet git@github.com:Coxf0rd/fwrouter.git "$source_dir"
   sudo git -C "$source_dir" checkout --quiet --detach "$FWROUTER_MAIN_SHA"
   test "$(sudo git -C "$source_dir" rev-parse HEAD)" = "$FWROUTER_MAIN_SHA"
-  test -z "$(sudo git -C "$source_dir" status --porcelain --ignored=matching)"
+  source_changes="$(sudo git -C "$source_dir" status --porcelain --ignored=matching)"
+  test -z "$source_changes"
   sudo cmp -s "$source_dir/host/sbin/fwrouter-deploy" /usr/local/sbin/fwrouter-deploy
   sudo /usr/local/sbin/fwrouter-deploy --configure-source "$source_dir" >/dev/null
   sudo /usr/local/sbin/fwrouter-deploy --self-upgrade \
