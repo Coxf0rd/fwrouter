@@ -174,6 +174,12 @@ def _subscription_refresh_failure(
     return redact_subscription_public_value({
         "job_status": "failed",
         "outcome": outcome,
+        "completion": result.get("completion") or "FAILED",
+        "inventory_synced": bool(result.get("inventory_synced")),
+        "runtime_outcome": result.get("runtime_outcome") or "unverified",
+        "recovery_pending": bool(result.get("recovery_pending")),
+        "reconcile_pending": bool(result.get("reconcile_pending") or result.get("recovery_pending")),
+        "selection_diagnostic": result.get("selection_diagnostic"),
         "job_id": job_id,
         "operation": SUBSCRIPTION_REFRESH_OPERATION,
         "stages": SUBSCRIPTION_REFRESH_STAGES,
@@ -228,6 +234,9 @@ def run_subscription_refresh_job(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "job_status": "failed" if result.get("outcome") == "partial" else "success",
         "outcome": result.get("outcome") or "success",
+        "completion": result.get("completion") or ("PARTIAL/DEGRADED" if result.get("outcome") == "partial" else "SUCCESS"),
+        "inventory_synced": bool(result.get("inventory_synced")),
+        "runtime_outcome": result.get("runtime_outcome") or "verified",
         "job_id": job_id,
         "operation": SUBSCRIPTION_REFRESH_OPERATION,
         "stages": SUBSCRIPTION_REFRESH_STAGES,

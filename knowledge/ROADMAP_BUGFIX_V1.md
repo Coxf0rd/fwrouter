@@ -26,6 +26,8 @@
 
 **Acceptance:** Fixtures independently fail each of the five predicates and identify it in diagnostics. A refresh with successful fetch and failed application preserves the successful source outcomes and cannot report SUCCESS. Concurrent requests for the same check yield at most one in-flight probe. With a fake clock, cache reuse, interval and backoff prevent extra probe calls. Unknown alone causes zero failovers and zero repeated probes before a bounded check is due.
 
+**B1 source scope:** The refresh result carries separate inventory, runtime and recovery facts. If an eligible current selector matches readback and health is unresolved, preflight defers runtime application. If application already started, staged publication stays pending under the existing checkpoint owner. Recovery requires confirmed current health and the existing native readback and revision checks. A genuine selector mismatch still uses the established guarded recovery path. Automatic health probes share a bounded in-process cache and backoff in the existing backend. Observations are fenced by target, revision and runtime incarnation, and post-switch proof uses a fresh check. Separate backend processes do not share in-flight cache entries. A pending generation can remain unresolved until fresh health and native evidence are available. The incident's original failed predicate remains unknown. Live continuity, runtime restart comparison for structural changes, and recovery side-effect reduction remain B2–B4 gates.
+
 ## B2 — Minimal Runtime Apply
 
 **Depends on:** B1 diagnostics and fixtures for the ordinary and staged apply paths.

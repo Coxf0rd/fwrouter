@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from time import perf_counter
@@ -133,6 +134,70 @@ def _public_prepared_result(prepared: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
+def _vpn_auto_refresh_diagnostic(
+    selector: dict[str, Any], state: dict[str, Any], *, expected_revision: int | None,
+) -> dict[str, Any]:
+    selected = str(selector.get("selected_server_id") or "")
+    ids = [str(value) for value in state.get("auto_selectable_candidate_ids") or []]
+    targets = dict(zip(ids, (str(value) for value in state.get("auto_selectable_candidate_target_names") or [])))
+    runtime = state.get("selector_runtime")
+    runtime = runtime if isinstance(runtime, dict) else {}
+    expected = targets.get(selected) or selected
+    actual = str(runtime.get("vpn_auto_now") or "")
+    health = state.get("active_auto_health_state")
+    health = health if health in ("healthy", "unhealthy", "unknown") else "unknown"
+    checks = {
+        "selector_ok": bool(selector.get("ok")),
+        "eligible": bool(selected and selected in ids),
+        "active_id_matches": bool(selected and state.get("active_auto_server_id") == selected),
+        "active_valid": bool(state.get("active_auto_server_valid")),
+        "readback_matches": bool(actual and actual == expected),
+    }
+
+    def fingerprint(value: str) -> str | None:
+        return hashlib.sha256(value.encode()).hexdigest()[:16] if value else None
+
+    applied_revision = selector.get("selection_revision")
+    observed_revision = state.get("selection_revision")
+    incarnation = state.get("runtime_incarnation")
+    return {
+        "failed_predicates": [name for name, passed in checks.items() if not passed],
+        "target_in_runtime": bool(state.get("active_auto_target_valid")),
+        "health": health,
+        "expected_target_fingerprint": fingerprint(expected),
+        "actual_target_fingerprint": fingerprint(actual),
+        "expected_revision": expected_revision if type(expected_revision) is int else None,
+        "selection_revision": applied_revision if type(applied_revision) is int else None,
+        "observed_revision": observed_revision if type(observed_revision) is int else None,
+        "runtime_instance_fingerprint": fingerprint(incarnation) if isinstance(incarnation, str) else None,
+    }
+
+
+def _vpn_auto_health_pending(
+    state: dict[str, Any], *, operation_id: str | None = None, expected_revision: int | None = None,
+) -> dict[str, Any] | None:
+    diagnostic = _vpn_auto_refresh_diagnostic(
+        {"ok": True, "selected_server_id": state.get("active_auto_server_id"), "selection_revision": expected_revision},
+        state, expected_revision=expected_revision,
+    )
+    if (
+        not diagnostic["target_in_runtime"]
+        or diagnostic["health"] not in {"unknown", "unhealthy"}
+        or diagnostic["failed_predicates"] != ["active_valid"]
+    ):
+        return None
+    return {
+        "ok": False,
+        "triggered": False,
+        "status": "pending_auto_health",
+        "error_code": "VPN_AUTO_HEALTH_UNCONFIRMED",
+        "error_message": "The current VPN Auto target matches runtime readback. Automatic health acceptance is pending.",
+        "operation_id": operation_id,
+        "selection_revision": expected_revision,
+        "selection_diagnostic": diagnostic,
+    }
+
+
 def _maybe_select_vpn_auto_after_refresh(
     *, operation_id: str | None = None, expected_selection_revision: int | None = None,
 ) -> dict[str, Any]:
@@ -212,6 +277,12 @@ def _maybe_select_vpn_auto_after_refresh(
             "state": state,
         }
 
+    pending = _vpn_auto_health_pending(
+        state, operation_id=operation_id, expected_revision=expected_selection_revision,
+    )
+    if pending is not None:
+        return pending
+
     selector = select_vpn_auto_server(
         apply=True,
         check_on_demand=True,
@@ -223,36 +294,18 @@ def _maybe_select_vpn_auto_after_refresh(
         expected_selection_revision=expected_selection_revision,
     )
     state_after = get_vpn_auto_state()
-    selected_server_id = str(selector.get("selected_server_id") or "").strip()
-    selectable_ids = {str(value) for value in (state_after.get("auto_selectable_candidate_ids") or [])}
-    selected_target_ready = bool(
-        selector.get("ok")
-        and selected_server_id
-        and selected_server_id in selectable_ids
-        and str(state_after.get("active_auto_server_id") or "") == selected_server_id
-        and bool(state_after.get("active_auto_server_valid"))
-    )
-    candidate_targets = dict(zip(
-        [str(value) for value in state_after.get("auto_selectable_candidate_ids") or []],
-        [str(value) for value in state_after.get("auto_selectable_candidate_target_names") or []],
-    ))
-    runtime_selectors = state_after.get("selector_runtime") if isinstance(state_after.get("selector_runtime"), dict) else {}
-    effective_target = str(runtime_selectors.get("vpn_auto_now") or "").strip()
-    expected_effective = candidate_targets.get(selected_server_id) or selected_server_id
-    selected_target_ready = selected_target_ready and bool(effective_target and effective_target == expected_effective)
+    diagnostic = _vpn_auto_refresh_diagnostic(selector, state_after, expected_revision=expected_selection_revision)
+    ready = not diagnostic["failed_predicates"]
     return {
-        "ok": selected_target_ready,
+        "ok": ready,
         "triggered": True,
-        "status": "auto_selected" if selected_target_ready else "pending_auto_select",
-        "error_code": None if selected_target_ready else "VPN_AUTO_SELECTED_TARGET_NOT_APPLIED",
-        "error_message": None if selected_target_ready else "Selected VPN-auto target is not present in the applied eligible runtime group.",
-        "logical_server_id": str(state_after.get("active_auto_server_id") or "") or None,
-        "expected_effective_target": expected_effective or None,
-        "effective_target": effective_target or None,
+        "status": "auto_selected" if ready else "pending_auto_select",
+        "error_code": None if ready else "VPN_AUTO_SELECTED_TARGET_NOT_APPLIED",
+        "error_message": None if ready else "VPN Auto selection did not pass eligibility, readback and health verification.",
         "selector": selector,
         "operation_id": operation_id,
         "selection_revision": selector.get("selection_revision", expected_selection_revision),
-        "state": state_after,
+        "selection_diagnostic": diagnostic,
     }
 
 
@@ -280,6 +333,17 @@ def _subscription_transition_preflight() -> dict[str, Any]:
     state = get_vpn_auto_state(read_only=True)
     if active_auto in active_ids and bool(state.get("active_auto_server_valid")):
         return {"ok": True, "mode": "auto", "selected_server_id": active_auto}
+    from fwrouter_api.services.provider_managed import provider_selection_request
+
+    if active_auto in active_ids and not provider_selection_request():
+        pending = _vpn_auto_health_pending(state, expected_revision=state.get("selection_revision"))
+        if pending is not None:
+            return {
+                **pending,
+                "stage": "preflight",
+                "last_good_retained": True,
+                "error": {"code": pending["error_code"], "message": pending["error_message"]},
+            }
     alternatives = [
         str(value) for value in state.get("auto_selectable_candidate_ids") or []
         if str(value) and str(value) != active_auto
@@ -361,6 +425,10 @@ def _subscription_intent_saved(refresh: dict[str, Any]) -> bool:
     return bool(sources)
 
 
+def _subscription_data_completed(refresh: dict[str, Any]) -> bool:
+    return refresh.get("ok") is True and refresh.get("stage") == "inventory_synced"
+
+
 def _write_subscription_terminal_event(result: dict[str, Any]) -> None:
     outcome = str(result.get("outcome") or ("success" if result.get("ok") else "failed"))
     event_type = {
@@ -371,7 +439,7 @@ def _write_subscription_terminal_event(result: dict[str, Any]) -> None:
         "success": "subscription_refresh_applied",
     }.get(outcome, "subscription_refresh_failed")
     message = {
-        "partial": "Subscription refresh completed with source errors; runtime outcome is verified.",
+        "partial": "Subscription refresh completed partially. See source and runtime outcomes.",
         "failed": "Subscription refresh failed before a verified runtime transition.",
         "unconfirmed": "Subscription refresh runtime outcome could not be verified.",
         "no_op": "Subscription refresh was verified with no runtime changes.",
@@ -384,6 +452,8 @@ def _write_subscription_terminal_event(result: dict[str, Any]) -> None:
         details={
             "operation": "subscription_refresh",
             "outcome": outcome,
+            "completion": result.get("completion") or ("SUCCESS" if result.get("ok") else "FAILED"),
+            "inventory_synced": bool(result.get("inventory_synced")),
             "runtime_verified": bool(result.get("runtime_verified")),
             "intent_saved": bool(result.get("intent_saved")),
             "last_good_retained": bool(result.get("last_good_retained")),
@@ -392,19 +462,26 @@ def _write_subscription_terminal_event(result: dict[str, Any]) -> None:
             "error_message": redact_subscription_public_value((result.get("error") or {}).get("message")) if isinstance(result.get("error"), dict) else None,
             "generation_recovery_reason": result.get("generation_recovery_reason"),
             "source_outcomes": result.get("source_outcomes") or [],
+            "selection_diagnostic": result.get("selection_diagnostic"),
+            "reconcile_pending": bool(result.get("reconcile_pending")),
+            "recovery_pending": bool(result.get("recovery_pending")),
         },
     )
 
 
 def _failed_before_apply(prepared: dict[str, Any]) -> dict[str, Any]:
     refresh = prepared.get("refresh") if isinstance(prepared.get("refresh"), dict) else {}
+    inventory_synced = _subscription_data_completed(refresh)
     result = {
         **prepared,
         "ok": False,
         "outcome": "failed",
+        "completion": "PARTIAL/DEGRADED" if inventory_synced else "FAILED",
+        "inventory_synced": inventory_synced,
+        "runtime_outcome": "not_applied",
         "runtime_verified": False,
         "intent_saved": _subscription_intent_saved(refresh),
-        "last_good_retained": False,
+        "last_good_retained": bool(prepared.get("last_good_retained")),
         "source_outcomes": _source_outcomes(refresh),
     }
     _write_subscription_terminal_event(result)
@@ -482,6 +559,7 @@ def prepare_subscription_refresh(*, source_ref: str | None = None) -> dict[str, 
             "error_code": recovery_diagnostic["error_code"],
             "generation_recovery_reason": recovery_diagnostic.get("reason"),
             "generation_recovery": recovery_diagnostic,
+            "recovery_pending": recovery.get("status") == "pending",
             "last_good_retained": True,
             "promoted": False,
             "container_restarted": False,
@@ -609,16 +687,23 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
         str(xray_module.get("desired_state") or "") == "enabled"
         and str(xray_module.get("lifecycle_mode") or "") == "managed"
     )
+    refresh = prepared.get("refresh") or {}
+    inventory_synced = _subscription_data_completed(refresh)
     transition_preflight = _subscription_transition_preflight()
     if not transition_preflight.get("ok"):
         failed = {
             **public_prepared,
             "ok": False,
             "stage": "preflight",
-            "outcome": "failed",
+            "outcome": "partial" if inventory_synced else "failed",
+            "completion": "PARTIAL/DEGRADED" if inventory_synced else "FAILED",
+            "inventory_synced": inventory_synced,
+            "runtime_outcome": "not_applied",
             "runtime_verified": False,
             "intent_saved": bool(prepared.get("refresh", {}).get("state")),
-            "last_good_retained": False,
+            "last_good_retained": bool(transition_preflight.get("last_good_retained")),
+            "selection_diagnostic": transition_preflight.get("selection_diagnostic"),
+            "reconcile_pending": transition_preflight.get("status") == "pending_auto_health",
             "source_outcomes": _source_outcomes(prepared.get("refresh") or {}),
             "promoted": False,
             "container_restarted": False,
@@ -702,12 +787,18 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
         xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
         if not bool(xray_vpn_auto_reconcile.get("ok", True)) or not bool(xray_profile_reconcile.get("ok", True)):
             generation_recovery_reason = _safe_generation_recovery_reason(xray_profile_reconcile)
+            recovery_result = xray_profile_reconcile.get("generation_recovery")
             reconcile = {
                 "ok": False,
                 "stage": "xray_generation",
                 "error_code": xray_profile_reconcile.get("error_code") or xray_vpn_auto_reconcile.get("error_code"),
                 "error_message": xray_profile_reconcile.get("error_message") or xray_vpn_auto_reconcile.get("error_message"),
                 "generation_recovery_reason": generation_recovery_reason,
+                "recovery_pending": (
+                    xray_profile_reconcile.get("status") == "pending"
+                    or (isinstance(recovery_result, dict) and not recovery_result.get("ok"))
+                ),
+                "selection_diagnostic": (prepublication_selection or {}).get("selection_diagnostic"),
             }
         else:
             # The staged generation has already applied and read back the exact
@@ -814,32 +905,32 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
             or selector_result.get("changed")
         )
         runtime_changed = promoted or container_restarted or generation_changed or selection_changed
+        runtime_verified = bool(auto_select.get("ok", True) and xray_ok)
         result = {
             **public_prepared,
-            "ok": bool(auto_select.get("ok", True)) and xray_ok,
+            "ok": runtime_verified,
             "stage": (
                 "verify"
-                if not xray_ok
+                if not runtime_verified
                 else "applied" if runtime_changed else "already_current"
             ),
             "outcome": (
-                "unconfirmed" if reconcile.get("ok") and not (auto_select.get("ok", True) and xray_ok)
-                else "failed" if not reconcile.get("ok")
+                "unconfirmed" if not runtime_verified
                 else "partial" if int(((prepared.get("refresh") or {}).get("batch") or {}).get("errors") or 0) > 0
                 else "no_op" if not runtime_changed
                 else "success"
             ),
-            "runtime_verified": bool(reconcile.get("ok") and auto_select.get("ok", True) and xray_ok),
+            "runtime_verified": runtime_verified,
             "intent_saved": _subscription_intent_saved(prepared.get("refresh") or {}),
             "last_good_retained": (
                 any(item.get("retained") for item in _source_outcomes(prepared.get("refresh") or {}))
-                or (not runtime_changed and bool(reconcile.get("ok") and auto_select.get("ok", True) and xray_ok))
+                or (not runtime_changed and runtime_verified)
             ),
             "source_outcomes": _source_outcomes(prepared.get("refresh") or {}),
             "reconcile": reconcile,
             "promoted": promoted,
             "container_restarted": container_restarted,
-            "applied": runtime_changed,
+            "applied": runtime_changed and runtime_verified,
             "update_available": runtime_changed,
             "reconcile_action": reconcile_action,
             "reconcile_reason": reconcile_reason,
@@ -851,10 +942,10 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
             "timings_ms": {**(prepared.get("timings_ms") or {}), **timings_ms},
             "error": (
                 None
-                if auto_select.get("ok", True) and xray_ok
+                if runtime_verified
                 else {
                     "code": (
-                        "VPN_AUTO_AUTOSELECT_FAILED"
+                        (auto_select.get("error_code") or "VPN_AUTO_AUTOSELECT_FAILED")
                         if not auto_select.get("ok", True)
                         else (
                             (final_reconcile or {}).get("promoted", {}).get("error_code")
@@ -865,7 +956,7 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
                         or "XRAY_SUBSCRIPTION_PROFILE_RECONCILE_FAILED"
                     ),
                     "message": (
-                        "Subscription refresh completed, but vpn-auto could not select a valid active server."
+                        (auto_select.get("error_message") or "Subscription refresh completed, but VPN Auto could not verify the active target.")
                         if not auto_select.get("ok", True)
                         else (
                             (final_reconcile or {}).get("promoted", {}).get("error_message")
@@ -881,6 +972,18 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
         if result.get("runtime_verified"):
             from fwrouter_api.services.provider_managed import record_provider_applied
             record_provider_applied(prepared)
+        result["inventory_synced"] = inventory_synced
+        result["selection_diagnostic"] = auto_select.get("selection_diagnostic")
+        if inventory_synced and not result["runtime_verified"]:
+            result["outcome"] = "partial"
+            result["reconcile_pending"] = True
+        result["runtime_outcome"] = "verified" if result["runtime_verified"] else "unverified"
+        if result["ok"] and result["outcome"] != "partial":
+            result["completion"] = "SUCCESS"
+        elif result["inventory_synced"]:
+            result["completion"] = "PARTIAL/DEGRADED"
+        else:
+            result["completion"] = "FAILED"
         event_type = ("subscription_refresh_partial" if result["outcome"] == "partial" else "subscription_refresh_applied" if result["applied"] else "subscription_refresh_skipped")
         message = (
             "Subscription refresh completed with provider errors; retained last-good source inventory was applied and runtime verified."
@@ -943,10 +1046,26 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
                 late_recovery["ok"] = bool(late_recovery.get("ok") and selection_restored and selection_readback.get("ok"))
             late_recovery["selection_restored"] = selection_restored
             late_recovery["selection_readback"] = selection_readback
+    selection_diagnostic = reconcile.get("selection_diagnostic") or nonstaged_selection.get("selection_diagnostic")
+    callback_result = reconcile.get("verification_callback_result")
+    recovery_unconfirmed = late_recovery is not None and not late_recovery.get("ok")
+    callback_unconfirmed = (
+        isinstance(callback_result, dict) and not callback_result.get("ok")
+        and not reconcile.get("last_good_retained")
+    )
     result = {
         **public_prepared,
         "ok": False,
-        "outcome": "unconfirmed" if (late_recovery is not None and not late_recovery.get("ok")) or (isinstance(reconcile.get("verification_callback_result"), dict) and not reconcile["verification_callback_result"].get("ok") and not reconcile.get("last_good_retained")) else "failed",
+        "inventory_synced": inventory_synced,
+        "completion": "PARTIAL/DEGRADED" if inventory_synced else "FAILED",
+        "runtime_outcome": "unverified",
+        "recovery_pending": bool(reconcile.get("recovery_pending")) or recovery_unconfirmed,
+        "reconcile_pending": inventory_synced,
+        "selection_diagnostic": selection_diagnostic,
+        "outcome": (
+            "partial" if inventory_synced else "unconfirmed"
+            if recovery_unconfirmed or callback_unconfirmed else "failed"
+        ),
         "runtime_verified": False,
         "intent_saved": _subscription_intent_saved(prepared.get("refresh") or {}),
         "last_good_retained": bool(late_recovery.get("ok")) if late_recovery is not None else bool(reconcile.get("last_good_retained")) or bool((xray_profile_reconcile or {}).get("last_good_retained")),
@@ -1014,6 +1133,11 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             "ok": False,
             "status": "pending",
             "stage": "inventory_generation_admission",
+            "completion": "PARTIAL/DEGRADED" if _subscription_data_completed(prepared.get("refresh") or {}) else "FAILED",
+            "inventory_synced": _subscription_data_completed(prepared.get("refresh") or {}),
+            "runtime_outcome": "not_applied",
+            "runtime_verified": False,
+            "recovery_pending": True,
             "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
             "error": {"code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
                       "message": str(exc.result.get("reason") or "Verified inventory generation is unavailable.")},
@@ -1054,6 +1178,8 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
                 "ok": False,
                 "status": "pending",
                 "stage": "inventory_generation_promotion",
+                "completion": "PARTIAL/DEGRADED",
+                "recovery_pending": True,
                 "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_PROMOTION_UNVERIFIED",
                 "last_good_retained": True,
             })

@@ -1956,6 +1956,18 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
             return {"ok": False, "status": "pending", "stage": "fixed_generation_recovery_fence",
                     "error_code": "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN",
                     "runtime_verified": False}
+        verification = checkpoint.get("pre_publication_verification")
+        if isinstance(verification, dict) and verification.get("error_code") == "VPN_AUTO_HEALTH_UNCONFIRMED":
+            from fwrouter_api.services.selector import get_vpn_auto_target_health
+
+            routing = get_routing_global_state(expire_ttl=False) or {}
+            active_server_id = str(routing.get("active_auto_server_id") or "")
+            if get_vpn_auto_target_health(active_server_id) != "healthy":
+                return {
+                    "ok": False, "status": "pending", "stage": "selection_verification",
+                    "reason": "vpn_auto_health_unconfirmed",
+                    "error_code": "VPN_AUTO_HEALTH_UNCONFIRMED", "last_good_retained": True,
+                }
         checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
         inventory_state = get_subscription_native_generation_state()
@@ -4077,6 +4089,14 @@ def reconcile_xray_subscription_profile_nodes(
         if verification.get("ok"):
             _mark_generation_selection_verification_required(checkpoint_path)
             _record_xray_generation_derived_rows(checkpoint_path, phase="selection_verified")
+        elif verification.get("error_code") == "VPN_AUTO_HEALTH_UNCONFIRMED":
+            # A matching eligible target with missing health evidence is not a
+            # runtime failure. Leave publication pending under the existing
+            # generation owner and retain the checkpoint for guarded recovery.
+            return {"ok": False, "status": "pending", "stage": "selection_verification",
+                    "error_code": "VPN_AUTO_HEALTH_UNCONFIRMED",
+                    "error_message": verification.get("error_message"),
+                    "last_good_retained": True}
         else:
             restored = _restore_xray_generation_checkpoint(_xray_adapter(), checkpoint_path)
             return {"ok": False, "status": "failed", "stage": "selection_verification",

@@ -131,6 +131,43 @@ def _run_clear_race(module):
         assert all(not thread.is_alive() for thread in started_threads), "cache race thread survived cleanup"
 
 
+def test_cache_waiter_can_use_bounded_wait_timeout() -> None:
+    clear_live_probe_cache()
+    started = threading.Event()
+    release = threading.Event()
+    leader_result: dict[str, object] = {}
+
+    def loader():
+        started.set()
+        if not release.wait(5):
+            raise TimeoutError("test loader release timed out")
+        return {"value": "ready"}
+
+    def lead():
+        leader_result["value"] = get_live_probe_cache("bounded-wait", ttl_seconds=5, loader=loader)
+
+    thread = threading.Thread(target=lead, daemon=True)
+    thread.start()
+    try:
+        assert started.wait(5)
+        try:
+            get_live_probe_cache(
+                "bounded-wait",
+                ttl_seconds=5,
+                loader=lambda: {"value": "unexpected"},
+                wait_timeout_seconds=0.01,
+            )
+        except TimeoutError as exc:
+            assert str(exc) == "LIVE_PROBE_CACHE_WAIT_TIMEOUT"
+        else:
+            raise AssertionError("cache waiter exceeded its configured bound")
+    finally:
+        release.set()
+        thread.join(5)
+        clear_live_probe_cache()
+    assert not thread.is_alive()
+
+
 def _load_baseline_module() -> ModuleType:
     source = BASELINE_FIXTURE_PATH.read_bytes()
     assert hashlib.sha256(source).hexdigest() == BASELINE_FIXTURE_SHA256
@@ -579,3 +616,41 @@ def test_readonly_mihomo_health_coalesces_by_adapter_and_refreshes_after_clear()
         restore_event()
         clear_live_probe_cache()
         assert all(not thread.is_alive() for thread in started_threads), "health coalescing thread survived cleanup"
+
+
+def test_overlapping_probe_batches_load_each_target_once() -> None:
+    from threading import Event, Thread
+    from fwrouter_api.services.live_probe_cache import get_live_probe_cache_many
+
+    clear_live_probe_cache()
+    started, release = Event(), Event()
+    loads = []
+    results = {}
+
+    def first_loader(keys):
+        loads.append(keys)
+        started.set()
+        assert release.wait(5)
+        return {key: key for key in keys}
+
+    def second_loader(keys):
+        loads.append(keys)
+        release.set()
+        return {key: key for key in keys}
+
+    first = Thread(target=lambda: results.setdefault("first", get_live_probe_cache_many(
+        ["a", "b"], ttl_seconds=30, loader=first_loader, wait_timeout_seconds=5,
+    )))
+    try:
+        first.start()
+        assert started.wait(5)
+        results["second"] = get_live_probe_cache_many(
+            ["b", "c"], ttl_seconds=30, loader=second_loader, wait_timeout_seconds=5,
+        )
+    finally:
+        release.set()
+        first.join(5)
+        clear_live_probe_cache()
+    assert not first.is_alive()
+    assert loads == [["a", "b"], ["c"]]
+    assert results == {"first": {"a": "a", "b": "b"}, "second": {"b": "b", "c": "c"}}

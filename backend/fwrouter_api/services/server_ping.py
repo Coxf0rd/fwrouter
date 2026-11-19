@@ -1,25 +1,35 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logical_topology import (
     check_logical_server_delay,
     check_logical_server_delays,
+    persist_logical_server_probe_result,
 )
 from fwrouter_api.services.runtime_adapters import (
     RUNTIME_ROLE_VPN_DATAPLANE,
     active_runtime_adapter,
     runtime_adapter_operations,
 )
+from fwrouter_api.services.live_probe_cache import get_live_probe_cache_many
+from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
 
 
 DEFAULT_TEST_URL = "https://www.gstatic.com/generate_204"
 DEFAULT_TIMEOUT_MS = 10000
 DEFAULT_SWEEP_LIMIT = 10
 PING_SOURCES = {"manual", "selector", "watchdog", "background"}
+_AUTOMATIC_PROBE_SUCCESS_TTL_SECONDS = 15.0
+_AUTOMATIC_PROBE_FAILURE_BACKOFF_MAX_SECONDS = 30.0
+_AUTOMATIC_PROBE_FAILURES: dict[str, tuple[int, float]] = {}
+_AUTOMATIC_PROBE_FAILURES_LOCK = Lock()
 
 
 def _utc_timestamp() -> str:
@@ -88,6 +98,7 @@ def record_ping_result(
     error_code: str | None,
     error_message: str | None,
     metadata: dict[str, Any] | None = None,
+    expected_selection_revision: int | None = None,
 ) -> dict[str, Any]:
     normalized_server_id = str(server_id or "").strip()
     normalized_source = _normalize_ping_source(source, checked_by=checked_by)
@@ -102,6 +113,10 @@ def record_ping_result(
     }
 
     with db_session() as connection:
+        if expected_selection_revision is not None:
+            connection.execute("BEGIN IMMEDIATE")
+            if read_selection_fence(connection).get("revision") != expected_selection_revision:
+                return {"updated_state": False, "stale_observation": True}
         if normalized_source == "manual":
             connection.execute(
                 """
@@ -158,7 +173,7 @@ def record_ping_result(
                 ),
             )
         else:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO server_ping_state (
                     server_id,
@@ -179,6 +194,8 @@ def record_ping_result(
                     error_code = excluded.error_code,
                     error_message = excluded.error_message,
                     metadata_json = excluded.metadata_json
+                WHERE server_ping_state.checked_at IS NULL
+                   OR julianday(excluded.checked_at) > julianday(server_ping_state.checked_at)
                 """,
                 (
                     normalized_server_id,
@@ -193,6 +210,7 @@ def record_ping_result(
             )
 
     return {
+        "updated_state": normalized_source == "manual" or cursor.rowcount > 0,
         "server_id": normalized_server_id,
         "runtime_target": target,
         "source": normalized_source,
@@ -472,6 +490,77 @@ def _server_id_for_runtime_target(target: str) -> str:
     return str(row["server_id"] or normalized)
 
 
+def _automatic_probe_context(
+    server_id: str,
+    *,
+    test_url: str,
+    timeout_ms: int,
+    adapter_context: tuple[str, str] | None = None,
+    selection_revision: int | None = None,
+) -> tuple[str, str, str, str]:
+    target = resolve_server_runtime_target(server_id)["runtime_target"]
+    if adapter_context is None:
+        adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+        operations = runtime_adapter_operations(adapter)
+        incarnation_reader = getattr(operations, "runtime_incarnation", None)
+        try:
+            incarnation = str(incarnation_reader() or "") if callable(incarnation_reader) else ""
+        except Exception:
+            incarnation = ""
+        adapter_id = str(adapter.get("adapter_id") or "unknown")
+    else:
+        adapter_id, incarnation = adapter_context
+    context = json.dumps(
+        [str(server_id), adapter_id, incarnation, target, test_url, int(timeout_ms), selection_revision],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    key = "server_ping.target." + hashlib.sha256(context.encode("utf-8")).hexdigest()
+    return key, target, adapter_id, incarnation
+
+
+def _probe_backoff_active(key: str) -> bool:
+    with _AUTOMATIC_PROBE_FAILURES_LOCK:
+        failure = _AUTOMATIC_PROBE_FAILURES.get(key)
+        return bool(failure and failure[1] > monotonic())
+
+
+def _record_probe_outcome(key: str, status: str) -> None:
+    with _AUTOMATIC_PROBE_FAILURES_LOCK:
+        if status == "success":
+            _AUTOMATIC_PROBE_FAILURES.pop(key, None)
+        elif status == "failed":
+            failures = _AUTOMATIC_PROBE_FAILURES.get(key, (0, 0.0))[0] + 1
+            delay = min(_AUTOMATIC_PROBE_FAILURE_BACKOFF_MAX_SECONDS, float(2 ** min(failures, 5)))
+            _AUTOMATIC_PROBE_FAILURES[key] = (failures, monotonic() + delay)
+        if len(_AUTOMATIC_PROBE_FAILURES) > 512:
+            now = monotonic()
+            expired = [item for item, value in _AUTOMATIC_PROBE_FAILURES.items() if value[1] <= now]
+            for item in expired:
+                _AUTOMATIC_PROBE_FAILURES.pop(item, None)
+            while len(_AUTOMATIC_PROBE_FAILURES) > 512:
+                _AUTOMATIC_PROBE_FAILURES.pop(next(iter(_AUTOMATIC_PROBE_FAILURES)))
+
+
+def _deferred_probe_result(server_id: str, target: str, checked_by: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "server_id": server_id,
+        "runtime_target": target,
+        "mihomo_target": target,
+        "source": "unknown",
+        "status": "unknown",
+        "latency_ms": None,
+        "last_ping_ms": None,
+        "checked_at": None,
+        "latency_label": "n/a",
+        "checked_by": checked_by,
+        "error_code": "VPN_HEALTH_PROBE_BACKOFF",
+        "error_message": "Automatic health check is in bounded backoff after a failed probe.",
+        "updated_state": False,
+    }
+
+
 def check_server_delay(
     server_id: str,
     *,
@@ -480,6 +569,108 @@ def check_server_delay(
     source: str | None = None,
     test_url: str = DEFAULT_TEST_URL,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    expected_selection_revision: int | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    ping_source = _normalize_ping_source(source, checked_by=checked_by)
+    if ping_source != "manual" and expected_selection_revision is None:
+        try:
+            with db_session() as connection:
+                expected_selection_revision = read_selection_fence(connection).get("revision")
+        except Exception:
+            expected_selection_revision = None
+    if ping_source == "manual":
+        return _check_server_delay_uncached(
+            server_id, update_state=update_state, checked_by=checked_by,
+            source=source, test_url=test_url, timeout_ms=timeout_ms,
+            expected_selection_revision=expected_selection_revision,
+        )
+
+    key, target, _adapter_id, _incarnation = _automatic_probe_context(
+        server_id, test_url=test_url, timeout_ms=timeout_ms,
+        selection_revision=expected_selection_revision,
+    )
+    if _probe_backoff_active(key) and not force_refresh:
+        return _deferred_probe_result(server_id, target, checked_by)
+
+    def load_one() -> dict[str, Any]:
+        result = _check_server_delay_uncached(
+            server_id, update_state=False, checked_by=checked_by,
+            source=source, test_url=test_url, timeout_ms=timeout_ms,
+            expected_selection_revision=expected_selection_revision,
+        )
+        _record_probe_outcome(key, str(result.get("status") or "unknown"))
+        return result
+
+    try:
+        if force_refresh:
+            result = _check_server_delay_uncached(
+                server_id, update_state=False, checked_by=checked_by,
+                source=source, test_url=test_url, timeout_ms=timeout_ms,
+                expected_selection_revision=expected_selection_revision,
+            )
+        else:
+            cached, reused = get_live_probe_cache_many(
+                [key],
+                ttl_seconds=_AUTOMATIC_PROBE_SUCCESS_TTL_SECONDS,
+                loader=lambda keys: {candidate_key: load_one() for candidate_key in keys},
+                wait_timeout_seconds=max(1.0, float(timeout_ms) / 1000.0 + 1.0),
+                include_cached_keys=True,
+            )
+            if key not in cached:
+                raise TimeoutError("matching health probe is still running")
+            result = dict(cached[key])
+            result["probe_cache_reused"] = key in reused
+    except TimeoutError:
+        return {**_deferred_probe_result(server_id, target, checked_by),
+                "error_code": "VPN_HEALTH_PROBE_ALREADY_IN_PROGRESS",
+                "error_message": "A matching automatic health check is still running."}
+
+    pending = result.pop("pending_observation", None)
+    if expected_selection_revision is not None:
+        with db_session() as connection:
+            fence = read_selection_fence(connection)
+        current_key, _, _, _ = _automatic_probe_context(
+            server_id, test_url=test_url, timeout_ms=timeout_ms,
+            selection_revision=expected_selection_revision,
+        )
+        if fence.get("revision") != expected_selection_revision or current_key != key:
+            return {**result, "status": "unknown", "ok": False, "stale_observation": True,
+                    "last_ping_ms": None, "latency_ms": None, "updated_state": False}
+
+    if update_state and result.get("checked_at"):
+        if pending:
+            persistence = persist_logical_server_probe_result(
+                server_id, pending, adapter_id=_adapter_id, probe_reason=checked_by,
+                probe_lane=ping_source, expected_selection_revision=expected_selection_revision,
+            )
+            if not persistence.get("ok"):
+                return {**result, "status": "unknown", "ok": False, "stale_observation": True,
+                        "last_ping_ms": None, "latency_ms": None, "updated_state": False}
+        persisted = record_ping_result(
+            server_id=server_id, status=str(result.get("status") or "unknown"),
+            latency_ms=result.get("latency_ms"), runtime_target=target,
+            source=str(result.get("source") or ping_source), checked_at=str(result["checked_at"]),
+            checked_by=str(result.get("checked_by") or checked_by),
+            error_code=result.get("error_code"), error_message=result.get("error_message"),
+            metadata={"adapter": _adapter_id, "test_url": test_url, "timeout_ms": timeout_ms},
+            expected_selection_revision=expected_selection_revision,
+        )
+        result["updated_state"] = persisted.get("updated_state", False)
+        if persisted.get("stale_observation"):
+            result.update(ok=False, status="unknown", last_ping_ms=None, latency_ms=None, stale_observation=True)
+    return result
+
+
+def _check_server_delay_uncached(
+    server_id: str,
+    *,
+    update_state: bool = False,
+    checked_by: str = "manual",
+    source: str | None = None,
+    test_url: str = DEFAULT_TEST_URL,
+    timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    expected_selection_revision: int | None = None,
 ) -> dict[str, Any]:
 
     ping_source = _normalize_ping_source(source, checked_by=checked_by)
@@ -493,6 +684,8 @@ def check_server_delay(
         timeout_ms=timeout_ms,
         probe_reason=checked_by,
         probe_lane=ping_source,
+        persist_observation=expected_selection_revision is None,
+        expected_selection_revision=expected_selection_revision,
     )
     if delay.get("error_code") == "LOGICAL_SERVER_NOT_FOUND":
         if callable(getattr(runtime_operations, "check_delay", None)):
@@ -570,6 +763,7 @@ def check_server_delay(
         "active_member_runtime_name": delay.get("member_runtime_name"),
         "probe_backend": delay.get("probe_backend"),
         "runtime_adapter_id": runtime_adapter.get("adapter_id"),
+        "pending_observation": delay.get("pending_observation"),
     }
 
 
@@ -582,58 +776,110 @@ def check_server_delays(
     test_url: str = DEFAULT_TEST_URL,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     fallback_check: Any | None = None,
+    expected_selection_revision: int | None = None,
 ) -> list[dict[str, Any]]:
     ordered_ids = list(dict.fromkeys(str(item) for item in server_ids if str(item).strip()))
     ping_source = _normalize_ping_source(source, checked_by=checked_by)
-    batch = check_logical_server_delays(
-        ordered_ids,
-        test_url=test_url,
-        timeout_ms=timeout_ms,
-        probe_reason=checked_by,
-        probe_lane=ping_source,
-    )
-    if batch is None:
-        check_one = fallback_check or check_server_delay
-        return [
-            check_one(
-                server_id,
-                update_state=update_state,
-                checked_by=checked_by,
-                source=source,
-                test_url=test_url,
-                timeout_ms=timeout_ms,
+    if ping_source != "manual" and expected_selection_revision is None:
+        try:
+            with db_session() as connection:
+                expected_selection_revision = read_selection_fence(connection).get("revision")
+        except Exception:
+            expected_selection_revision = None
+    adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+    operations = runtime_adapter_operations(adapter)
+    incarnation_reader = getattr(operations, "runtime_incarnation", None)
+    try:
+        batch_incarnation = str(incarnation_reader() or "") if callable(incarnation_reader) else ""
+    except Exception:
+        batch_incarnation = ""
+    adapter_context = (str(adapter.get("adapter_id") or "unknown"), batch_incarnation)
+    contexts = {
+        server_id: (
+            "server_ping.manual." + hashlib.sha256(server_id.encode("utf-8")).hexdigest(),
+            resolve_server_runtime_target(server_id)["runtime_target"],
+            "unknown",
+            "",
+        ) if ping_source == "manual" else
+        _automatic_probe_context(
+            server_id, test_url=test_url, timeout_ms=timeout_ms,
+            adapter_context=adapter_context,
+            selection_revision=expected_selection_revision,
+        )
+        for server_id in ordered_ids
+    }
+    targets = [contexts[server_id][1] for server_id in ordered_ids]
+    key_by_id = {server_id: contexts[server_id][0] for server_id in ordered_ids}
+    id_by_key = {key: server_id for server_id, key in key_by_id.items()}
+
+    def load_results(keys_to_load: list[str]) -> dict[str, dict[str, Any]]:
+        probe_ids = [id_by_key[key] for key in keys_to_load if not _probe_backoff_active(key)]
+        results_by_key = {
+            key_by_id[server_id]: _deferred_probe_result(
+                server_id, contexts[server_id][1], checked_by,
             )
             for server_id in ordered_ids
-        ]
-    results: list[dict[str, Any]] = []
-    for server_id, delay in zip(ordered_ids, batch):
-        runtime_target = resolve_server_runtime_target(server_id)["runtime_target"]
-        status = "success" if delay.get("ok") else "failed"
-        metadata = {
-            "adapter": delay.get("runtime_adapter_id"),
-            "test_url": test_url,
-            "timeout_ms": timeout_ms,
-            "checked_at": _utc_timestamp(),
-            "runtime_target": runtime_target,
-            "mihomo_target": runtime_target,
-            "active_member_id": delay.get("member_id"),
-            "active_member_runtime_name": delay.get("member_runtime_name"),
-            "details": delay,
+            if key_by_id[server_id] in keys_to_load and key_by_id[server_id] not in {key_by_id[item] for item in probe_ids}
         }
-        if update_state:
-            record_ping_result(
-                server_id=server_id,
-                status=status,
-                latency_ms=delay.get("latency_ms"),
-                runtime_target=runtime_target,
-                source=ping_source,
-                checked_by=checked_by,
-                error_code=delay.get("error_code"),
-                error_message=delay.get("error_message"),
-                metadata=metadata,
+        if not probe_ids:
+            return results_by_key
+        batch = check_logical_server_delays(
+            probe_ids,
+            test_url=test_url,
+            timeout_ms=timeout_ms,
+            probe_reason=checked_by,
+            probe_lane=ping_source,
+            persist_observation=False,
+            expected_selection_revision=expected_selection_revision,
+        )
+        if batch is None:
+            check_one = (
+                _check_server_delay_uncached if fallback_check in (None, check_server_delay) else fallback_check
             )
-        results.append(
-            {
+            raw_results = [
+                check_one(
+                    server_id,
+                    update_state=False,
+                    checked_by=checked_by,
+                    source=source,
+                    test_url=test_url,
+                    timeout_ms=timeout_ms,
+                    expected_selection_revision=expected_selection_revision,
+                )
+                for server_id in probe_ids
+            ]
+            checked_at = _utc_timestamp()
+            normalized = [
+                {
+                    **result,
+                    "server_id": server_id,
+                    "runtime_target": result.get("runtime_target") or contexts[server_id][1],
+                    "mihomo_target": result.get("mihomo_target") or result.get("runtime_target") or contexts[server_id][1],
+                    "source": result.get("source") or ping_source,
+                    "checked_by": result.get("checked_by") or checked_by,
+                    "status": result.get("status") or ("success" if result.get("ok") else "failed"),
+                    "latency_ms": result.get("latency_ms", result.get("last_ping_ms")),
+                    "last_ping_ms": result.get("last_ping_ms", result.get("latency_ms")),
+                    "latency_label": result.get("latency_label") or _latency_label(result.get("latency_ms", result.get("last_ping_ms"))),
+                    "test_url": result.get("test_url") or test_url,
+                    "timeout_ms": result.get("timeout_ms") or timeout_ms,
+                    "checked_at": result.get("checked_at") or checked_at,
+                    "updated_state": False,
+                    "pending_observation": result.get("pending_observation"),
+                }
+                for server_id, result in zip(probe_ids, raw_results)
+            ]
+            for server_id, result in zip(probe_ids, normalized):
+                if ping_source != "manual":
+                    _record_probe_outcome(key_by_id[server_id], str(result.get("status") or "unknown"))
+                results_by_key[key_by_id[server_id]] = result
+            return results_by_key
+
+        checked_at = _utc_timestamp()
+        for server_id, delay in zip(probe_ids, batch):
+            runtime_target = contexts[server_id][1]
+            status = "success" if delay.get("ok") else "failed"
+            result = {
                 "ok": bool(delay.get("ok")),
                 "server_id": server_id,
                 "runtime_target": runtime_target,
@@ -642,20 +888,145 @@ def check_server_delays(
                 "status": status,
                 "latency_ms": delay.get("latency_ms"),
                 "last_ping_ms": delay.get("latency_ms"),
-                "checked_at": metadata["checked_at"],
+                "checked_at": checked_at,
                 "latency_label": _latency_label(delay.get("latency_ms")),
                 "checked_by": checked_by,
                 "test_url": test_url,
                 "timeout_ms": timeout_ms,
                 "error_code": delay.get("error_code"),
                 "error_message": delay.get("error_message"),
-                "updated_state": update_state,
+                "updated_state": False,
                 "active_member_id": delay.get("member_id"),
                 "active_member_runtime_name": delay.get("member_runtime_name"),
                 "probe_backend": delay.get("probe_backend"),
                 "runtime_adapter_id": delay.get("runtime_adapter_id"),
+                "probe_details": delay,
             }
+            if ping_source != "manual":
+                _record_probe_outcome(key_by_id[server_id], status)
+            results_by_key[key_by_id[server_id]] = result
+        return results_by_key
+
+    if ping_source == "manual" or not ordered_ids:
+        results_by_key = load_results([key_by_id[item] for item in ordered_ids])
+        results = [results_by_key[key_by_id[item]] for item in ordered_ids]
+    else:
+        # Share the established bounded probe cache for a short interval. Its
+        # per-key in-flight coordination coalesces simultaneous selector,
+        # watchdog and refresh requests with the same target/context snapshot.
+        try:
+            cached_results, reused_keys = get_live_probe_cache_many(
+                [key_by_id[item] for item in ordered_ids],
+                ttl_seconds=2.0,
+                loader=load_results,
+                wait_timeout_seconds=max(1.0, float(timeout_ms) / 1000.0 + 1.0),
+                include_cached_keys=True,
+            )
+            # Cache values are shared between callers. Never mutate the cached
+            # dictionaries while decorating this caller's result.
+            results = [dict(cached_results[key_by_id[item]]) for item in ordered_ids if key_by_id[item] in cached_results]
+            missing_keys = {key_by_id[item] for item in ordered_ids} - set(cached_results)
+            for key in missing_keys:
+                item = id_by_key[key]
+                cached_results[key] = {
+                    **_deferred_probe_result(item, contexts[item][1], checked_by),
+                    "error_code": "VPN_HEALTH_PROBE_ALREADY_IN_PROGRESS",
+                    "error_message": "A matching automatic health check is still running.",
+                }
+            results = [dict(cached_results[key_by_id[item]]) for item in ordered_ids]
+            for result, server_id in zip(results, ordered_ids):
+                result["probe_cache_reused"] = key_by_id[server_id] in reused_keys
+        except TimeoutError:
+            return [
+                {
+                    "ok": False,
+                    "server_id": server_id,
+                    "runtime_target": target,
+                    "mihomo_target": target,
+                    "source": ping_source,
+                    "status": "unknown",
+                    "latency_ms": None,
+                    "last_ping_ms": None,
+                    "checked_at": None,
+                    "latency_label": "n/a",
+                    "checked_by": checked_by,
+                    "error_code": "VPN_HEALTH_PROBE_ALREADY_IN_PROGRESS",
+                    "error_message": "A matching automatic health check is still running.",
+                    "updated_state": False,
+                }
+                for server_id, target in zip(ordered_ids, targets)
+            ]
+
+    observation_stale = False
+    if expected_selection_revision is not None:
+        try:
+            with db_session() as connection:
+                current_fence = read_selection_fence(connection)
+            observation_stale = current_fence.get("revision") != expected_selection_revision
+        except (ValueError, KeyError, TypeError):
+            observation_stale = True
+    try:
+        current_adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+        current_operations = runtime_adapter_operations(current_adapter)
+        current_incarnation_reader = getattr(current_operations, "runtime_incarnation", None)
+        current_incarnation = str(current_incarnation_reader() or "") if callable(current_incarnation_reader) else ""
+        observation_stale = observation_stale or (
+            str(current_adapter.get("adapter_id") or "unknown") != adapter_context[0]
+            or current_incarnation != batch_incarnation
         )
+    except Exception:
+        observation_stale = True
+    for result in results:
+        target_changed = resolve_server_runtime_target(result["server_id"])["runtime_target"] != result["runtime_target"]
+        if observation_stale or target_changed:
+            result["stale_observation"] = True
+            result["updated_state"] = False
+
+    if update_state and not observation_stale:
+        for result in results:
+            if not result.get("checked_at") or result.get("stale_observation"):
+                result["updated_state"] = False
+                continue
+            pending = result.get("pending_observation")
+            if pending:
+                persisted = persist_logical_server_probe_result(
+                    result["server_id"], pending, adapter_id=adapter_context[0],
+                    probe_reason=checked_by, probe_lane=ping_source,
+                    expected_selection_revision=expected_selection_revision,
+                )
+                if not persisted.get("ok"):
+                    result.update(status="unknown", ok=False, stale_observation=True, updated_state=False)
+                    continue
+            details = result.get("probe_details")
+            metadata = {
+                "adapter": result.get("runtime_adapter_id"),
+                "test_url": test_url,
+                "timeout_ms": timeout_ms,
+                "checked_at": result["checked_at"],
+                "runtime_target": result["runtime_target"],
+                "mihomo_target": result["runtime_target"],
+                "active_member_id": result.get("active_member_id"),
+                "active_member_runtime_name": result.get("active_member_runtime_name"),
+                "details": details or {
+                    "error_code": result.get("error_code"),
+                    "probe_backend": result.get("probe_backend"),
+                },
+            }
+            persisted_ping = record_ping_result(
+                server_id=result["server_id"], status=result["status"],
+                latency_ms=result.get("latency_ms"), runtime_target=result["runtime_target"],
+                source=ping_source, checked_at=result["checked_at"], checked_by=checked_by,
+                error_code=result.get("error_code"), error_message=result.get("error_message"),
+                metadata=metadata, expected_selection_revision=expected_selection_revision,
+            )
+            result["updated_state"] = persisted_ping.get("updated_state", False)
+            if persisted_ping.get("stale_observation"):
+                result["stale_observation"] = True
+    for result in results:
+        result.pop("probe_details", None)
+        result.pop("pending_observation", None)
+        if result.get("stale_observation"):
+            result.update(ok=False, status="unknown", last_ping_ms=None, latency_ms=None)
     return results
 
 

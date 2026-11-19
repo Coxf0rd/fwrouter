@@ -225,6 +225,23 @@ def run_vpn_watchdog_check(
 
         return result
 
+    if active_check.get("status") in {"unknown", "probe_unavailable"}:
+        return {
+            "ok": True,
+            "status": "selection_deferred",
+            "reason": reason,
+            "traffic_attempts_observed": traffic_attempts_observed,
+            "allow_switch": False,
+            "active_server_id": active_server_id,
+            "active_check": active_check,
+            "selector": None,
+            "action": "deferred",
+            "vpn_adapter": vpn_adapter,
+            "vpn_runtime": runtime_state,
+            "path_key": runtime_state.get("path_key"),
+            "message": "Active VPN health is unconfirmed. Watchdog deferred failover.",
+        }
+
     failover = runtime_controller.failover(
         apply=allow_switch,
         reason=reason,

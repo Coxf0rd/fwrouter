@@ -604,7 +604,10 @@ def test_staged_profile_verification_runs_outside_writer_guard(monkeypatch, tmp_
     assert result["ok"] is True
 
 
-def test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("error_code", ["PROVIDER_READBACK_FAILED", "VPN_AUTO_HEALTH_UNCONFIRMED"])
+def test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback(
+    monkeypatch, tmp_path: Path, error_code: str,
+) -> None:
     import hashlib
     import json
     from fwrouter_api.services import xray_subscription_service as profile_service
@@ -617,7 +620,7 @@ def test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for
         "source_fingerprint": "source-2", "derived_source_fingerprint": "source-2",
         "mihomo_runtime_incarnation": "c2|t2",
         "staged_generation": {"mihomo_final_sha256": digest}}), encoding="utf-8")
-    verify = lambda **_ctx: {"ok": False, "error_code": "PROVIDER_READBACK_FAILED",
+    verify = lambda **_ctx: {"ok": False, "error_code": error_code,
                              "operation_id": "op-2", "selection_revision": 8}
     monkeypatch.setattr(profile_service, "_reconcile_xray_subscription_profile_nodes_guarded", lambda **_kwargs: {
         "_pending_generation": {"verification_callback": verify,
@@ -638,7 +641,12 @@ def test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for
         verification_callback=verify,
     )
     assert result["stage"] == "selection_verification", result
-    assert restored == [True]
+    if error_code == "VPN_AUTO_HEALTH_UNCONFIRMED":
+        assert result["status"] == "pending"
+        assert restored == []
+        assert json.loads(checkpoint.read_text())["pre_publication_verification"]["error_code"] == error_code
+    else:
+        assert restored == [True]
 
 
 def test_nonstaged_profile_selection_callback_runs_outside_writer_guard(monkeypatch, tmp_path: Path) -> None:
@@ -747,3 +755,163 @@ def test_staged_profile_rejects_checkpoint_replaced_by_newer_operation(monkeypat
     result = profile_service.reconcile_xray_subscription_profile_nodes(verification_callback=verify)
     assert result["error_code"] == "XRAY_GENERATION_STALE_BEFORE_PUBLICATION"
     assert published == []
+
+
+@pytest.mark.parametrize(("predicate", "selector_change", "state_change"), [
+    ("selector_ok", {"ok": False}, {}),
+    ("eligible", {}, {"auto_selectable_candidate_ids": [], "auto_selectable_candidate_target_names": []}),
+    ("active_id_matches", {}, {"active_auto_server_id": "other"}),
+    ("active_valid", {}, {"active_auto_server_valid": False}),
+    ("readback_matches", {}, {"selector_runtime": {"vpn_auto_now": "different"}}),
+])
+def test_refresh_reports_each_selector_verification_predicate(predicate, selector_change, state_change):
+    selector = {"ok": True, "selected_server_id": "node", "selection_revision": 11, **selector_change}
+    state = {
+        "auto_selectable_candidate_ids": ["node"],
+        "auto_selectable_candidate_target_names": ["node"],
+        "active_auto_server_id": "node",
+        "active_auto_server_valid": True,
+        "active_auto_target_valid": True,
+        "active_auto_health_state": "healthy",
+        "selector_runtime": {"vpn_auto_now": "node"},
+        "selection_revision": 11,
+        "runtime_incarnation": "container|started",
+        **state_change,
+    }
+    diagnostic = subscription_pipeline._vpn_auto_refresh_diagnostic(selector, state, expected_revision=10)
+    assert diagnostic["failed_predicates"] == [predicate]
+    assert diagnostic["expected_revision"] == 10
+    assert diagnostic["selection_revision"] == diagnostic["observed_revision"] == 11
+    assert diagnostic["runtime_instance_fingerprint"] != state["runtime_incarnation"]
+    assert diagnostic["expected_target_fingerprint"] != "node"
+
+
+@pytest.mark.parametrize("health_state", ["unknown", "unhealthy"])
+def test_refresh_health_alone_preserves_matching_selector(monkeypatch, health_state):
+    monkeypatch.setattr(subscription_pipeline, "get_routing_global_state", lambda: {"server_mode": "auto"})
+    monkeypatch.setattr(subscription_pipeline, "get_vpn_auto_state", lambda: {
+        "auto_selectable_candidates_count": 2,
+        "auto_selectable_candidate_ids": ["active", "alternate"],
+        "auto_selectable_candidate_target_names": ["runtime-active", "runtime-alternate"],
+        "active_auto_server_id": "active",
+        "active_auto_target_valid": True,
+        "active_auto_server_valid": False,
+        "active_auto_health_state": health_state,
+        "selector_runtime": {"vpn_auto_now": "runtime-active"},
+    })
+    monkeypatch.setattr(subscription_pipeline, "select_vpn_auto_server",
+                        lambda **_kwargs: pytest.fail("unknown health triggered selector failover"))
+    result = subscription_pipeline._maybe_select_vpn_auto_after_refresh(
+        operation_id="fixture", expected_selection_revision=7,
+    )
+    assert result["ok"] is False
+    assert result["triggered"] is False
+    assert result["error_code"] == "VPN_AUTO_HEALTH_UNCONFIRMED"
+    assert result["selection_diagnostic"]["failed_predicates"] == ["active_valid"]
+    assert result["selection_diagnostic"]["health"] == health_state
+    assert result["selection_revision"] == 7
+
+
+def test_refresh_job_preserves_synced_inventory_and_pending_recovery(monkeypatch):
+    monkeypatch.setattr(subscription_refresh_job, "update_job_running_result", lambda *_a, **_kw: None)
+    prepared = {"ok": True, "refresh": {"ok": True, "stage": "inventory_synced"}}
+    monkeypatch.setattr(subscription_pipeline, "_subscription_transition_preflight", lambda: {"ok": True})
+    monkeypatch.setattr("fwrouter_api.services.xray_runtime_state._module_state", lambda _name: {
+        "desired_state": "enabled", "lifecycle_mode": "managed",
+    })
+    diagnostic = {"failed_predicates": ["active_valid"], "health": "unknown"}
+    monkeypatch.setattr(subscription_pipeline, "_maybe_select_vpn_auto_after_refresh", lambda **_kw: {
+        "ok": False, "error_code": "VPN_AUTO_HEALTH_UNCONFIRMED", "selection_diagnostic": diagnostic,
+    })
+
+    def reconcile(_prepared, *, verification_callback, inventory_admission):
+        verification = verification_callback(operation_id="generation", expected_selection_revision=4)
+        return {"ok": False}, {
+            "ok": False, "status": "pending", "error_code": verification["error_code"],
+            "last_good_retained": True,
+        }
+
+    monkeypatch.setattr(subscription_pipeline, "_reconcile_xray_after_authoritative_inventory_refresh", reconcile)
+    monkeypatch.setattr(subscription_refresh_job, "apply_subscription_refresh",
+                        lambda: subscription_pipeline._apply_prepared_subscription_refresh_under_xray_guard(prepared))
+    result = subscription_refresh_job.run_subscription_refresh_job({"job_id": "fixture"})
+    assert result["job_status"] == "failed"
+    assert result["outcome"] == "partial"
+    assert result["completion"] == "PARTIAL/DEGRADED"
+    assert result["inventory_synced"] is True
+    assert result["runtime_verified"] is False
+    assert result["recovery_pending"] is True
+    assert result["last_good_retained"] is True
+    assert result["subscription"]["applied"] is False
+    assert result["selection_diagnostic"] == diagnostic
+
+
+@pytest.mark.parametrize("health_state", ["unknown", "unhealthy", "healthy"])
+def test_health_pending_checkpoint_waits_for_guarded_recovery(monkeypatch, tmp_path, health_state):
+    import json
+    from fwrouter_api.services import xray_subscription_service as profile_service
+
+    checkpoint = tmp_path / "checkpoint.json"
+    contents = json.dumps({
+        "phase": "projections_cleaned",
+        "pre_publication_verification": {"ok": False, "error_code": "VPN_AUTO_HEALTH_UNCONFIRMED"},
+    })
+    checkpoint.write_text(contents)
+    monkeypatch.setattr("fwrouter_api.services.selector.get_vpn_auto_target_health", lambda _id: health_state)
+    monkeypatch.setattr(profile_service, "_checkpoint_inventory_generation_matches", lambda _path: True)
+    monkeypatch.setattr("fwrouter_api.services.subscription.get_subscription_native_generation_state",
+                        lambda: {"status": "pending"})
+    attempts = []
+    monkeypatch.setattr(profile_service, "_recover_checkpoint_from_current_projection",
+                        lambda _adapter, path: attempts.append(path) or {"ok": True})
+    monkeypatch.setattr(profile_service, "_restore_xray_generation_checkpoint",
+                        lambda *_args: pytest.fail("health pending triggered rollback"))
+
+    result = profile_service._resolve_existing_xray_generation_checkpoint(object(), checkpoint)
+
+    if health_state == "healthy":
+        assert result["status"] == "recovered"
+        assert attempts == [checkpoint]
+    else:
+        assert result["status"] == "pending"
+        assert result["error_code"] == "VPN_AUTO_HEALTH_UNCONFIRMED"
+        assert attempts == []
+        assert checkpoint.read_text() == contents
+
+
+def test_refresh_preflight_keeps_current_runtime_when_only_health_is_missing(monkeypatch):
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.server_state import ensure_routing_global_state
+
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, inventory_state) "
+            "VALUES ('node', 'fixture', 'pytest', 'active')"
+        )
+        connection.execute(
+            "UPDATE routing_global_state SET server_mode='auto', active_auto_server_id='node' WHERE id=1"
+        )
+    monkeypatch.setattr(subscription_pipeline, "get_vpn_auto_state", lambda **_kw: {
+        "auto_selectable_candidate_ids": ["node"],
+        "auto_selectable_candidate_target_names": ["fixture"],
+        "active_auto_server_id": "node",
+        "active_auto_target_valid": True,
+        "active_auto_server_valid": False,
+        "active_auto_health_state": "unknown",
+        "selector_runtime": {"vpn_auto_now": "fixture"},
+    })
+    monkeypatch.setattr(
+        subscription_pipeline, "reconcile_mihomo_runtime",
+        lambda **_kw: pytest.fail("missing health triggered a runtime change"),
+    )
+    result = subscription_pipeline._apply_prepared_subscription_refresh_under_xray_guard({
+        "ok": True, "refresh": {"ok": True, "stage": "inventory_synced"},
+    })
+
+    assert result["completion"] == "PARTIAL/DEGRADED"
+    assert result["runtime_outcome"] == "not_applied"
+    assert result["last_good_retained"] is True
+    assert result["reconcile_pending"] is True
+    assert result["container_restarted"] is False
+    assert result["error"]["code"] == "VPN_AUTO_HEALTH_UNCONFIRMED"
