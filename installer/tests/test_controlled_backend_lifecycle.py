@@ -1006,6 +1006,10 @@ def test_deployment_restore_clears_missed_timer_state_without_acknowledgement(
     state_dir = tmp_path / "rollout-state"
     checkpoint = lifecycle._read_checkpoint(state_dir / "pending.json")
     monkeypatch.setattr(lifecycle, "_api_health", lambda: True)
+    # This test exercises timer restoration, not the host's Gateway listener.
+    # Keep the dependent Gateway acceptance gate deterministic on CI runners
+    # that do not run the FWRouter service stack.
+    monkeypatch.setattr(lifecycle, "_gateway_listener_ready", lambda: True)
     monkeypatch.setattr(lifecycle, "_backend_manifest", lambda _path: checkpoint["backend_manifest"])
     monkeypatch.setattr(lifecycle, "_verify_export", lambda _manifest: None)
     monkeypatch.setattr(lifecycle, "_is_active", lambda unit: unit in systemd.active)
