@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 import hashlib
+import fcntl
 import os
 from pathlib import Path
 import select
@@ -171,6 +172,17 @@ def test_dev_capture_does_not_admit_a_snapshot_after_source_mutation(deployment_
     with pytest.raises(deploy.DeploymentError, match="changed during snapshot"):
         deploy._dev_snapshot_capture(source, paths)
     assert not list((paths.state_dir / "dev-snapshots").glob("*.tar*"))
+    assert not (paths.state_dir / "deployment-identity.json").exists()
+
+
+def test_dev_snapshot_rejects_insufficient_space_before_durable_capture(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    monkeypatch.setattr(deploy.shutil, "disk_usage", lambda _path: SimpleNamespace(free=0))
+
+    with pytest.raises(deploy.DeploymentIncomplete, match="Temporary storage is insufficient"):
+        deploy._dev_snapshot_capture(source, paths)
+    assert not (paths.state_dir / "dev-snapshots").exists()
     assert not (paths.state_dir / "deployment-identity.json").exists()
 
 
@@ -1550,6 +1562,7 @@ def test_rollback_without_previous_pin_fails_without_remote_resolution(
 
 
 def test_human_progress_is_flushed_to_stdout_before_deployment_finishes(tmp_path) -> None:
+    (tmp_path / "opt").mkdir()
     driver = r"""
 import importlib.util
 from pathlib import Path
@@ -1593,6 +1606,9 @@ raise SystemExit(deploy.main(["--stable"], paths_override=paths))
         assert b"Resolving primary source" in output
         assert b"Result:" not in output
         assert proc.poll() is None
+        with (tmp_path / "opt/.fwrouter-deploy-command.lock").open("rb") as transaction:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(transaction, fcntl.LOCK_EX | fcntl.LOCK_NB)
         remaining, diagnostics = proc.communicate(input=b"continue\n", timeout=8)
         output.extend(remaining)
         text = output.decode()
@@ -1649,6 +1665,13 @@ def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_
             deploy._stage(target, "Timers", "PASS", "disposable timer readback")
 
     monkeypatch.setattr(deploy, "_report_lifecycle", report_fixture)
+    run = deploy._run
+
+    def guard_runtime_commands(argv, **kwargs):
+        assert Path(argv[0]).name not in {"docker", "systemctl"}, argv
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(deploy, "_run", guard_runtime_commands)
     origin = pristine_checkout(old_source.parent / "shared-runtime-origin")
     developer = pristine_checkout(old_source.parent / "shared-runtime-dev")
     legacy_sha = command(["/usr/bin/git", "-C", str(developer), "rev-parse", "HEAD"]).stdout.strip()
@@ -1680,6 +1703,7 @@ def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_
     assert code == 0, stable["stages"]
     baseline = deploy._read_identity(paths)
     accepted = baseline["stable_current"]
+    stable_ui = paths.target("opt/fwrouter-ui").resolve()
     previous = baseline.get("stable_previous")
     identity_file = paths.state_dir / "deployment-identity.json"
     database_bytes = database_marker.read_bytes()
@@ -1707,6 +1731,8 @@ def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_
     assert identity["last_verified_install"]["mode"] == "DEV"
     assert identity["last_verified_install"]["dirty"] is True
     assert identity["stable_current"] == accepted and identity.get("stable_previous") == previous
+    first_ui = paths.target("opt/fwrouter-ui").resolve()
+    assert first_ui != stable_ui
     first_capsule = Path(identity["dev_current"]["snapshot_path"])
     assert first_capsule.is_file()
     unrelated_capsule = first_capsule.with_name("f" * 64 + ".tar")
@@ -1720,6 +1746,8 @@ def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_
     assert not paths.target("opt/fwrouter-api/dirty-dev-only.py").exists()
     assert (paths.target("opt/fwrouter-ui/index.html")).read_text() == "dirty DEV two\n"
     assert not first_capsule.exists()
+    assert not first_ui.exists() and stable_ui.is_dir()
+    second_ui = paths.target("opt/fwrouter-ui").resolve()
     assert second["storage"]["cleanup_reclaimed_bytes"] > 0
     second_capsule = Path(deploy._read_identity(paths)["dev_current"]["snapshot_path"])
     assert second_capsule.is_file()
@@ -1752,6 +1780,8 @@ def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_
         assert ui["components"]["updated"] == ["UI"]
         assert component_installs == [["ui"]]
     assert not second_capsule.exists()
+    assert not second_ui.exists() and stable_ui.is_dir()
+    active_ui = paths.target("opt/fwrouter-ui").resolve()
     active_capsule = Path(deploy._read_identity(paths)["dev_current"]["snapshot_path"])
     assert active_capsule.is_file()
 
@@ -1760,6 +1790,7 @@ def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_
     assert deploy._read_identity(paths)["stable_current"]["source_sha"] == sha
     assert deploy._read_identity(paths)["last_verified_install"]["mode"] == "STABLE"
     assert not active_capsule.exists()
+    assert not active_ui.exists() and stable_ui.is_dir()
     assert unrelated_capsule.read_bytes() == b"independently managed data"
     assert (paths.target("opt/fwrouter-ui/index.html")).read_bytes() == (origin / "ui/index.html").read_bytes()
     assert len(qualification_calls) == 2
@@ -1895,3 +1926,76 @@ def test_dev_baseline_recovery_creates_a_separate_verified_pin_and_reuses_it(
     with pytest.raises(deploy.DeploymentIncomplete, match="no verified SQLite recovery backup"):
         deploy._ensure_dev_baseline_backup(paths, lifecycle, {}, result, returning=True)
     assert len(created) == 1 and len(writes) == 2
+
+
+@pytest.mark.parametrize("stable_command", ["--stable", "--rollback"])
+def test_byte_identical_dev_returns_to_stable_without_publication(
+        deployment_fixture, monkeypatch, capsys, stable_command) -> None:
+    deploy, paths, _, old_source, _db, _env, _active, calls, owner_driver, system_driver = deployment_fixture
+    origin = pristine_checkout(old_source.parent / "identical-origin")
+    developer = pristine_checkout(old_source.parent / "identical-dev")
+    sha = command(["/usr/bin/git", "-C", str(origin), "rev-parse", "HEAD"]).stdout.strip()
+    command(["/usr/bin/git", "-C", str(origin), "update-ref", "refs/heads/main", sha])
+    monkeypatch.setattr(deploy, "MAIN_ORIGIN", str(origin))
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda _source, source_sha, *_: _qualification(source_sha))
+    monkeypatch.setattr(deploy, "_gh_api", lambda *_: pytest.fail("fixture unexpectedly tried GitHub"))
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+        "status": "PASS", "reason": None, "scope": "ui", "proof_sha256": "e" * 64})
+    report_lifecycle = deploy._report_lifecycle
+
+    def report_fixture(target, target_paths, lifecycle):
+        report_lifecycle(target, target_paths, lifecycle)
+        if not target.get("pending_units"):
+            deploy._stage(target, "Timers", "PASS", "disposable timer readback")
+
+    monkeypatch.setattr(deploy, "_report_lifecycle", report_fixture)
+    deploy._write_config(paths.config, old_source, sha, paths.owner_uid)
+
+    def invoke(*argv):
+        code = deploy.main([*argv, "--json"], paths_override=paths, owner_driver=owner_driver,
+                           system_driver=system_driver)
+        return code, json.loads(capsys.readouterr().out)
+
+    code, stable = invoke("--stable")
+    assert code == 0, stable["stages"]
+    before = dict(calls)
+    (developer / "installer/README.md").write_text("dirty source with byte-identical runtime components\n")
+    monkeypatch.setattr(deploy, "_run_installer", lambda *_a, **_k: pytest.fail("identical content republished"))
+
+    code, dev = invoke("--dev", "--source", str(developer), "--acknowledge-stable-replacement")
+    assert code == 0, dev["stages"]
+    assert "_dev_unadmitted_snapshot" not in dev
+    assert dev["stages"]["Install"]["status"] == "SKIP"
+    pin = deploy._read_identity(paths)["dev_current"]
+    assert pin["dirty"] is True and Path(pin["snapshot_path"]).is_file()
+
+    code, stable = invoke(stable_command)
+    assert code == 0, stable["stages"]
+    assert stable["stages"]["Install"]["status"] == "SKIP"
+    record = deploy._read_identity(paths)
+    assert record["last_verified_install"]["mode"] == "STABLE"
+    assert record["last_verified_install"]["git_sha"] == sha
+    assert record["last_verified_install"]["acceptance"]["status"] == "VERIFIED"
+    assert record.get("dev_current") is None
+    assert record.get("dev_admission") is None
+    assert not Path(pin["snapshot_path"]).exists()
+    assert calls == before
+
+
+def test_dev_admission_rechecks_installed_mode_and_snapshot_under_component_lock(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    stable = {"mode": "STABLE", "git_sha": "a" * 40}
+    record = {"last_verified_install": stable}
+    monkeypatch.setattr(deploy, "_identity_record_base", lambda _paths: record)
+    monkeypatch.setattr(deploy, "_write_identity", lambda *_args: pytest.fail("stale DEV admission was persisted"))
+
+    with pytest.raises(deploy.DeploymentIncomplete, match="Installed identity changed"):
+        deploy._remember_development_admission(paths, {}, {"mode": "DEV", "git_sha": "b" * 40}, False)
+    with pytest.raises(deploy.DeploymentIncomplete, match="acknowledge-stable-replacement"):
+        deploy._remember_development_admission(paths, {}, stable, False)
+    missing = {"snapshot_path": str(paths.state_dir / "missing.tar"), "snapshot_sha256": "a" * 64}
+    with pytest.raises(FileNotFoundError):
+        deploy._remember_development_admission(paths, missing, stable, True)
+    assert "dev_admission" not in record
