@@ -2156,6 +2156,98 @@ def test_native_policy_uses_independent_approval_and_checked_runtime_images(
     assert deploy._require_acceptance_policy(paths, policy) == policy
 
 
+def test_acceptance_policy_initialization_is_trusted_atomic_and_idempotent(
+        deployment_fixture, tmp_path, capsys) -> None:
+    deploy, paths, *_ = deployment_fixture
+    target_dir = paths.target("etc/fwrouter")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    policy = {"schema": "fwrouter-deploy-acceptance/v1",
+              "xray_image": "sha256:" + "a" * 64,
+              "mihomo_image": "sha256:" + "b" * 64,
+              "ui_port": 5055, "ui_path": "/"}
+    approval = tmp_path / "runtime-owner-policy.json"
+    approval.write_text(json.dumps(policy) + "\n", encoding="utf-8")
+    approval.chmod(0o600)
+
+    assert deploy.main(["--initialize-acceptance-policy", str(approval)], paths_override=paths) == 0
+    output = capsys.readouterr().out
+    assert "ACCEPTANCE POLICY" in output
+    assert "[PASS] Native policy" in output
+    installed = paths.target("etc/fwrouter/deploy-acceptance.json")
+    assert stat.S_IMODE(installed.stat().st_mode) == 0o600
+    assert installed.stat().st_nlink == 1
+    assert deploy._read_acceptance_policy(paths) == policy
+
+    assert deploy.main(["--initialize-acceptance-policy", str(approval), "--json"],
+                       paths_override=paths) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "NOOP" and result["policy_status"] == "NOOP"
+    assert not list(target_dir.glob(".deploy-acceptance.*.tmp"))
+
+    changed = {**policy, "xray_image": "sha256:" + "c" * 64}
+    approval.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+    approval.chmod(0o600)
+    assert deploy.main(["--initialize-acceptance-policy", str(approval), "--json"],
+                       paths_override=paths) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "FAILED"
+    assert deploy._read_acceptance_policy(paths) == policy
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"schema":"fwrouter-deploy-acceptance/v1","schema":"fwrouter-deploy-acceptance/v1"}',
+    b'{"schema":"fwrouter-deploy-acceptance/v1"}\n{"schema":"fwrouter-deploy-acceptance/v1"}',
+])
+def test_acceptance_policy_rejects_duplicate_keys_and_multiple_json_objects(
+        deployment_fixture, tmp_path, raw) -> None:
+    deploy, paths, *_ = deployment_fixture
+    (paths.target("etc/fwrouter")).mkdir(parents=True, exist_ok=True)
+    approval = tmp_path / "invalid-policy.json"
+    approval.write_bytes(raw)
+    approval.chmod(0o600)
+    with pytest.raises(deploy.DeploymentError, match="one strict JSON object"):
+        deploy._initialize_acceptance_policy(paths, approval)
+    assert not paths.target("etc/fwrouter/deploy-acceptance.json").exists()
+
+
+def test_acceptance_policy_refuses_symlink_input_and_dangling_installed_symlink(
+        deployment_fixture, tmp_path) -> None:
+    deploy, paths, *_ = deployment_fixture
+    directory = paths.target("etc/fwrouter")
+    directory.mkdir(parents=True, exist_ok=True)
+    approved = tmp_path / "approved.json"
+    approved.write_text("{}\n", encoding="utf-8")
+    approved.chmod(0o600)
+    linked_input = tmp_path / "linked.json"
+    linked_input.symlink_to(approved)
+    with pytest.raises(deploy.DeploymentError, match="owner-only mode-0600 regular file"):
+        deploy._initialize_acceptance_policy(paths, linked_input)
+    installed = directory / "deploy-acceptance.json"
+    installed.symlink_to(directory / "missing-target")
+    with pytest.raises(deploy.DeploymentError, match="regular file"):
+        deploy._read_acceptance_policy(paths)
+
+
+def test_runtime_policy_requires_running_images_and_reports_known_mismatch_first(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    real_is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file", lambda path: True if path == Path("/usr/bin/docker") else real_is_file(path))
+    answers = iter(("false sha256:" + "a" * 64, "true sha256:" + "b" * 64))
+    monkeypatch.setattr(deploy, "_run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, next(answers), ""))
+    images = deploy._observed_runtime_image_ids(paths)
+    assert images == {"xray": "UNKNOWN", "mihomo": "sha256:" + "b" * 64}
+    monkeypatch.setattr(deploy, "_observed_runtime_image_ids", lambda _paths: images)
+    policy = {"xray_image": "sha256:" + "c" * 64, "mihomo_image": "sha256:" + "b" * 64}
+    status, detail = deploy._native_policy_evidence(paths, policy)
+    assert status == "INCOMPLETE"  # stopped identity is unavailable; it is not inferred from an image tag
+
+    monkeypatch.setattr(deploy, "_observed_runtime_image_ids", lambda _paths: {
+        "xray": "sha256:" + "d" * 64, "mihomo": "UNKNOWN"})
+    status, detail = deploy._native_policy_evidence(paths, policy)
+    assert status == "FAIL" and "xray" in detail
+
+
 def test_legacy_recovery_requires_recorded_identity_exact_main_evidence_and_fresh_proof(
         deployment_fixture, monkeypatch) -> None:
     deploy, paths, source, *_ = deployment_fixture

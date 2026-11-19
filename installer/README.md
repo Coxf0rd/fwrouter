@@ -121,7 +121,19 @@ Stable supports backend, UI and selective host publication. Database admission c
 
 Before replacing an installation with a legacy `UNKNOWN` identity, Stable uses its recorded source and component hashes to reconstruct the previous exact Main release. It requires a matching historical Main CI bundle and a fresh native proof of the installed candidate. Provenance stays `UNKNOWN` in the original install record. The separate accepted rollback pin records the newly verified evidence. Missing or expired historical evidence and failed native proof block the transition. Qualified Stable backend changes use the existing managed SQLite backup owner when no approved matching external backup exists. UI-only changes, checks and content NOOP create no database backup.
 
-The runtime owner supplies `/etc/fwrouter/deploy-acceptance.json` as a root-owned mode-0600 approval policy. Private runtime inputs have no authoritative approval source in public CI. The deployer automatically compares runtime image IDs against this policy. Missing approval or unavailable image evidence is `INCOMPLETE`. A mismatched image is `FAIL`. Provision the policy through the runtime owner before deploying. Native proof still requires fresh owner receipts and independent readback. The existing policy fields are:
+#### One-time native acceptance approval
+
+The runtime owner verifies the Xray and Mihomo image configuration IDs against the approved runtime inputs and reviews the local UI probe endpoint. The owner supplies the approved policy artifact through a trusted channel. Public CI and the locally observed running images provide evidence for verification, so approval must come from the runtime owner. Keep the received artifact in a root-owned, mode-0600 regular file in a trusted directory.
+
+During an authorized release, after the D1 bootstrap and CLI readback, initialize the policy once from that approved artifact.
+
+```bash
+sudo fwrouter-deploy --initialize-acceptance-policy "$FWROUTER_APPROVED_POLICY_FILE"
+sudo fwrouter-deploy --stable --check --json
+```
+
+The deployment CLI validates the artifact and installs `/etc/fwrouter/deploy-acceptance.json` as root-owned mode 0600. Reapplying an equivalent policy is a NOOP. An existing different policy stays in force until the runtime owner handles its rotation. Stable and DEV reuse the installed approval automatically. Missing approval or unavailable image readback is `INCOMPLETE`. An image mismatch is `FAIL`. Native proof still requires fresh owner receipts and independent readback.
+
 
 | Field | Value |
 | --- | --- |
@@ -129,6 +141,12 @@ The runtime owner supplies `/etc/fwrouter/deploy-acceptance.json` as a root-owne
 | `xray_image`, `mihomo_image` | Independently approved immutable Docker image configuration IDs, prefixed with `sha256:` |
 | `ui_port`, `ui_path` | Loopback HTTP endpoint for the installed UI index |
 | `recovery` | Optional external backup pin with `backup_path`, `backup_sha256` and `installed_backend_sha256` from the approved recovery plan |
+
+#### Release sequence after merge
+
+1. Resolve current Main and wait for its exact push-to-Main Release Acceptance and sealed evidence. Use the documented one-time D1 bootstrap above, then verify the D2 updater with `--stable --check --json`.
+2. Provision the runtime owner's approval as described above if it is missing. Confirm image and recovery readiness. Under separate deployment authorization, run `sudo fwrouter-deploy --stable` and verify its installed-content, lifecycle, health and native results.
+3. Confirm the local DEV backend and installer satisfy schema and dependency admission while preserving all developer files. Under separate DEV authorization, run `sudo fwrouter-deploy --dev --acknowledge-stable-replacement`, verify acceptance, then run `sudo fwrouter-deploy --stable` and verify the return to qualified Main. Stop on a failed or incomplete mandatory stage.
 
 The updater verifies schema, SQLite integrity, foreign keys and the content hash before backend publication. The managed snapshot uses SQLite's online backup and is bound to the preceding source and backend manifest. Before changing the backend in DEV, the deployment protects the accepted Stable baseline with an exact verified backup. It reuses an approved or managed backup when available. A new DEV baseline backup is reserved separately so that the previous Stable release keeps its recovery backup. The owner verifies retained recovery data before retiring a backup after accepted return to Stable. UI-only, NOOP and status checks create no database backup. An external backup remains under its owner's retention policy.
 

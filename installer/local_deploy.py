@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import fcntl
@@ -1513,9 +1514,10 @@ def _observed_runtime_image_ids(paths: Paths) -> dict:
     for component in ("xray", "mihomo"):
         try:
             result = _run(["/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
-                           "inspect", "--format", "{{.Image}}", f"fwrouter-{component}"],
+                           "inspect", "--format", "{{.State.Running}} {{.Image}}", f"fwrouter-{component}"],
                           timeout=10, host_environment=True)
-            value = result.stdout.strip() if result.returncode == 0 else ""
+            fields = result.stdout.strip().split()
+            value = fields[1] if result.returncode == 0 and len(fields) == 2 and fields[0] == "true" else ""
         except (DeploymentError, UnicodeError):
             value = ""
         observed[component] = (value if value.startswith("sha256:") and len(value) == 71
@@ -3838,15 +3840,43 @@ def _verify_dependency_compatibility(paths: Paths, source: Path) -> None:
 def _read_acceptance_policy(paths: Paths) -> dict:
     path = paths.target("etc/fwrouter/deploy-acceptance.json")
     try:
-        if not path.exists():
-            return {}
-        _check_trusted_tree(path.parent, paths.owner_uid)
         info = path.lstat()
-        if stat.S_IMODE(info.st_mode) != 0o600:
-            raise DeploymentError("deployment acceptance policy must use mode 0600")
-        data = _json_object(_read_stable_source_file(path, paths.owner_uid, limit=4096).decode("utf-8"))
-    except (OSError, ValueError) as exc:
+    except FileNotFoundError:
+        return {}
+    try:
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise DeploymentError("deployment acceptance policy must be a regular file")
+        _check_trusted_tree(path.parent, paths.owner_uid)
+        if stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != paths.owner_uid or info.st_nlink != 1:
+            raise DeploymentError("deployment acceptance policy must be owner-only, standalone and mode 0600")
+        data = _strict_policy_json(_read_stable_source_file(path, paths.owner_uid, limit=4096))
+    except (OSError, ValueError, UnicodeError) as exc:
         raise DeploymentError("deployment acceptance policy cannot be read safely") from exc
+    return _validate_acceptance_policy(data)
+
+
+def _strict_policy_json(payload: bytes) -> dict:
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object,
+                           parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("nonstandard constant")))
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise DeploymentError("acceptance policy must be one strict JSON object without duplicate keys") from exc
+    if not isinstance(value, dict):
+        raise DeploymentError("acceptance policy must be one strict JSON object")
+    return value
+
+
+def _validate_acceptance_policy(data: dict) -> dict:
+    if not data:
+        raise DeploymentError("deployment acceptance policy is empty or malformed JSON")
     if data.get("schema") != "fwrouter-deploy-acceptance/v1" or set(data) - {"recovery"} != {
             "schema", "xray_image", "mihomo_image", "ui_port", "ui_path"}:
         raise DeploymentError("deployment acceptance policy is malformed")
@@ -3858,7 +3888,102 @@ def _read_acceptance_policy(paths: Paths) -> dict:
             or data["ui_path"].startswith("//") or len(data["ui_path"]) > 256
             or not all(32 < ord(char) < 127 for char in data["ui_path"])):
         raise DeploymentError("deployment acceptance policy has an invalid loopback UI endpoint")
+    recovery = data.get("recovery")
+    if "recovery" in data and (
+            not isinstance(recovery, dict)
+            or set(recovery) != {"backup_path", "backup_sha256", "installed_backend_sha256"}
+            or not isinstance(recovery.get("backup_path"), str)
+            or not Path(recovery["backup_path"]).is_absolute()
+            or ".." in Path(recovery["backup_path"]).parts
+            or not _hex(recovery.get("backup_sha256"), 64)
+            or not _hex(recovery.get("installed_backend_sha256"), 64)):
+        raise DeploymentError("deployment acceptance policy has an invalid recovery backup pin")
     return data
+
+
+def _initialize_acceptance_policy(paths: Paths, source: Path) -> str:
+    """Install an independently approved policy without deriving or replacing approval."""
+    try:
+        _check_trusted_tree(source.parent, paths.owner_uid)
+        info = source.lstat()
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != paths.owner_uid or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 4096):
+            raise DeploymentError("approved policy input must be an owner-only mode-0600 regular file")
+        payload = _read_stable_source_file(source, paths.owner_uid, limit=4096)
+        after = source.lstat()
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(after, name) != getattr(info, name) for name in stable_fields):
+            raise DeploymentError("approved policy input changed during validation")
+        policy = _strict_policy_json(payload)
+        _validate_acceptance_policy(policy)
+    except (OSError, UnicodeError) as exc:
+        raise DeploymentError("approved policy input cannot be read safely") from exc
+
+    destination = paths.target("etc/fwrouter/deploy-acceptance.json")
+    parent = destination.parent
+    _check_trusted_tree(parent, paths.owner_uid)
+    canonical = (json.dumps(policy, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(canonical) > 4096:
+        raise DeploymentError("validated acceptance policy exceeds the supported size limit")
+
+    def sync_policy_directory() -> None:
+        descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    try:
+        existing_info = destination.lstat()
+    except FileNotFoundError:
+        existing_info = None
+    if existing_info is not None:
+        existing = _read_acceptance_policy(paths)
+        if existing == policy:
+            sync_policy_directory()
+            return "NOOP"
+        raise DeploymentError("a different acceptance policy is already installed; only the runtime owner may rotate it")
+
+    directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temp_name = f".deploy-acceptance.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(canonical)
+            stream.flush()
+            os.fsync(stream.fileno())
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise DeploymentError("atomic no-replace policy publication is unavailable on this host")
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        if renameat2(directory_fd, os.fsencode(temp_name), directory_fd,
+                     os.fsencode(destination.name), 1) != 0:  # RENAME_NOREPLACE
+            error = ctypes.get_errno()
+            if error == 17:  # EEXIST
+                existing = _read_acceptance_policy(paths)
+                if existing == policy:
+                    os.unlink(temp_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                    return "NOOP"
+                raise DeploymentError("a different acceptance policy is already installed; only the runtime owner may rotate it")
+            raise OSError(error, os.strerror(error))
+        os.fsync(directory_fd)
+    except BaseException:
+        try:
+            os.unlink(temp_name, dir_fd=directory_fd)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(directory_fd)
+    installed = _read_acceptance_policy(paths)
+    if installed != policy or stat.S_IMODE(destination.stat().st_mode) != 0o600:
+        raise DeploymentError("installed acceptance policy failed post-publication verification")
+    return "INSTALLED"
 
 
 def _native_policy_evidence(paths: Paths, policy: dict) -> tuple[str, str]:
@@ -3868,11 +3993,13 @@ def _native_policy_evidence(paths: Paths, policy: dict) -> tuple[str, str]:
         return "INCOMPLETE", ("Native acceptance policy is missing. Provision the host's independently approved "
                               "runtime policy through the runtime owner before publication.")
     images = _observed_runtime_image_ids(paths)
-    if any(images.get(name) == "UNKNOWN" or not images.get(name) for name in ("xray", "mihomo")):
-        return "INCOMPLETE", "Cannot read both runtime image identities for comparison with the approved policy."
-    mismatch = [name for name in ("xray", "mihomo") if images[name] != policy[f"{name}_image"]]
+    mismatch = [name for name in ("xray", "mihomo")
+                if images.get(name) not in (None, "UNKNOWN")
+                and images[name] != policy[f"{name}_image"]]
     if mismatch:
         return "FAIL", "Running runtime images differ from the approved policy: " + ", ".join(mismatch)
+    if any(images.get(name) == "UNKNOWN" or not images.get(name) for name in ("xray", "mihomo")):
+        return "INCOMPLETE", "Cannot read both runtime image identities for comparison with the approved policy."
     return "PASS", "Running Xray and Mihomo images match independent approvals."
 
 
@@ -5247,6 +5374,8 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     parser.add_argument("--verbose", action="store_true", help="include detailed diagnostics")
     parser.add_argument("--check", action="store_true", help="inspect source and current state without mutation")
     parser.add_argument("--configure-source", metavar="PATH", help="select a root-controlled clean local Git checkout")
+    parser.add_argument("--initialize-acceptance-policy", metavar="PATH",
+                        help="install an independently approved owner-only acceptance policy")
     parser.add_argument("--allow-timer-catchup", action="store_true",
                         help="explicitly allow the lifecycle owner to reactivate previously active timers")
     parser.add_argument("--self-upgrade", action="store_true",
@@ -5259,6 +5388,8 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     parser.add_argument("--expected-installed-module-sha256")
     parser.add_argument("--confirm-main-sha")
     args = parser.parse_args(argv)
+    if args.initialize_acceptance_policy is not None and not args.initialize_acceptance_policy:
+        parser.error("--initialize-acceptance-policy requires a non-empty approved file path")
     if args.source and not args.dev:
         parser.error("--source requires --dev")
     if args.acknowledge_stable_replacement and not args.dev:
@@ -5278,9 +5409,17 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
         parser.error("--check cannot be combined with source configuration or timer catch-up")
     if args.configure_source and args.allow_timer_catchup:
         parser.error("source configuration cannot be combined with timer catch-up")
+    if args.initialize_acceptance_policy is not None and any((args.stable, args.rollback, args.dev, args.source,
+                                                   args.acknowledge_stable_replacement, args.check,
+                                                   args.configure_source, args.allow_timer_catchup,
+                                                   args.self_upgrade, args.main_sha, args.run_id,
+                                                   args.run_attempt, args.artifact_id, args.artifact_digest,
+                                                   args.expected_installed_module_sha256, args.confirm_main_sha)):
+        parser.error("--initialize-acceptance-policy is a standalone operation")
     paths = paths_override or Paths(config=CONFIG_PATH, owner_uid=0)
     started = time.monotonic()
-    mode = "DEV" if args.dev else "STABLE" if args.stable or args.rollback else "LOCAL"
+    mode = ("ACCEPTANCE POLICY" if args.initialize_acceptance_policy is not None else
+            "DEV" if args.dev else "STABLE" if args.stable or args.rollback else "LOCAL")
     summary = {"mode": mode, "stages": {}, "warnings": []}
     phase = "Source"
     if not args.json and not args.check:
@@ -5320,6 +5459,13 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     try:
         if os.geteuid() != 0 and not test_driver:
             raise DeploymentError("Run this operation as root.")
+        if args.initialize_acceptance_policy is not None:
+            status = _initialize_acceptance_policy(paths, Path(args.initialize_acceptance_policy))
+            _stage(summary, "Native policy", "PASS" if status == "INSTALLED" else "SKIP",
+                   "independently approved policy installed and verified" if status == "INSTALLED"
+                   else "identical approved policy already installed; no changes made")
+            return emit("SUCCESS" if status == "INSTALLED" else "NOOP", 0, result=status,
+                        policy_status=status)
         if (args.dev or args.stable or args.rollback) and not args.check:
             with _configuration_component_lock(paths, command=True):
                 if args.dev:
