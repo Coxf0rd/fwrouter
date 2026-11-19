@@ -30,6 +30,7 @@ Source-tree installer and validation tools.
 
 ```sh
 sudo fwrouter-deploy --stable
+sudo fwrouter-deploy --rollback
 fwrouter-deploy --dev
 fwrouter-deploy --dev --source /path/to/fwrouter
 sudo fwrouter-deploy --check
@@ -39,16 +40,22 @@ sudo fwrouter-deploy --check
 
 `--dev` reads the current Git worktree or `--source`, captures tracked and nonignored untracked file content and executable modes, and reports the base SHA, dirty state and digest. It refuses to install until an isolated Development runtime is available. `--acknowledge-stable-replacement` records explicit operator intent for that future contract and cannot bypass this refusal.
 
-Stable supports the established backend, UI and selective host deployment scope. Schema verification uses the installed strict schema-27 read-only command. Legacy structural mismatches remain an admission failure. Backend changes require an independently approved recovery backup bound to the installed backend content manifest. Configure the optional root-owned mode-0600 `/etc/fwrouter/deploy-acceptance.json` with these fields when approved by the runtime and recovery operators.
+Stable supports the established backend, UI and selective host deployment scope. Schema verification uses the installed and selected strict schema-27 read-only command. Legacy structural mismatches remain an admission failure. Backend changes retain the existing recovery protection gate. The deployment can reuse an independently approved recovery backup or create a private managed snapshot through the existing SQLite backup owner. Configure the optional root-owned mode-0600 `/etc/fwrouter/deploy-acceptance.json` with these fields when approved by the runtime and recovery operators.
 
 | Field | Value |
 | --- | --- |
 | `schema` | `fwrouter-deploy-acceptance/v1` |
 | `xray_image`, `mihomo_image` | Independently approved immutable Docker image configuration IDs, prefixed with `sha256:` |
 | `ui_port`, `ui_path` | Loopback HTTP endpoint for the installed UI index |
-| `recovery` | For backend publication, an object with `backup_path`, `backup_sha256` and `installed_backend_sha256` from the approved recovery plan |
+| `recovery` | Optional external backup pin with `backup_path`, `backup_sha256` and `installed_backend_sha256` from the approved recovery plan |
 
-The updater verifies the backup before backend publication and uses existing exact-source lifecycle recovery. It checks UI availability and calls the installed read-only native proof owner with independently approved runtime pins. Missing pins, an unavailable probe, or missing current owner receipts leave acceptance incomplete. Stable reports CI, file identity, lifecycle, health and native acceptance independently, including on a content NOOP. `--json` emits structured output and `--verbose` includes diagnostic details. The explicit modes use exit 0 for success or a fully accepted NOOP, 1 for failure, 2 for invalid arguments, 3 for incomplete verification and 130 for interruption. `--check` inspects local state without fetching or changing it.
+The updater verifies schema, SQLite integrity, foreign keys and the content hash before backend publication. The managed snapshot uses SQLite's online backup and is bound to the preceding source and backend manifest. An existing backup remains protected while a candidate is being prepared. UI-only, NOOP and status checks create no database backup. An external backup remains under its owner's retention policy.
+
+Stable records the current and previous **accepted** source independently of the most recent completed file install. `--rollback` reconstructs the previous accepted source by exact SHA and compares its component manifests with the saved acceptance. It uses the normal lifecycle and compatibility gates, preserves the deployment updater, keeps the current database and requires fresh acceptance. It needs access to the approved Git objects even after the temporary checkout is removed. If the older installer cannot retire newer backend paths through its existing allowlist, rollback stops before publication. Schema migrations, database restore and rollback from an unisolated DEV runtime remain outside this command.
+
+Storage preflight checks the filesystems used for staging, publication and recovery before installation. Fresh Main retains the Git ancestry required by the evidence verifier. An accepted rollback stages only the pinned target and installed-side source. Following acceptance, the updater retires catalogued obsolete resources whose exact ownership and references can be checked. Resources with unknown ownership are preserved. A private staging lease lets later accepted runs remove expired abandoned staging while skipping active or unrecognised directories. The lease expires after 24 hours. Reports show active and rollback versions, backup state, space estimates, cleanup results and protected resources.
+
+The updater checks UI availability and calls the installed read-only native proof owner with independently approved runtime pins. Missing pins, an unavailable probe, or missing current owner receipts leave acceptance incomplete. Stable reports CI, file identity, lifecycle, health and native acceptance independently, including on a content NOOP. `--json` emits structured output and `--verbose` includes diagnostic details. The explicit modes use exit 0 for success or a fully accepted NOOP, 1 for failure, 2 for invalid arguments, 3 for incomplete verification and 130 for interruption. `--check` inspects local state without fetching, cleanup or persistent writes.
 
 During Stable resume, the existing lifecycle owner restores previously active timers after verifying their stock units and discarding missed calendar triggers. The old traffic timer is migrated to a nonpersistent minute schedule because starting its elapsed boot timer could immediately run collection. Enablement is preserved and previously inactive timers stay inactive. The legacy configured-source and explicit timer catch-up commands remain available for D1 operations.
 

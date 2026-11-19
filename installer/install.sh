@@ -474,6 +474,10 @@ if [ "$COMPONENTS" = " deploy" ]; then
   echo "Installed FWRouter deployment command into $TARGET_ROOT"
   exit 0
 fi
+if [ "$DEPLOY_MODE" = "1" ] && [ "$COMPONENTS" = " ui" ]; then
+  echo "Published FWRouter UI into $TARGET_ROOT"
+  exit 0
+fi
 
 if [ -x "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" ]; then
   sh "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" \
