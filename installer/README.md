@@ -64,7 +64,7 @@ FWROUTER_UPGRADE_RESULT="$(
   test -z "$(sudo git -C "$source_dir" status --porcelain --ignored=matching)"
   sudo cmp -s "$source_dir/host/sbin/fwrouter-deploy" /usr/local/sbin/fwrouter-deploy
   sudo /usr/local/sbin/fwrouter-deploy --configure-source "$source_dir" >/dev/null
-  sudo /usr/local/sbin/fwrouter-deploy --self-upgrade --json \
+  sudo /usr/local/sbin/fwrouter-deploy --self-upgrade \
     --main-sha "$FWROUTER_MAIN_SHA" \
     --confirm-main-sha "$FWROUTER_MAIN_SHA" \
     --run-id "$FWROUTER_MAIN_RUN_ID" \
@@ -76,7 +76,7 @@ FWROUTER_UPGRADE_RESULT="$(
 printf '%s\n' "$FWROUTER_UPGRADE_RESULT"
 ```
 
-Keep the temporary checkout and the original pins if the transition is interrupted. Resume only the `--self-upgrade` command with those pins and the same configured checkout, saving its JSON response in `FWROUTER_UPGRADE_RESULT`. Keep the original old-module SHA even if replacement already occurred. Once the upgrade reports success, verify the previous source SHA before restoring its selection. The read-only check may return 3 while the app identity remains `UNKNOWN`. Remove the task-owned temporary checkout only after the check verifies the updater and wrapper.
+Keep the temporary checkout and the original pins if the transition is interrupted. Resume only the `--self-upgrade` command with those pins and the same configured checkout, saving its JSON response in `FWROUTER_UPGRADE_RESULT`. D1 emits JSON by default. Add `--json` only if the installed module has already changed to D2. Keep the original old-module SHA even if replacement already occurred. Once the upgrade reports success, verify the previous source SHA before restoring its selection. The read-only check may return 3 while the app identity remains `UNKNOWN`. Remove the task-owned temporary checkout only after the check verifies the updater and wrapper.
 
 ```bash
 (
