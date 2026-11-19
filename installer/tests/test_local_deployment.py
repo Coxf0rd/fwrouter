@@ -2047,8 +2047,24 @@ def test_qualified_stable_lifecycle_capsule_is_exact_and_bound_to_installed_upda
     updater.chmod(0o644)
     updater_sha = deploy._digest(updater)
 
+    synced = []
+    sync_directory = deploy._sync_lifecycle_owner_directory
+
+    def track_sync(directory):
+        synced.append(directory)
+        sync_directory(directory)
+
+    monkeypatch.setattr(deploy, "_sync_lifecycle_owner_directory", track_sync)
     pin = deploy._publish_lifecycle_owner_capsule(
         paths, source, source_sha, qualification, updater_sha)
+    stage = synced[3]
+    owner_root = paths.state_dir / deploy.LIFECYCLE_OWNER_ROOT
+    assert synced == [stage / "host/systemd", stage / "host", stage / "installer", stage,
+                      owner_root, paths.state_dir]
+    assert stage.parent == owner_root and not stage.exists()
+    synced.clear()
+    assert deploy._publish_lifecycle_owner_capsule(paths, source, source_sha, qualification, updater_sha) == pin
+    assert synced == [owner_root, paths.state_dir]
     record = {"stable_current": {"source_sha": source_sha, "qualification": qualification},
               "lifecycle_owners": {source_sha: pin},
               "components": {"updater": {"installed_sha256": updater_sha,

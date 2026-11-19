@@ -462,6 +462,14 @@ def _lifecycle_owner_dir(paths: Paths, source_sha: str) -> Path:
     return paths.state_dir / LIFECYCLE_OWNER_ROOT / source_sha
 
 
+def _sync_lifecycle_owner_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _publish_lifecycle_owner_capsule(paths: Paths, source: Path, source_sha: str,
                                     qualification: dict, updater_sha256: str) -> dict:
     """Persist the exact qualified Stable lifecycle and lock as DEV recovery evidence."""
@@ -503,7 +511,10 @@ def _publish_lifecycle_owner_capsule(paths: Paths, source: Path, source_sha: str
         raise DeploymentError("lifecycle owner capsule directory is not private and owner-controlled")
     target = _lifecycle_owner_dir(paths, source_sha)
     if target.exists():
+        # A retry may find a rename that preceded the parent directory sync.
         _verify_lifecycle_owner_files(paths, source_sha, pin)
+        _sync_lifecycle_owner_directory(owner_root)
+        _sync_lifecycle_owner_directory(paths.state_dir)
         return pin
     staging = Path(tempfile.mkdtemp(prefix=".owner-", dir=owner_root))
     try:
@@ -523,12 +534,11 @@ def _publish_lifecycle_owner_capsule(paths: Paths, source: Path, source_sha: str
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
+        for relative in ("host/systemd", "host", "installer", "."):
+            _sync_lifecycle_owner_directory(staging / relative)
         os.rename(staging, target)
-        descriptor = os.open(owner_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        _sync_lifecycle_owner_directory(owner_root)
+        _sync_lifecycle_owner_directory(paths.state_dir)
     except BaseException:
         if staging.exists():
             shutil.rmtree(staging)
@@ -619,6 +629,9 @@ def _cleanup_lifecycle_owner_capsules(paths: Paths, result: dict) -> None:
                 del owners[sha]
                 changed = True
             if changed:
+                owner_root = paths.state_dir / LIFECYCLE_OWNER_ROOT
+                if owner_root.exists():
+                    _sync_lifecycle_owner_directory(owner_root)
                 _write_identity(paths, record)
                 storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + reclaimed
             storage.setdefault("cleanup_failures", []).extend(failures)
