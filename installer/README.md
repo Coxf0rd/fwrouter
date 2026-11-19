@@ -40,41 +40,62 @@ sudo fwrouter-deploy --check
 
 #### First D2 bootstrap from an installed D1 updater
 
-The D1 executable supports a strictly qualified module-only `--self-upgrade`. It accepts only a configured clean, root-owned, standard Git checkout at the exact current `origin/main` commit and requires the matching successful Main run, attempt, evidence artifact ID and artifact digest. After the D2 PR is merged and Main Release Acceptance passes, create a full-history temporary checkout of that exact Main commit under `/tmp`. Do not update or remove existing checkouts. Do not use dirty `/srv/fwrouter` for bootstrap. Confirm the checkout is clean, root-owned, and independent of a linked worktree or alternate object store. Compare its wrapper with `/usr/local/sbin/fwrouter-deploy`. Keep this temporary checkout until the self-upgrade is COMPLETE. If interrupted while pending, preserve it and resume with the same metadata.
-
-Record the existing configured source path and commit from `/etc/fwrouter/deploy-source.json` and the old updater SHA-256 before changing the config. Substitute the successful **Main** Release Acceptance SHA, run, attempt and sealed evidence artifact metadata. The D1 CLI fetches and validates current-Main job inventory and the artifact before atomically replacing only the updater module.
+After merge, wait for the successful **Main** Release Acceptance run and its sealed evidence. D1 requires the exact current Main SHA, run, attempt, artifact ID, and artifact digest. For this one-time bootstrap, use a root-owned, full-history temporary Git checkout. Preserve the existing checkouts and record the path and SHA from `/etc/fwrouter/deploy-source.json` before selecting the temporary source.
 
 ```bash
-FWROUTER_BOOTSTRAP_SOURCE=/tmp/fwrouter-d2-bootstrap
 FWROUTER_PRIOR_SOURCE='<source path recorded in deploy-source.json>'
+FWROUTER_PRIOR_SHA='<source SHA recorded in deploy-source.json>'
 FWROUTER_MAIN_SHA='<40-character merged Main SHA>'
 FWROUTER_MAIN_RUN_ID='<successful Main run ID>'
 FWROUTER_MAIN_RUN_ATTEMPT='<successful attempt number>'
 FWROUTER_MAIN_ARTIFACT_ID='<sealed evidence artifact ID>'
 FWROUTER_MAIN_ARTIFACT_DIGEST='sha256:<artifact digest>'
 FWROUTER_D1_MODULE_SHA256="$(sha256sum /usr/local/libexec/fwrouter/local_deploy.py | cut -d ' ' -f 1)"
+FWROUTER_BOOTSTRAP_ROOT="$(sudo mktemp -d /tmp/fwrouter-d2-bootstrap.XXXXXXXX)"
+printf 'Bootstrap checkout: %s/source\n' "$FWROUTER_BOOTSTRAP_ROOT"
 
-sudo git clone https://github.com/Coxf0rd/fwrouter.git "$FWROUTER_BOOTSTRAP_SOURCE"
-sudo git -C "$FWROUTER_BOOTSTRAP_SOURCE" checkout --detach "$FWROUTER_MAIN_SHA"
-test "$(sudo git -C "$FWROUTER_BOOTSTRAP_SOURCE" rev-parse HEAD)" = "$FWROUTER_MAIN_SHA"
-test -z "$(sudo git -C "$FWROUTER_BOOTSTRAP_SOURCE" status --porcelain)"
-sudo cmp -s "$FWROUTER_BOOTSTRAP_SOURCE/host/sbin/fwrouter-deploy" /usr/local/sbin/fwrouter-deploy
-sudo /usr/local/sbin/fwrouter-deploy --configure-source "$FWROUTER_BOOTSTRAP_SOURCE"
-sudo /usr/local/sbin/fwrouter-deploy --self-upgrade \
-  --main-sha "$FWROUTER_MAIN_SHA" \
-  --confirm-main-sha "$FWROUTER_MAIN_SHA" \
-  --run-id "$FWROUTER_MAIN_RUN_ID" \
-  --run-attempt "$FWROUTER_MAIN_RUN_ATTEMPT" \
-  --artifact-id "$FWROUTER_MAIN_ARTIFACT_ID" \
-  --artifact-digest "$FWROUTER_MAIN_ARTIFACT_DIGEST" \
-  --expected-installed-module-sha256 "$FWROUTER_D1_MODULE_SHA256"
-sudo /usr/local/sbin/fwrouter-deploy --configure-source "$FWROUTER_PRIOR_SOURCE"
-sudo /usr/local/sbin/fwrouter-deploy --stable --check --json
-test "$FWROUTER_BOOTSTRAP_SOURCE" = /tmp/fwrouter-d2-bootstrap
-sudo rm -rf -- /tmp/fwrouter-d2-bootstrap
+FWROUTER_UPGRADE_RESULT="$(
+  set -euo pipefail
+  [[ "$FWROUTER_BOOTSTRAP_ROOT" =~ ^/tmp/fwrouter-d2-bootstrap\.[a-zA-Z0-9]{8}$ ]]
+  source_dir="$FWROUTER_BOOTSTRAP_ROOT/source"
+  sudo git clone --quiet git@github.com:Coxf0rd/fwrouter.git "$source_dir"
+  sudo git -C "$source_dir" checkout --quiet --detach "$FWROUTER_MAIN_SHA"
+  test "$(sudo git -C "$source_dir" rev-parse HEAD)" = "$FWROUTER_MAIN_SHA"
+  test -z "$(sudo git -C "$source_dir" status --porcelain --ignored=matching)"
+  sudo cmp -s "$source_dir/host/sbin/fwrouter-deploy" /usr/local/sbin/fwrouter-deploy
+  sudo /usr/local/sbin/fwrouter-deploy --configure-source "$source_dir" >/dev/null
+  sudo /usr/local/sbin/fwrouter-deploy --self-upgrade --json \
+    --main-sha "$FWROUTER_MAIN_SHA" \
+    --confirm-main-sha "$FWROUTER_MAIN_SHA" \
+    --run-id "$FWROUTER_MAIN_RUN_ID" \
+    --run-attempt "$FWROUTER_MAIN_RUN_ATTEMPT" \
+    --artifact-id "$FWROUTER_MAIN_ARTIFACT_ID" \
+    --artifact-digest "$FWROUTER_MAIN_ARTIFACT_DIGEST" \
+    --expected-installed-module-sha256 "$FWROUTER_D1_MODULE_SHA256"
+)"
+printf '%s\n' "$FWROUTER_UPGRADE_RESULT"
 ```
 
-The existing `/usr/local/sbin/fwrouter-deploy` wrapper remains in place. Once the new updater reports COMPLETE, restore the source path saved before bootstrap, then run read-only `sudo fwrouter-deploy --stable --check --json`. This explicit check verifies the installed app while its legacy app identity remains `UNKNOWN`; it does not fetch or qualify future Main. After the check, remove only the bootstrap checkout created for this operation. A pending self-upgrade keeps that checkout available for exact-source recovery.
+Keep the temporary checkout and the original pins if the transition is interrupted. Resume only the `--self-upgrade` command with those pins and the same configured checkout, saving its JSON response in `FWROUTER_UPGRADE_RESULT`. Keep the original old-module SHA even if replacement already occurred. Once the upgrade reports success, verify the previous source SHA before restoring its selection. The read-only check may return 3 while the app identity remains `UNKNOWN`. Remove the task-owned temporary checkout only after the check verifies the updater and wrapper.
+
+```bash
+(
+  set -euo pipefail
+  jq -e '.status == "UPDATER_UPGRADED" or .status == "UPDATER_ALREADY_INSTALLED"' \
+    <<<"$FWROUTER_UPGRADE_RESULT" >/dev/null
+  test "$(sudo git -C "$FWROUTER_PRIOR_SOURCE" rev-parse HEAD)" = "$FWROUTER_PRIOR_SHA"
+  sudo /usr/local/sbin/fwrouter-deploy --configure-source "$FWROUTER_PRIOR_SOURCE"
+  check_code=0
+  check_result="$(sudo /usr/local/sbin/fwrouter-deploy --stable --check --json)" || check_code=$?
+  printf '%s\n' "$check_result"
+  [[ "$check_code" == 0 || "$check_code" == 3 ]]
+  jq -e '.stages.Updater.status == "PASS"' <<<"$check_result" >/dev/null
+  [[ "$FWROUTER_BOOTSTRAP_ROOT" =~ ^/tmp/fwrouter-d2-bootstrap\.[a-zA-Z0-9]{8}$ ]]
+  sudo rm -r -- "$FWROUTER_BOOTSTRAP_ROOT"
+)
+```
+
+The bootstrap leaves the existing wrapper, database and application files in place. The read-only check inspects the installed updater and available local health evidence. Main qualification and application acceptance are separate.
 
 Deployment itself launches no tests or CI. For post-merge verification, inspect `sudo fwrouter-deploy --stable --check --json`. A subsequent `sudo fwrouter-deploy --stable` requires separate live-deployment authorization. To deploy Development, use `sudo fwrouter-deploy --dev`; add `--acknowledge-stable-replacement` when the installed identity is Stable. DEV requires `/srv/fwrouter` to contain a lifecycle owner with the D2 timer restoration contract. If the checkout is behind or dirty in ways that make that contract unavailable, D2 stops at preflight. Preserve its existing changes when preparing compatible source.
 
