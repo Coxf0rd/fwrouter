@@ -40,16 +40,29 @@ sudo fwrouter-deploy --check
 
 #### First D2 bootstrap from an installed D1 updater
 
-After merge, wait for the successful **Main** Release Acceptance run and its sealed evidence. D1 requires the exact current Main SHA, run, attempt, artifact ID, and artifact digest. For this one-time bootstrap, use a root-owned, full-history temporary Git checkout. Preserve the existing checkouts and record the path and SHA from `/etc/fwrouter/deploy-source.json` before selecting the temporary source.
+After merge, wait for the successful **Main** Release Acceptance run and its sealed evidence. Use a root-owned, full-history temporary checkout. Preserve all existing checkouts. The commands below resolve the exact current Main pins through GitHub. The installed D1 updater independently verifies those pins and the downloaded archive before replacing its module.
 
 ```bash
-FWROUTER_PRIOR_SOURCE='<source path recorded in deploy-source.json>'
-FWROUTER_PRIOR_SHA='<source SHA recorded in deploy-source.json>'
-FWROUTER_MAIN_SHA='<40-character merged Main SHA>'
-FWROUTER_MAIN_RUN_ID='<successful Main run ID>'
-FWROUTER_MAIN_RUN_ATTEMPT='<successful attempt number>'
-FWROUTER_MAIN_ARTIFACT_ID='<sealed evidence artifact ID>'
-FWROUTER_MAIN_ARTIFACT_DIGEST='sha256:<artifact digest>'
+# Run in a privileged Bash session with jq, Git and authenticated gh available.
+set -euo pipefail
+FWROUTER_REPO=repos/Coxf0rd/fwrouter
+FWROUTER_PRIOR_SOURCE="$(jq -er '.source' /etc/fwrouter/deploy-source.json)"
+FWROUTER_PRIOR_SHA="$(jq -er '.commit' /etc/fwrouter/deploy-source.json)"
+FWROUTER_MAIN_SHA="$(gh api "$FWROUTER_REPO/commits/main" --jq .sha)"
+FWROUTER_RUN="$(gh api "$FWROUTER_REPO/actions/workflows/test-gates.yml/runs?branch=main&event=push&head_sha=$FWROUTER_MAIN_SHA" |
+  jq -ce --arg sha "$FWROUTER_MAIN_SHA" '
+    .workflow_runs | map(select(.head_sha == $sha)) | max_by(.id)
+    | select(.status == "completed" and .conclusion == "success")')"
+FWROUTER_MAIN_RUN_ID="$(jq -er '.id' <<<"$FWROUTER_RUN")"
+FWROUTER_MAIN_RUN_ATTEMPT="$(jq -er '.run_attempt' <<<"$FWROUTER_RUN")"
+FWROUTER_EVIDENCE="fwrouter-main-evidence-$FWROUTER_MAIN_SHA-$FWROUTER_MAIN_RUN_ID-$FWROUTER_MAIN_RUN_ATTEMPT"
+FWROUTER_ARTIFACT="$(gh api "$FWROUTER_REPO/actions/runs/$FWROUTER_MAIN_RUN_ID/artifacts?per_page=100" |
+  jq -ce --arg name "$FWROUTER_EVIDENCE" '
+    select(.total_count == (.artifacts | length))
+    | [.artifacts[] | select(.name == $name and .expired == false)]
+    | select(length == 1) | .[0]')"
+FWROUTER_MAIN_ARTIFACT_ID="$(jq -er '.id' <<<"$FWROUTER_ARTIFACT")"
+FWROUTER_MAIN_ARTIFACT_DIGEST="$(jq -er '.digest' <<<"$FWROUTER_ARTIFACT")"
 FWROUTER_D1_MODULE_SHA256="$(sha256sum /usr/local/libexec/fwrouter/local_deploy.py | cut -d ' ' -f 1)"
 FWROUTER_BOOTSTRAP_ROOT="$(sudo mktemp -d /tmp/fwrouter-d2-bootstrap.XXXXXXXX)"
 printf 'Bootstrap checkout: %s/source\n' "$FWROUTER_BOOTSTRAP_ROOT"
@@ -98,13 +111,17 @@ Keep the temporary checkout and the original pins if the transition is interrupt
 
 The bootstrap leaves the existing wrapper, database and application files in place. The read-only check inspects the installed updater and available local health evidence. Main qualification and application acceptance are separate.
 
-Deployment itself launches no tests or CI. For post-merge verification, inspect `sudo fwrouter-deploy --stable --check --json`. A subsequent `sudo fwrouter-deploy --stable` requires separate live-deployment authorization. To deploy Development, use `sudo fwrouter-deploy --dev`; add `--acknowledge-stable-replacement` when the installed identity is Stable. DEV requires `/srv/fwrouter` to contain a lifecycle owner with the D2 timer restoration contract. If the checkout is behind or dirty in ways that make that contract unavailable, D2 stops at preflight. Preserve its existing changes when preparing compatible source.
+Deployment itself launches no tests or CI. For post-merge verification, inspect `sudo fwrouter-deploy --stable --check --json`. A subsequent `sudo fwrouter-deploy --stable` requires separate live-deployment authorization. To deploy Development, use `sudo fwrouter-deploy --dev`; add `--acknowledge-stable-replacement` when the installed identity is Stable. A successful Stable acceptance retains the qualified lifecycle owner in private deployment state. An older DEV source can use those exact verified helpers and timer definitions. Its application, installer, dependencies and schema still have to satisfy the shared preflight. Missing or changed owner evidence blocks publication.
 
 `--dev` uses `/srv/fwrouter` or the checkout selected by `--source`. It captures the working contents of tracked and nonignored untracked deployable files, verifies that the source stayed consistent during capture, and reports the base Git SHA, dirty state and content digest. DEV uses the same installation, services and database as Stable. Use `--acknowledge-stable-replacement` when replacing Stable or an installation with unknown provenance. Subsequent DEV deployments can use the same command without the acknowledgement. DEV uses the local snapshot and bypasses GitHub qualification. The deployment CLI runs no test suites.
 
-DEV admission requires compatible installer and lifecycle owners and the same strict SQLite schema and recovery protections as Stable. The admitted snapshot remains available in private deployment state while an operation is pending or DEV is installed. Recovery uses that snapshot even if the original checkout has changed or disappeared. The deployment owner retires superseded snapshots once their operation and installed-side references have been cleared. DEV leaves the accepted Stable pins available for a qualified return.
+DEV admission requires compatible installer, backend and schema contracts and the same recovery protections as Stable. Capturing a legacy lifecycle does not authorize it to control live timers. The deployment engine stages an independently pinned, qualified Stable owner when necessary, with no developer checkout writes. The admitted snapshot remains available in private deployment state while an operation is pending or DEV is installed. Recovery uses that snapshot even if the original checkout has changed or disappeared. The deployment owner retires superseded snapshots once their operation and installed-side references have been cleared. DEV leaves the accepted Stable pins available for a qualified return.
 
-Stable supports the established backend, UI and selective host deployment scope. Schema verification uses the installed and selected strict schema-27 read-only command. Legacy structural mismatches remain an admission failure. Backend changes retain the existing recovery protection gate. The deployment can reuse an independently approved recovery backup or create a private managed snapshot through the existing SQLite backup owner. Configure the optional root-owned mode-0600 `/etc/fwrouter/deploy-acceptance.json` with these fields when approved by the runtime and recovery operators.
+Stable supports backend, UI and selective host publication. Database admission checks both the installed and selected schema contracts, SQLite integrity and foreign keys. The canonical schema and the exact `legacy_migrated_schema27_manual_ping_additive` fingerprint are supported. The legacy profile covers the historical additive declarations on `modules`, `server_custom_https_proxy`, `server_ping_state` and `server_preferences`. The command is read-only and other schema mismatches block publication.
+
+Before replacing an installation with a legacy `UNKNOWN` identity, Stable uses its recorded source and component hashes to reconstruct the previous exact Main release. It requires a matching historical Main CI bundle and a fresh native proof of the installed candidate. Provenance stays `UNKNOWN` in the original install record. The separate accepted rollback pin records the newly verified evidence. Missing or expired historical evidence and failed native proof block the transition. Qualified Stable backend changes use the existing managed SQLite backup owner when no approved matching external backup exists. UI-only changes, checks and content NOOP create no database backup.
+
+The runtime owner supplies `/etc/fwrouter/deploy-acceptance.json` as a root-owned mode-0600 approval policy. Private runtime inputs have no authoritative approval source in public CI. The deployer automatically compares runtime image IDs against this policy. Missing approval or unavailable image evidence is `INCOMPLETE`. A mismatched image is `FAIL`. Provision the policy through the runtime owner before deploying. Native proof still requires fresh owner receipts and independent readback. The existing policy fields are:
 
 | Field | Value |
 | --- | --- |
