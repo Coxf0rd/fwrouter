@@ -140,6 +140,7 @@ def _verified_replayed_import(
 
 def _validate_database_file(
     path: Path, *, allow_legacy_schema27_profiles: bool = True,
+    accepted_compatibility_profiles: tuple[str, ...] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
@@ -148,17 +149,42 @@ def _validate_database_file(
     connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
     connection.row_factory = sqlite3.Row
     try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("BEGIN")
         integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
         schema = inspect_database_schema(
             connection,
-            allow_legacy_schema27_profiles=allow_legacy_schema27_profiles,
+            allow_legacy_schema27_profiles=(
+                allow_legacy_schema27_profiles or accepted_compatibility_profiles is not None
+            ),
         )
         if integrity != ["ok"] or foreign_keys or not schema.get("ok"):
             raise ValueError("DATABASE_REBUILD_DATABASE_VALIDATION_FAILED")
+        if accepted_compatibility_profiles is not None:
+            accepted = frozenset(accepted_compatibility_profiles)
+            if (schema.get("compatibility_profile") is not None
+                    and schema.get("compatibility_profile") not in accepted):
+                raise ValueError("DATABASE_REBUILD_DATABASE_COMPATIBILITY_PROFILE_REJECTED")
         return schema
     finally:
         connection.close()
+
+
+def validate_database_file(
+    path: Path, *, accepted_compatibility_profiles: tuple[str, ...] | frozenset[str] = (),
+) -> dict[str, Any]:
+    """Validate an owned SQLite file, accepting canonical schema plus named exact profiles.
+
+    The empty default is canonical-only. A compatibility profile is admitted only
+    when schema inspection matches its complete reviewed structural fingerprint.
+    Integrity, foreign-key, regular-file, owner, and mode checks always apply.
+    """
+    return _validate_database_file(
+        path,
+        allow_legacy_schema27_profiles=False,
+        accepted_compatibility_profiles=accepted_compatibility_profiles,
+    )
 
 
 def _logical_database_digest(path: Path) -> str:

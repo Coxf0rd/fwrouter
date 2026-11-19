@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -244,7 +245,7 @@ def test_known_historical_schema27_profiles_are_existing_only_and_fail_closed_fo
     assert diagnostic_database["schema"]["status"] == "ok"
     assert diagnostic_database["schema"]["compatibility_profile"] == profile
     from fwrouter_api.services.database_admin import (
-        _require_canonical_rebuild_schema, _validate_database_file,
+        _require_canonical_rebuild_schema, _validate_database_file, validate_database_file,
     )
     assert _validate_database_file(path)["compatibility_profile"] == profile
     from fwrouter_api.services.database_backup import create_sqlite_backup
@@ -253,6 +254,12 @@ def test_known_historical_schema27_profiles_are_existing_only_and_fail_closed_fo
     backup_path = Path(receipt["backup_path"])
     assert receipt["source_snapshot"] == "sqlite_read_transaction"
     assert _validate_database_file(backup_path)["compatibility_profile"] == profile
+    if profile == "legacy_migrated_schema27_manual_ping_additive":
+        assert validate_database_file(
+            backup_path, accepted_compatibility_profiles=(profile,),
+        )["compatibility_profile"] == profile
+        with pytest.raises(ValueError, match="DATABASE_REBUILD_DATABASE_COMPATIBILITY_PROFILE_REJECTED"):
+            validate_database_file(backup_path)
     with pytest.raises(ValueError, match="DATABASE_REBUILD_DATABASE_VALIDATION_FAILED"):
         _validate_database_file(path, allow_legacy_schema27_profiles=False)
     canonical_candidate = tmp_path / "canonical-candidate.sqlite"
@@ -527,6 +534,100 @@ def test_database_upgrade_cli_verifies_current_schema_without_mutation(monkeypat
 
     assert '"status": "already_current"' in capsys.readouterr().out
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.no_database_autoinit
+def test_named_schema27_preflight_accepts_only_the_reviewed_legacy_profile(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    from fwrouter_api.cli import main
+    from fwrouter_api.services.database_admin import validate_database_file
+
+    path = _retarget(monkeypatch, tmp_path / "state")
+    assert initialize_database()["ok"] is True
+    _install_deployment_legacy_schema27_profile(path)
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert validate_database_file(
+        path,
+        accepted_compatibility_profiles=("legacy_migrated_schema27_manual_ping_additive",),
+    )["compatibility_profile"] == "legacy_migrated_schema27_manual_ping_additive"
+    assert main([
+        "database", "preflight", "--expected-schema", "27",
+        "--compatibility-profile", "legacy_migrated_schema27_manual_ping_additive",
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "ok": True, "status": "already_current", "current_schema": 27,
+        "target_schema": 27, "database_changed": False,
+        "compatibility_profile": "legacy_migrated_schema27_manual_ping_additive",
+        "integrity": "ok", "foreign_key_violations": 0,
+    }
+    with pytest.raises(ValueError, match="DATABASE_REBUILD_DATABASE_COMPATIBILITY_PROFILE_REJECTED"):
+        validate_database_file(path)
+    assert main([
+        "database", "preflight", "--expected-schema", "27",
+        "--compatibility-profile", "legacy_migrated_schema27_from_7",
+    ]) == 2
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.no_database_autoinit
+def test_named_schema27_preflight_rejects_profile_near_miss(monkeypatch, tmp_path: Path, capsys) -> None:
+    from fwrouter_api.cli import main
+
+    path = _retarget(monkeypatch, tmp_path / "state")
+    assert initialize_database()["ok"] is True
+    _install_deployment_legacy_schema27_profile(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE UNIQUE INDEX profile_unapproved_unique ON server_preferences(updated_at)"
+        )
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert main([
+        "database", "preflight", "--expected-schema", "27",
+        "--compatibility-profile", "legacy_migrated_schema27_manual_ping_additive",
+    ]) == 1
+    assert json.loads(capsys.readouterr().out)["error_code"] == "DATABASE_REBUILD_DATABASE_VALIDATION_FAILED"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.no_database_autoinit
+@pytest.mark.parametrize("failure", ["corrupt_file", "foreign_key"])
+def test_named_schema27_preflight_rejects_integrity_and_foreign_key_failures(
+    monkeypatch, tmp_path: Path, capsys, failure: str,
+) -> None:
+    from fwrouter_api.cli import main
+
+    path = _retarget(monkeypatch, tmp_path / "state")
+    assert initialize_database()["ok"] is True
+    _install_deployment_legacy_schema27_profile(path)
+    if failure == "corrupt_file":
+        path.write_bytes(path.read_bytes()[:100])
+    else:
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                "INSERT INTO server_ping_state(server_id) VALUES ('missing-server')"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as connection:
+            assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            assert connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    assert main([
+        "database", "preflight", "--expected-schema", "27",
+        "--compatibility-profile", "legacy_migrated_schema27_manual_ping_additive",
+    ]) == 1
+    error_code = json.loads(capsys.readouterr().out)["error_code"]
+    if failure == "corrupt_file":
+        assert error_code in {"DatabaseError", "OperationalError"}
+    else:
+        assert error_code == "DATABASE_REBUILD_DATABASE_VALIDATION_FAILED"
 
 
 def test_database_upgrade_cli_rejects_retired_historical_transitions(capsys) -> None:
