@@ -1458,6 +1458,38 @@ def test_verified_stable_generations_rotate_and_rollback_reconstructs_the_previo
     assert active["fwrouter-xray.service"] and active["fwrouter-mihomo.service"]
 
 
+def test_retired_backup_is_preserved_while_configured_recovery_references_it(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    record = deploy._identity_record_base(paths)
+    pin = {"id": "a" * 32, "source_sha": "b" * 40, "backend_sha256": "c" * 64, "schema": 27,
+           "filename": "rollback-" + "d" * 32 + ".bak", "sha256": "e" * 64, "snapshot_sha256": "f" * 64}
+    record["database_rollback_retired"] = pin
+    record["database_rollback"] = {**pin, "id": "1" * 32}
+    deploy._write_identity(paths, record)
+    retired_path = deploy._backup_directory(paths, pin) / pin["filename"]
+    monkeypatch.setattr(deploy, "_read_acceptance_policy", lambda _: {
+        "recovery": {"backup_path": str(retired_path)}})
+    monkeypatch.setattr(deploy, "_remove_obsolete_managed_backup", lambda *_: pytest.fail("removed recovery backup"))
+    result = {}
+    deploy._cleanup_retired_backup(paths, SimpleNamespace(), result)
+    assert "configured recovery backup pin" in result["storage"]["retained"][0]["reason"]
+    assert deploy._read_identity(paths)["database_rollback_retired"] == pin
+
+
+def test_rollback_source_without_cleanup_helper_preserves_pinned_ui_releases(deployment_fixture) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    record = deploy._identity_record_base(paths)
+    record["retired_ui_releases"] = {"a" * 64: [1, 2]}
+    deploy._write_identity(paths, record)
+    result = {}
+    deploy._cleanup_retired_ui(paths, SimpleNamespace(), result)
+    assert "predates the UI cleanup owner" in result["storage"]["retained"][0]["reason"]
+    assert deploy._read_identity(paths)["retired_ui_releases"] == {"a" * 64: [1, 2]}
+
+
 def test_stable_acceptance_pin_requires_independent_verified_proof(deployment_fixture) -> None:
     deploy, *_ = deployment_fixture
     sha = "a" * 40

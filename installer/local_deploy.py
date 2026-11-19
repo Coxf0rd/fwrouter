@@ -119,9 +119,13 @@ def _emit_result(value: dict, *, as_json: bool, verbose: bool = False) -> None:
         if "rollback_database_backup" in value:
             print(f"Rollback database backup: {value['rollback_database_backup']}")
         for retained in storage.get("retained", []):
-            print(f"[SKIP] Retained {retained.get('digest', 'resource')[:12]}: {retained.get('reason', 'ownership or recovery reference')}")
+            name = retained.get("resource") or retained.get("digest", "resource")
+            name = name[:12] if _hex(name, 64) else name
+            print(f"[SKIP] Retained {name}: {retained.get('reason', 'ownership or recovery reference')}")
         for failure in storage.get("cleanup_failures", []):
-            print(f"[FAIL] Cleanup {failure.get('digest', 'resource')[:12]}: {failure.get('reason', 'see verbose diagnostics')}")
+            name = failure.get("resource") or failure.get("digest", "resource")
+            name = name[:12] if _hex(name, 64) else name
+            print(f"[FAIL] Cleanup {name}: {failure.get('reason', 'see verbose diagnostics')}")
     if value.get("pending_units"):
         print(f"Pending units: {', '.join(value['pending_units'])}")
     for warning in value.get("warnings", []):
@@ -1203,7 +1207,7 @@ def _extract_evidence_zip(archive_path: Path, destination: Path) -> None:
             expanded = sum(item.file_size for item in entries)
             if expanded > max_bytes:
                 raise DeploymentError("evidence artifact exceeds its expanded-size bound")
-            _require_staging_space(destination, expanded, len(entries) * 2)
+            _require_staging_space(destination if destination.exists() else destination.parent, expanded, len(entries) * 2)
             for item in entries:
                 name = item.filename
                 clean = name[:-1] if name.endswith("/") else name
@@ -2369,18 +2373,20 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
             _rows, host_plan = _host_plan(source, paths)
             if host_plan is not None:
                 _publish_host_pair(source, paths, host_plan)
-            changed_components = []
-            if installed_under_lock != selected_manifest:
-                changed_components.append("backend")
-            try:
-                source_ui_digest, _ = ui._walk_tree(source / "ui", owner_uid=paths.owner_uid, require_index=True)
-                active_ui = ui._managed_release(paths.target("opt/fwrouter-ui"),
-                    paths.target("opt/.fwrouter-ui-releases"), paths.owner_uid) or paths.target("opt/fwrouter-ui")
-                installed_ui_digest, _ = ui._walk_tree(active_ui, owner_uid=paths.owner_uid, require_index=True)
-                if source_ui_digest != installed_ui_digest:
+            changed_components = ["backend", "ui"]
+            if paths.stable_source:
+                changed_components = []
+                if installed_under_lock != selected_manifest:
+                    changed_components.append("backend")
+                try:
+                    source_ui_digest, _ = ui._walk_tree(source / "ui", owner_uid=paths.owner_uid, require_index=True)
+                    active_ui = ui._managed_release(paths.target("opt/fwrouter-ui"),
+                        paths.target("opt/.fwrouter-ui-releases"), paths.owner_uid) or paths.target("opt/fwrouter-ui")
+                    installed_ui_digest, _ = ui._walk_tree(active_ui, owner_uid=paths.owner_uid, require_index=True)
+                    if source_ui_digest != installed_ui_digest:
+                        changed_components.append("ui")
+                except (OSError, RuntimeError, ValueError):
                     changed_components.append("ui")
-            except Exception:
-                changed_components.append("ui")
             if changed_components:
                 _run_installer(source, paths, changed_components, inherited=True)
         completed_stage = "component_publication"
@@ -3107,14 +3113,24 @@ def _cleanup_retired_ui(paths: Paths, ui, result: dict) -> None:
         if not retired:
             result.setdefault("storage", {}).update(cleanup_reclaimed_bytes=0, retained=[])
             return
+        prune = getattr(ui, "prune_retired_releases", None)
+        if not callable(prune):
+            result.setdefault("storage", {}).setdefault("retained", []).append(
+                {"resource": "UI releases", "reason": "selected accepted source predates the UI cleanup owner"})
+            return
         protected = set()
         for name in ("stable_current", "stable_previous"):
             pin = record.get(name)
             if pin:
                 protected.add(pin["installed_content"]["ui_sha256"])
-        outcome = ui.prune_retired_releases(paths.target("opt/fwrouter-ui"),
-            retired={key: tuple(value) for key, value in retired.items()},
-            protected=protected, owner_uid=paths.owner_uid)
+        try:
+            outcome = prune(paths.target("opt/fwrouter-ui"),
+                retired={key: tuple(value) for key, value in retired.items()},
+                protected=protected, owner_uid=paths.owner_uid)
+        except (OSError, RuntimeError, ValueError) as exc:
+            result.setdefault("storage", {}).setdefault("cleanup_failures", []).append(
+                {"resource": "UI releases", "reason": str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__})
+            return
         for key in outcome["removed"]:
             retired.pop(key, None)
         if outcome["removed"]:
@@ -3131,8 +3147,13 @@ def _refresh_storage_summary(paths: Paths, result: dict, lifecycle=None) -> None
     storage["stable_current"] = (identity.get("stable_current") or {}).get("source_sha")
     storage["stable_previous"] = (identity.get("stable_previous") or {}).get("source_sha")
     storage["dev_current"] = None
-    managed = _tree_bytes(paths.target("opt/fwrouter-api")) + _tree_bytes(
-        paths.target("opt/.fwrouter-ui-releases"))
+    try:
+        managed = _tree_bytes(paths.target("opt/fwrouter-api")) + _tree_bytes(
+            paths.target("opt/.fwrouter-ui-releases"))
+    except (OSError, DeploymentError):
+        managed = 0
+        storage["managed_bytes_status"] = "NOT_VERIFIED"
+        result.setdefault("warnings", []).append("Release storage usage could not be measured safely.")
     backup = identity.get("database_rollback")
     if backup and _valid_managed_backup(backup, complete=True):
         try:
@@ -3173,13 +3194,30 @@ def _cleanup_retired_backup(paths: Paths, lifecycle, result: dict) -> None:
                 {"resource": "managed SQLite backup", "reason": "still referenced by rollback identity"})
             return
         try:
-            _validate_managed_backup(paths, lifecycle, record["database_rollback"])
+            checkpoint = paths.state_dir / "pending.json"
+            if checkpoint.exists() and lifecycle._read_checkpoint(checkpoint)["status"] != "complete":
+                result.setdefault("storage", {}).setdefault("retained", []).append(
+                    {"resource": "managed SQLite backup", "reason": "lifecycle recovery is pending"})
+                return
+            policy_pin = _read_acceptance_policy(paths).get("recovery")
+            external = policy_pin.get("backup_path") if isinstance(policy_pin, dict) else None
+            retired_path = _backup_directory(paths, retired) / retired["filename"]
+            if isinstance(external, str):
+                external_path = Path(external)
+                if (external_path.resolve() == retired_path
+                        or (external_path.exists() and retired_path.exists()
+                            and external_path.samefile(retired_path))):
+                    result.setdefault("storage", {}).setdefault("retained", []).append(
+                        {"resource": "managed SQLite backup", "reason": "referenced by the configured recovery backup pin"})
+                    return
+            replacement = record.get("database_rollback")
+            _validate_managed_backup(paths, lifecycle, replacement)
             reclaimed = _remove_obsolete_managed_backup(paths, retired)
             record.pop("database_rollback_retired", None)
             _write_identity(paths, record)
             storage = result.setdefault("storage", {})
             storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + reclaimed
-        except (DeploymentError, OSError) as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             result.setdefault("storage", {}).setdefault("cleanup_failures", []).append(
                 {"resource": "managed SQLite backup", "reason": str(exc) if isinstance(exc, DeploymentError)
                  else type(exc).__name__})
