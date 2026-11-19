@@ -1583,6 +1583,7 @@ def test_human_progress_is_flushed_to_stdout_before_deployment_finishes(
     (tmp_path / "opt").mkdir()
     driver = r"""
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
@@ -1592,7 +1593,8 @@ sys.modules[spec.name] = deploy
 spec.loader.exec_module(deploy)
 root = Path(sys.argv[2])
 mode = sys.argv[3]
-paths = deploy.Paths(target_root=root, config=root / "config", state_dir=root / "state", test_driver=True)
+paths = deploy.Paths(target_root=root, config=root / "config", state_dir=root / "state",
+                     owner_uid=os.geteuid(), test_driver=True)
 
 def wait_after_progress(report, progress, source):
     progress(source)
