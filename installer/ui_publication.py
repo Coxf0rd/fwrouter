@@ -8,6 +8,8 @@ import fcntl
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
+import re
+import shutil
 import signal
 import stat
 import sys
@@ -261,6 +263,100 @@ def _release_digest(release: Path, owner_uid: int) -> str:
     return digest
 
 
+def _retirement_bytes(path: Path, info: os.stat_result, owner_uid: int) -> int:
+    """Reject mount boundaries, foreign ownership and links before deleting."""
+    with Path("/proc/self/mountinfo").open(encoding="utf-8", errors="surrogateescape") as stream:
+        for line in stream:
+            mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), line.split()[4])
+            if Path(mount).is_relative_to(path):
+                raise PublicationError("UI retirement crosses a mount point")
+    pending = [path]
+    total = count = 0
+    while pending:
+        entry = pending.pop()
+        current = entry.lstat()
+        count += 1
+        if count > MAX_UI_ENTRIES + 1 or current.st_dev != info.st_dev:
+            raise PublicationError("UI retirement tree exceeds its ownership boundary")
+        _check_mode(str(entry), current, owner_uid, "retired UI entry")
+        if stat.S_ISDIR(current.st_mode):
+            with os.scandir(entry) as children:
+                pending.extend(Path(child.path) for child in children)
+        elif not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+            raise PublicationError("retired UI tree contains an unowned link or special file")
+        total += current.st_blocks * 512
+    return total
+
+
+def prune_retired_releases(target: Path, *, retired: dict[str, tuple[int, int]],
+                           protected: set[str], owner_uid: int) -> dict:
+    """Retire only release inodes durably pinned by the deployment owner.
+
+    The caller holds the common component lock across reading its durable
+    references, this cleanup and updating the retirement records.
+    """
+    result = {"removed": [], "retained": {}, "failed": {}, "reclaimed_bytes": 0}
+    if not retired:
+        return result
+    _validate_ancestors(target.parent, owner_uid)
+    releases = target.parent / ".fwrouter-ui-releases"
+    current = _managed_release(target, releases, owner_uid)
+    if current is None:
+        result["retained"] = dict.fromkeys(retired, "active UI pointer unavailable")
+        return result
+    protected = {*protected, current.name[8:]}
+    for orphan in target.parent.glob(".fwrouter-ui-next-*"):
+        if not orphan.is_symlink():
+            result["retained"] = dict.fromkeys(retired, "UI exchange recovery is pending")
+            return result
+        release = _managed_release(orphan, releases, owner_uid)
+        if release is None:
+            raise PublicationError("UI exchange recovery pointer could not be verified")
+        protected.add(release.name[8:])
+
+    for digest, pin in sorted(retired.items()):
+        if (len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
+                or len(pin) != 2 or any(type(item) is not int or item < 0 for item in pin)):
+            raise PublicationError("invalid pinned UI retirement identity")
+        if digest in protected:
+            result["retained"][digest] = "active, rollback or recovery reference"
+            continue
+        release = releases / f"release-{digest}"
+        quarantine = releases / f".retired-{digest}"
+        try:
+            original_exists = os.path.lexists(release)
+            if original_exists and os.path.lexists(quarantine):
+                raise PublicationError("both published and quarantined UI paths exist")
+            candidate = release if original_exists else quarantine
+            try:
+                info = candidate.lstat()
+            except FileNotFoundError:
+                # A previous invocation completed the removal before updating
+                # the retirement record. The digest is no longer on disk.
+                result["removed"].append(digest)
+                continue
+            if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != tuple(pin):
+                raise PublicationError("retired UI inode does not match its ownership pin")
+            size = _retirement_bytes(candidate, info, owner_uid)
+            if original_exists:
+                if _release_digest(release, owner_uid) != digest or not _identity(info, release.lstat()):
+                    raise PublicationError("retired UI content changed before quarantine")
+                os.rename(release, quarantine)
+                _fsync_dir(releases)
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise PublicationError("descriptor-safe UI cleanup is unavailable")
+            current_info = quarantine.lstat()
+            if (current_info.st_dev, current_info.st_ino) != tuple(pin):
+                raise PublicationError("quarantined UI inode changed before deletion")
+            shutil.rmtree(quarantine)
+            _fsync_dir(releases)
+            result["removed"].append(digest)
+            result["reclaimed_bytes"] += size
+        except (OSError, PublicationError) as exc:
+            result["failed"][digest] = str(exc) if isinstance(exc, PublicationError) else type(exc).__name__
+    return result
+
+
 def _recover_interrupted_exchanges(target: Path, releases: Path, owner_uid: int) -> None:
     """Finish archiving whole old trees left after a process died just after exchange."""
     for orphan in sorted(target.parent.glob(".fwrouter-ui-next-*")):
@@ -347,19 +443,17 @@ def _publish_under_component_lock(source: Path, target: Path, backend_source: Pa
         releases = target.parent / ".fwrouter-ui-releases"
         try:
             releases.mkdir(mode=0o755)
+            _fsync_dir(target.parent)
         except FileExistsError:
             pass
         release_info = releases.lstat()
         if not stat.S_ISDIR(release_info.st_mode):
             raise PublicationError("managed UI release path is not a directory")
         _check_mode(str(releases), release_info, owner_uid, "managed UI release directory")
-        _fsync_dir(target.parent)
-
         _recover_interrupted_exchanges(target, releases, owner_uid)
 
         current = _managed_release(target, releases, owner_uid)
-        if current is not None:
-            _release_digest(current, owner_uid)
+        active_digest = _release_digest(current, owner_uid) if current is not None else None
         initial_digest: str | None = None
         if current is None and target.exists():
             target_info = target.lstat()
@@ -389,10 +483,8 @@ def _publish_under_component_lock(source: Path, target: Path, backend_source: Pa
                 return f"UI release already active: {restore_release_sha256}"
         else:
             release = releases / f"release-{source_digest}"
-        if current is not None:
-            active_digest, _ = _walk_tree(current, owner_uid=owner_uid)
-            if active_digest == source_digest and restore_release_sha256 is None:
-                return f"UI already current: {source_digest}"
+        if active_digest == source_digest and restore_release_sha256 is None:
+            return f"UI already current: {source_digest}"
 
         if restore_release_sha256 is None:
             release = releases / f"release-{source_digest}"

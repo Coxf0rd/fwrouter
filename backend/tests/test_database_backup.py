@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 import errno
 import hashlib
+import importlib.util
+from io import StringIO
+import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import threading
 import time
 
@@ -27,6 +32,66 @@ def _open(path: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA wal_autocheckpoint=0")
     return connection
+
+
+def test_deployment_backup_reuses_verified_publication_and_retires_only_exact_pin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("fwrouter_deploy_backup_fixture", repository / "installer/local_deploy.py")
+    assert spec and spec.loader
+    deploy = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, deploy)
+    spec.loader.exec_module(deploy)
+    target = tmp_path / "deployment-target"
+    state = target / "var/lib/fwrouter-v2/state/controlled-rollout"
+    state.mkdir(mode=0o700, parents=True)
+    paths = deploy.Paths(target_root=target, state_dir=state, owner_uid=os.geteuid(), test_driver=True)
+    database = target / "var/lib/fwrouter-v2/fwrouter.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript((repository / "backend/fwrouter_api/db/schema.sql").read_text())
+        connection.execute("PRAGMA user_version=27")
+    database.chmod(0o600)
+
+    def sqlite_owner(_lifecycle, script, *args):
+        output = StringIO()
+        with monkeypatch.context() as isolated, redirect_stdout(output):
+            isolated.setattr(sys, "argv", ["sqlite-backup-fixture", *args])
+            exec(compile(script, "<sqlite-backup-owner>", "exec"), {})
+        return json.loads(output.getvalue())
+
+    monkeypatch.setattr(deploy, "_sqlite_backup_command", sqlite_owner)
+    identity = {"id": "1" * 32, "source_sha": "2" * 40, "backend_sha256": "3" * 64, "schema": 27}
+    old = deploy._prepare_managed_backup(paths, None, identity)
+    old_directory = deploy._backup_directory(paths, old)
+    previous = old_directory / old["filename"]
+    assert previous.is_file()
+    # Simulate death after the SQLite owner links its completed publication.
+    scratch = old_directory / (".backup-tmp-" + "4" * 32)
+    scratch.mkdir(mode=0o700)
+    (scratch / "database.sqlite").hardlink_to(previous)
+    assert deploy._prepare_managed_backup(paths, None, identity) == old
+    assert not scratch.exists()
+
+    external = tmp_path / "independent-backup.bak"
+    external.write_bytes(previous.read_bytes())
+    next_id = {**identity, "id": "5" * 32, "source_sha": "6" * 40}
+    replacement = deploy._prepare_managed_backup(paths, None, next_id)
+    deploy._validate_managed_backup(paths, None, replacement)
+    assert previous.exists()
+    unknown = old_directory / "operator-file"
+    unknown.write_text("independent data")
+    with pytest.raises(deploy.DeploymentError, match="unowned resources"):
+        deploy._remove_obsolete_managed_backup(paths, old)
+    assert previous.exists()
+    unknown.unlink()
+    assert deploy._remove_obsolete_managed_backup(paths, old) > 0
+    assert deploy._remove_obsolete_managed_backup(paths, old) == 0
+    assert external.exists()
+    with (deploy._backup_directory(paths, replacement) / replacement["filename"]).open("ab") as stream:
+        stream.write(b"unexpected change")
+    with pytest.raises(deploy.DeploymentError, match="does not match"):
+        deploy._validate_managed_backup(paths, None, replacement)
 
 
 def test_backup_includes_committed_wal_rows_and_full_logical_content(

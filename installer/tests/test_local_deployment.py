@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 import hashlib
+import fcntl
 import os
 from pathlib import Path
+import select
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from types import SimpleNamespace
 import zipfile
@@ -92,7 +96,7 @@ def test_component_install_and_real_check_entrypoint_are_local_and_read_only(
         "root=Path(sys.argv[1]); p=local_deploy.Paths(config=root/'etc/fwrouter/deploy-source.json', "
         "target_root=root, state_dir=root/'var/lib/fwrouter-v2/state/controlled-rollout', "
         "owner_uid=__import__('os').geteuid(), test_driver=True, api_healthy=False); "
-        "raise SystemExit(local_deploy.main(['--check'], paths_override=p))"
+        "raise SystemExit(local_deploy.main(['--check', '--json'], paths_override=p))"
     )
     result = subprocess.run([sys.executable, "-c", driver, str(target)], cwd=module.parent,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
@@ -112,6 +116,316 @@ def test_component_install_and_real_check_entrypoint_are_local_and_read_only(
     assert error_result.returncode == 1
     assert "source config" in error_result.stderr
     paths.config.write_bytes(config_before)
+
+
+def test_dev_captures_dirty_untracked_content_without_runtime_or_remote_calls(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    tracked = source / "ui/index.html"
+    tracked.write_text("Development content\n")
+    untracked = source / "ui/staged-development.js"
+    untracked.write_text("console.log('first')\n")
+    index = source / ".git/index"
+    index_before = index.read_bytes()
+    monkeypatch.setattr(deploy, "_gh_api", lambda *args: pytest.fail("Development queried GitHub"))
+    monkeypatch.setattr(deploy, "_read_identity", lambda *args: pytest.fail("Development read Stable identity"))
+    first = deploy._development_source(source)
+    assert first["dirty"] is True
+    assert first["provenance"] == "local_development_worktree"
+    assert not paths.state_dir.exists()
+    untracked.write_text("console.log('second')\n")
+    second = deploy._development_source(source)
+    assert first["content_sha256"] != second["content_sha256"]
+    assert first["git_sha"] == second["git_sha"]
+    assert index.read_bytes() == index_before
+    assert tracked.read_text() == "Development content\n"
+
+
+def test_dev_rejects_change_between_fenced_content_passes(deployment_fixture, monkeypatch) -> None:
+    deploy, _paths, _, source, *_ = deployment_fixture
+    extra = source / "ui/volatile.js"
+    extra.write_text("before")
+    collect = deploy._dev_content
+
+    def mutate_after_capture(*args):
+        result = collect(*args)
+        extra.write_text("after")
+        return result
+
+    monkeypatch.setattr(deploy, "_dev_content", mutate_after_capture)
+    with pytest.raises(deploy.DeploymentError, match="changed during capture"):
+        deploy._development_source(source)
+
+
+def test_dev_capture_does_not_admit_a_snapshot_after_source_mutation(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    extra = source / "ui/capture-race.js"
+    extra.write_text("original\n")
+    collect = deploy._dev_content
+
+    def read_after_mutation(*args, **kwargs):
+        extra.write_text("changed during capture\n")
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(deploy, "_dev_content", read_after_mutation)
+    with pytest.raises(deploy.DeploymentError, match="changed during snapshot"):
+        deploy._dev_snapshot_capture(source, paths)
+    assert not list((paths.state_dir / "dev-snapshots").glob("*.tar*"))
+    assert not (paths.state_dir / "deployment-identity.json").exists()
+
+
+def test_dev_snapshot_rejects_insufficient_space_before_durable_capture(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    monkeypatch.setattr(deploy.shutil, "disk_usage", lambda _path: SimpleNamespace(free=0))
+
+    with pytest.raises(deploy.DeploymentIncomplete, match="Temporary storage is insufficient"):
+        deploy._dev_snapshot_capture(source, paths)
+    assert not (paths.state_dir / "dev-snapshots").exists()
+    assert not (paths.state_dir / "deployment-identity.json").exists()
+
+
+def _qualification(sha):
+    return {"source_sha": sha, "run_id": 101, "run_attempt": 2, "artifact_id": 303,
+            "artifact_digest": "sha256:" + "a" * 64}
+
+
+@pytest.mark.parametrize("scenario", ["valid", "missing_run", "failed_run", "pending_run", "stale_artifact",
+                                     "incomplete_jobs", "forged_metadata", "invalid_bundle"])
+def test_automatic_stable_qualification_rejects_unqualified_evidence(
+        deployment_fixture, monkeypatch, tmp_path, scenario) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    sha = deploy._source_commit(source, paths.owner_uid)
+    expected = _qualification(sha)
+    run = {"id": 101, "run_attempt": 2, "event": "push", "head_branch": "main", "head_sha": sha,
+           "status": "completed", "conclusion": "success", "path": deploy.MAIN_WORKFLOW,
+           "repository": {"full_name": "Coxf0rd/fwrouter"}}
+    if scenario == "failed_run":
+        run["conclusion"] = "failure"
+    if scenario == "pending_run":
+        run.update(status="in_progress", conclusion=None)
+    artifact = {"id": 303, "expired": scenario == "stale_artifact", "digest": expected["artifact_digest"],
+                "name": f"fwrouter-main-evidence-{sha}-101-2", "workflow_run":
+                    {"id": 101, "head_sha": "b" * 40 if scenario == "forged_metadata" else sha, "head_branch": "main"}}
+    calls = []
+
+    def provider(endpoint):
+        calls.append(endpoint)
+        if "/workflows/" in endpoint:
+            rows = [] if scenario == "missing_run" else [run]
+            return {"total_count": len(rows), "workflow_runs": rows}
+        if endpoint.endswith("/101"):
+            return run
+        if "/attempts/2/jobs" in endpoint:
+            return {"total_count": 2 if scenario == "incomplete_jobs" else 1,
+                    "jobs": [{"name": "Affected L0-L5 with hosted profiles",
+                              "status": "completed", "conclusion": "success"}]}
+        if "/101/artifacts" in endpoint:
+            return {"total_count": 1, "artifacts": [artifact]}
+        if endpoint.endswith("/artifacts/303"):
+            return artifact
+        if endpoint.endswith("/commits/main"):
+            return {"sha": sha}
+        pytest.fail(f"unexpected GitHub read {endpoint}")
+
+    verified = []
+
+    def verify_bundle(*args):
+        verified.append(args[-1])
+        if scenario == "invalid_bundle":
+            raise deploy.DeploymentError("offline bundle failed")
+
+    monkeypatch.setattr(deploy, "_gh_api", provider)
+    monkeypatch.setattr(deploy, "_verify_main_bundle", verify_bundle)
+    if scenario == "valid":
+        assert deploy._stable_qualification(source, sha, tmp_path, paths.owner_uid) == expected
+        assert verified == [expected]
+        assert len([call for call in calls if "/attempts/2/jobs" in call]) == 2
+    else:
+        with pytest.raises(deploy.DeploymentError):
+            deploy._stable_qualification(source, sha, tmp_path, paths.owner_uid)
+
+
+def test_stable_eligibility_report_keeps_noop_and_health_separate(deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, old_source, _marker, _env, _active, calls, owner_driver, system_driver = deployment_fixture
+    source = pristine_checkout(old_source.parent / "selected")
+    sha = deploy._source_commit(source, paths.owner_uid)
+    evidence = _qualification(sha)
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+
+    @contextmanager
+    def fixture_source(_paths, recovery):
+        assert recovery is None
+        yield deploy.StableSource(source, evidence)
+
+    monkeypatch.setattr(deploy, "_temporary_main", fixture_source)
+    args = ["--stable", "--json"]
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 3
+    first = json.loads(capsys.readouterr().out)
+    assert first["status"] == "INCOMPLETE"
+    assert first["stages"]["CI"]["status"] == "PASS"
+    assert first["installed_content"] == "VERIFIED"
+    assert first["native_proof"]["status"] == "NOT_VERIFIED"
+    assert first["installed_version"] == sha
+    assert first["deployment_identity"]["last_verified_install"]["path"] == deploy.MAIN_ORIGIN
+    assert str(source) not in json.dumps(first["deployment_identity"])
+    assert "stable_admission" not in first["deployment_identity"]
+    before = calls.copy()
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 3
+    second = json.loads(capsys.readouterr().out)
+    assert second["content_noop"] is True and second["installed_content"] == "VERIFIED"
+    assert calls == before
+    unhealthy = deploy.replace(paths, runtime_healthy=False)
+    assert deploy.main(args, paths_override=unhealthy) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "FAILED"
+    assert calls == before
+
+
+def test_stable_staging_recovers_exact_source_and_cleans_up_after_interrupt(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, origin, *_ = deployment_fixture
+    sha = deploy._source_commit(origin, paths.owner_uid)
+    evidence = _qualification(sha)
+    command(["/usr/bin/git", "-C", str(origin), "update-ref", "refs/heads/main", sha])
+    monkeypatch.setattr(deploy, "MAIN_ORIGIN", str(origin))
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda *_: evidence)
+    with pytest.raises(KeyboardInterrupt):
+        with deploy._temporary_main(paths, None) as selection:
+            stage = selection.root.parent
+            assert stage.parent == Path("/tmp")
+            assert selection.commit == sha
+            assert stage.exists()
+            raise KeyboardInterrupt
+    assert not stage.exists()
+    monkeypatch.setattr(deploy, "_current_main", lambda: pytest.fail("recovery selected a different Main"))
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda *_: pytest.fail("durable qualification was ignored"))
+    with deploy._temporary_main(paths, evidence) as recovered:
+        stage = recovered.root.parent
+        assert deploy._source_commit(recovered.root, paths.owner_uid) == sha
+    assert not stage.exists()
+
+
+def test_stable_completes_previously_recorded_install_after_owner_success(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, old_source, _marker, _env, _active, calls, owner_driver, system_driver = deployment_fixture
+    source = pristine_checkout(old_source.parent / "selected")
+    sha = deploy._source_commit(source, paths.owner_uid)
+    evidence = _qualification(sha)
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+
+    @contextmanager
+    def fixture_source(_paths, recovery):
+        assert recovery in (None, evidence)
+        yield deploy.StableSource(source, evidence)
+
+    monkeypatch.setattr(deploy, "_temporary_main", fixture_source)
+    original = deploy._write_identity
+    interrupted = False
+
+    def crash_after_lifecycle(paths_arg, record):
+        nonlocal interrupted
+        if not interrupted and (record["operation"] or {}).get("status") == "VERIFIED_CONTENT":
+            interrupted = True
+            raise KeyboardInterrupt
+        return original(paths_arg, record)
+
+    monkeypatch.setattr(deploy, "_write_identity", crash_after_lifecycle)
+    args = ["--stable", "--json"]
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 130
+    assert json.loads(capsys.readouterr().out)["status"] == "INCOMPLETE"
+    assert deploy._read_identity(paths)["stable_admission"] == evidence
+    before = calls.copy()
+    assert deploy.main(args, paths_override=paths, owner_driver=owner_driver, system_driver=system_driver) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["installed_content"] == "VERIFIED"
+    assert result["installed_version"] == sha
+    assert "stable_admission" not in result["deployment_identity"]
+    assert calls == before
+
+
+def test_human_and_verbose_check_avoid_dumping_identity(deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, *_ = deployment_fixture
+    monkeypatch.setattr(deploy, "_gh_api", lambda *args: pytest.fail("--check queried GitHub"))
+    assert deploy.main(["--stable", "--check", "--verbose"], paths_override=paths) == 3
+    rendered = capsys.readouterr().out
+    assert "FWRouter Deployment — STABLE" in rendered
+    assert "installed version is UNKNOWN" in rendered
+    assert "deployment_identity" not in rendered
+    assert not paths.state_dir.exists()
+
+
+def test_stable_check_inspects_configured_health_without_remote_actions(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    sha = deploy._source_commit(source, paths.owner_uid)
+    deploy._write_config(paths.config, source, sha, paths.owner_uid)
+    monkeypatch.setattr(deploy, "_gh_api", lambda *_: pytest.fail("--check queried GitHub"))
+    paths = deploy.replace(paths, runtime_healthy=False)
+    assert deploy.main(["--stable", "--check", "--json"], paths_override=paths) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["health"]["API"]["status"] == "PASS"
+    assert result["health"]["Runtime"]["status"] == "FAIL"
+    assert not paths.state_dir.exists()
+
+
+def test_stable_host_environment_cannot_inherit_database_overrides(deployment_fixture, monkeypatch) -> None:
+    deploy, *_ = deployment_fixture
+    for name in ("FWROUTER_STATE_DIR", "STATE_DIR", "SYSTEMD_BUS_ADDRESS"):
+        monkeypatch.setenv(name, "/tmp/fixture-override")
+    command = [sys.executable, "-I", "-B", "-c",
+               "import os; print({key: os.environ.get(key) for key in "
+               "('FWROUTER_STATE_DIR', 'STATE_DIR', 'SYSTEMD_BUS_ADDRESS')})"]
+    result = deploy._run(command, host_environment=True)
+    assert result.returncode == 0
+    assert result.stdout == "{'FWROUTER_STATE_DIR': None, 'STATE_DIR': None, 'SYSTEMD_BUS_ADDRESS': None}\n"
+
+
+def test_stable_service_state_refuses_an_environment_file_override(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, _, _marker, env, *_ = deployment_fixture
+    owner = SimpleNamespace(API_UNIT="fwrouter-api.service")
+    properties = (f"EnvironmentFiles={env} (ignore_errors=yes)\n"
+                  "LoadState=loaded\nEnvironment=\nDropInPaths=\nPassEnvironment=\nMainPID=0\n")
+
+    def query(argv, **kwargs):
+        assert kwargs["host_environment"]
+        assert argv[0:2] == ["/usr/bin/systemctl", "show"]
+        return subprocess.CompletedProcess(argv, 0, properties, "")
+
+    monkeypatch.setattr(deploy, "_run", query)
+    deploy._stable_service_state(paths, owner)
+    baseline = properties
+    properties = "EnvironmentFiles=/tmp/unknown.env (ignore_errors=no)\n" + baseline
+    with pytest.raises(deploy.DeploymentError, match="outside the supported Stable state-root contract"):
+        deploy._stable_service_state(paths, owner)
+    properties = baseline
+    env.write_text("STATE_DIR=/tmp/alternate-db\n")
+    with pytest.raises(deploy.DeploymentError, match="environment file overrides"):
+        deploy._stable_service_state(paths, owner)
+
+
+def test_stable_preflight_requires_both_exact_schema_checks(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    monkeypatch.setattr(deploy, "_stable_service_state", lambda *_: None)
+    owner = SimpleNamespace(_verified_backend_interpreter=lambda: Path(sys.executable))
+    calls = []
+
+    def run(argv, **kwargs):
+        assert kwargs["host_environment"]
+        assert argv[-4:] == ["database", "upgrade", "--expected-schema", "27"]
+        calls.append(argv)
+        if "-m" in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "ok": True, "status": "already_current", "current_schema": 27,
+                "target_schema": 27, "database_changed": False}), "")
+        return subprocess.CompletedProcess(argv, 1, '{"error_code":"DATABASE_SCHEMA_PREFLIGHT_FAILED"}', "")
+
+    monkeypatch.setattr(deploy, "_run", run)
+    with pytest.raises(deploy.DeploymentError, match=r"\(selected\) DATABASE_SCHEMA_PREFLIGHT_FAILED"):
+        deploy._strict_database_preflight(paths, owner, source)
+    assert len(calls) == 2
 
 
 def test_deploy_component_bootstrap_is_atomic_and_rejects_wrapper_drift(tmp_path: Path, request) -> None:
@@ -213,7 +527,7 @@ def self_upgrade_fixture(tmp_path: Path, request, monkeypatch):
     return deploy, paths, source, sha, module_path, wrapper_path, args, api_calls
 
 
-def test_self_upgrade_requires_actual_main_pins_and_replaces_only_module(self_upgrade_fixture) -> None:
+def test_self_upgrade_requires_actual_main_pins_and_replaces_only_module(self_upgrade_fixture, capsys) -> None:
     deploy, paths, source, sha, module_path, wrapper_path, args, api_calls = self_upgrade_fixture
     old_wrapper = wrapper_path.read_bytes()
     result = deploy._self_upgrade(paths, source, sha, args)
@@ -227,6 +541,16 @@ def test_self_upgrade_requires_actual_main_pins_and_replaces_only_module(self_up
     assert identity["operation"]["source_sha"] == sha
     assert identity["operation"]["acceptance"]["status"] == "NOT_VERIFIED"
     assert api_calls["main"] == 2
+    config_before_check = paths.config.read_bytes()
+    identity_path = paths.state_dir / "deployment-identity.json"
+    identity_before_check = identity_path.read_bytes()
+    healthy_paths = deploy.replace(paths, api_healthy=True, runtime_healthy=True)
+    assert deploy.main(["--check", "--json"], paths_override=healthy_paths) == 3
+    check = json.loads(capsys.readouterr().out)
+    assert check["stages"]["Updater"]["status"] == "PASS"
+    assert check["stages"]["Identity"]["status"] == "INCOMPLETE"
+    assert paths.config.read_bytes() == config_before_check
+    assert identity_path.read_bytes() == identity_before_check
 
 
 def test_app_identity_and_updater_provenance_survive_both_transition_directions(
@@ -277,7 +601,7 @@ def test_self_upgrade_retries_atomic_replacement_left_pending_after_interruption
         deploy._self_upgrade(paths, source, sha, args)
     assert module_path.read_bytes() == (source / "installer/local_deploy.py").read_bytes()
     assert deploy._read_identity(paths)["operation"]["status"] == "PENDING"
-    assert deploy.main(["--check"], paths_override=paths) == 0
+    assert deploy.main(["--check", "--json"], paths_override=paths) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["status"] == "UPDATER_SELF_UPGRADE_PENDING"
     before_rejected_apply = (paths.state_dir / "deployment-identity.json").read_bytes()
     with pytest.raises(deploy.DeploymentError, match="exact pinned transition"):
@@ -793,7 +1117,7 @@ def test_stop_failure_after_owner_checkpoint_publishes_retryable_incomplete_iden
     assert identity["operation"]["last_completed_stage"] == "lifecycle_stop"
     deploy._write_config(paths.config, selected_source, commit, paths.owner_uid)
     identity_before_check = identity_path.read_bytes()
-    assert deploy.main(["--check"], paths_override=paths) == 0
+    assert deploy.main(["--check", "--json"], paths_override=paths) == 0
     check_result = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert check_result["status"] == "TRANSFER_PENDING_OPERATION"
     assert identity_path.read_bytes() == identity_before_check
@@ -1075,3 +1399,637 @@ def test_production_check_observes_xray_read_only_and_fails_closed(
         ["/usr/bin/systemctl", "is-active", "fwrouter-xray.service"],
     ]
     assert all(argv[:2] == ["/usr/bin/systemctl", "is-active"] for argv in invocations)
+
+
+def test_staging_cleanup_requires_expired_owner_marker_and_unlocked_lease(
+        deployment_fixture, monkeypatch, tmp_path) -> None:
+    deploy, paths, *_ = deployment_fixture
+    root = tmp_path / "isolated-tmp"
+    root.mkdir()
+    monkeypatch.setattr(deploy, "STAGING_ROOT", root)
+    age = deploy.time.time() - deploy.STAGING_MAX_AGE - 60
+    stale = root / "fwrouter-main-12345678"
+    stale.mkdir(mode=0o700)
+    lease = stale / deploy.STAGING_LEASE
+    lease.write_bytes(deploy.STAGING_SIGNATURE)
+    lease.chmod(0o600)
+    os.utime(lease, (age, age))
+    (stale / "abandoned-artifact").write_bytes(b"disposable")
+    unknown = root / "fwrouter-main-abcdefgh"
+    unknown.mkdir(mode=0o700)
+    (unknown / "operator-data").write_text("preserve")
+
+    with deploy._managed_staging_workspace(paths) as active:
+        active_lease = active / deploy.STAGING_LEASE
+        os.utime(active_lease, (age, age))
+        result = deploy._cleanup_expired_staging(paths)
+        assert result["failures"] == []
+        assert result["reclaimed_bytes"] > 0
+        assert active.is_dir()
+        assert not stale.exists()
+        assert (unknown / "operator-data").read_text() == "preserve"
+    assert not active.exists()
+    assert deploy._cleanup_expired_staging(paths) == {"reclaimed_bytes": 0, "failures": []}
+
+
+def test_verified_stable_generations_rotate_and_rollback_reconstructs_the_previous_source(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, old_source, _marker, _env, active, calls, owner_driver, system_driver = deployment_fixture
+    origin = pristine_checkout(old_source.parent / "rollback-origin")
+    monkeypatch.setattr(deploy, "MAIN_ORIGIN", str(origin))
+    monkeypatch.setattr(deploy, "_current_main",
+                        lambda: command(["/usr/bin/git", "-C", str(origin), "rev-parse", "refs/heads/main"]).stdout.strip())
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda _source, sha, *_: _qualification(sha))
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+        "status": "PASS", "reason": None, "scope": "ui", "proof_sha256": "e" * 64})
+    def invoke(*argv):
+        code = deploy.main([*argv, "--json"], paths_override=paths, owner_driver=owner_driver,
+                           system_driver=system_driver)
+        return code, json.loads(capsys.readouterr().out)
+
+    shas = []
+    for version in ("stable-a", "stable-b", "stable-c"):
+        (origin / "ui/index.html").write_text(version)
+        command(["/usr/bin/git", "-C", str(origin), "add", "ui/index.html"])
+        if version == "stable-c":
+            marker = origin / "backend/fwrouter_api/__init__.py"
+            with marker.open("a", encoding="utf-8") as stream:
+                stream.write("\n# newer backend content\n")
+            command(["/usr/bin/git", "-C", str(origin), "add", "backend/fwrouter_api/__init__.py"])
+        command(["/usr/bin/git", "-C", str(origin), "-c", "user.name=FWRouter Test",
+                 "-c", "user.email=fwrouter-test@example.invalid", "commit", "--quiet", "-m", version])
+        sha = command(["/usr/bin/git", "-C", str(origin), "rev-parse", "HEAD"]).stdout.strip()
+        command(["/usr/bin/git", "-C", str(origin), "update-ref", "refs/heads/main", sha])
+        shas.append(sha)
+        code, result = invoke("--stable")
+        assert code == 0, result["stages"]
+        assert result["status"] == "SUCCESS"
+        assert result["storage"]["stable_current"] == sha
+        assert result["backup"]["status"] == ("SKIP" if version == "stable-c" else "NOT_CREATED")
+
+    accepted = deploy._read_identity(paths)
+    assert accepted["stable_current"]["source_sha"] == shas[2]
+    assert accepted["stable_previous"]["source_sha"] == shas[1]
+    assert shas[0] not in json.dumps({key: accepted[key] for key in ("stable_current", "stable_previous")})
+    before = calls.copy()
+    code, result = invoke("--stable")
+    assert code == 0 and result["content_noop"]
+    assert calls == before
+
+    corrupt = json.loads(json.dumps(accepted))
+    corrupt["stable_previous"]["installed_content"]["ui_sha256"] = "f" * 64
+    deploy._write_identity(paths, corrupt)
+    code, result = invoke("--rollback")
+    assert code == 3
+    assert calls == before
+    assert (paths.target("opt/fwrouter-ui/index.html")).read_text() == "stable-c"
+    deploy._write_identity(paths, accepted)
+
+    code, result = invoke("--rollback")
+    assert code == 0, result["stages"]
+    assert result["storage"]["stable_current"] == shas[1]
+    assert result["storage"]["stable_previous"] == shas[2]
+    assert result["backup"]["status"] == "SKIP"
+    assert (paths.target("opt/fwrouter-ui/index.html")).read_text() == "stable-b"
+    assert "# newer backend content" not in paths.target("opt/fwrouter-api/fwrouter_api/__init__.py").read_text()
+    assert active["fwrouter-xray.service"] and active["fwrouter-mihomo.service"]
+
+
+def test_retired_backup_is_preserved_while_configured_recovery_references_it(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    record = deploy._identity_record_base(paths)
+    pin = {"id": "a" * 32, "source_sha": "b" * 40, "backend_sha256": "c" * 64, "schema": 27,
+           "filename": "rollback-" + "d" * 32 + ".bak", "sha256": "e" * 64, "snapshot_sha256": "f" * 64}
+    record["database_rollback_retired"] = pin
+    record["database_rollback"] = {**pin, "id": "1" * 32}
+    deploy._write_identity(paths, record)
+    retired_path = deploy._backup_directory(paths, pin) / pin["filename"]
+    monkeypatch.setattr(deploy, "_read_acceptance_policy", lambda _: {
+        "recovery": {"backup_path": str(retired_path)}})
+    monkeypatch.setattr(deploy, "_remove_obsolete_managed_backup", lambda *_: pytest.fail("removed recovery backup"))
+    result = {}
+    deploy._cleanup_retired_backup(paths, SimpleNamespace(), result)
+    assert "configured recovery backup pin" in result["storage"]["retained"][0]["reason"]
+    assert deploy._read_identity(paths)["database_rollback_retired"] == pin
+
+
+def test_rollback_source_without_cleanup_helper_preserves_pinned_ui_releases(deployment_fixture) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    record = deploy._identity_record_base(paths)
+    record["retired_ui_releases"] = {"a" * 64: [1, 2]}
+    deploy._write_identity(paths, record)
+    result = {}
+    deploy._cleanup_retired_ui(paths, SimpleNamespace(), result)
+    assert "predates the UI cleanup owner" in result["storage"]["retained"][0]["reason"]
+    assert deploy._read_identity(paths)["retired_ui_releases"] == {"a" * 64: [1, 2]}
+
+
+def test_stable_acceptance_pin_requires_independent_verified_proof(deployment_fixture) -> None:
+    deploy, *_ = deployment_fixture
+    sha = "a" * 40
+    content = {"backend_sha256": "b" * 64, "ui_sha256": "c" * 64,
+               "host_pair_sha256": {row[0]: "d" * 64 for row in deploy.HOST_ROWS}}
+    last = {"mode": "STABLE", "git_sha": sha,
+            "qualification": {"source_sha": sha, "run_id": 1, "run_attempt": 1,
+                "artifact_id": 2, "artifact_digest": "sha256:" + "e" * 64},
+            "acceptance": {"status": "VERIFIED", "verified_at": "2026-11-19T00:00:00Z"},
+            "native_proof": {"status": "PASS", "evidence_refs": ["f" * 64]},
+            "source_content": content, "installed_content": content}
+    assert deploy._accepted_stable_pin(last)["source_sha"] == sha
+    last["native_proof"] = {"status": "NOT_VERIFIED", "evidence_refs": []}
+    assert deploy._accepted_stable_pin(last) is None
+
+
+def test_storage_preflight_rejects_insufficient_install_space_before_state_write(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    identity_path = paths.state_dir / "deployment-identity.json"
+    before = identity_path.read_bytes() if identity_path.exists() else None
+    original_usage = deploy.shutil.disk_usage
+    def usage(path):
+        return (original_usage(path) if str(path) == "/tmp"
+                else deploy.shutil._ntuple_diskusage(1 << 30, (1 << 30) - 1024, 1024))
+    monkeypatch.setattr(deploy.shutil, "disk_usage", usage)
+    with pytest.raises(deploy.DeploymentIncomplete, match="only 1024 are available"):
+        deploy._storage_preflight(paths, source, ["Backend"], {})
+    assert (identity_path.read_bytes() if identity_path.exists() else None) == before
+
+
+def test_rollback_without_previous_pin_fails_without_remote_resolution(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, *_ = deployment_fixture
+    monkeypatch.setattr(deploy, "_current_main", lambda: pytest.fail("rollback must use its accepted pin"))
+    identity_path = paths.state_dir / "deployment-identity.json"
+    before = identity_path.read_bytes() if identity_path.exists() else None
+    assert deploy.main(["--rollback", "--json"], paths_override=paths) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["result"] == "INCOMPLETE"
+    assert not result.get("source_commit")
+    assert (identity_path.read_bytes() if identity_path.exists() else None) == before
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_source"),
+    [
+        ("--stable", "Resolving qualified Stable source"),
+        ("--dev", "Capturing immutable DEV source snapshot"),
+    ],
+)
+def test_human_progress_is_flushed_to_stdout_before_deployment_finishes(
+        tmp_path, mode: str, expected_source: str) -> None:
+    (tmp_path / "opt").mkdir()
+    driver = r"""
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("progress_fixture", Path(sys.argv[1]))
+deploy = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = deploy
+spec.loader.exec_module(deploy)
+root = Path(sys.argv[2])
+mode = sys.argv[3]
+paths = deploy.Paths(target_root=root, config=root / "config", state_dir=root / "state",
+                     owner_uid=os.geteuid(), test_driver=True)
+
+def wait_after_progress(report, progress, source):
+    progress(source)
+    if mode == "--dev":
+        progress("Source /srv/fwrouter @ abcdef0 (dirty)")
+    if sys.stdin.readline() != "continue\n":
+        raise RuntimeError("fixture did not receive continuation")
+    deploy._stage(report, "Source", "PASS", "fixture source verified")
+    report["result"] = "NOOP"
+
+def stable_fixture(_paths, report, *, progress, **_kwargs):
+    wait_after_progress(report, progress, "Resolving qualified Stable source")
+
+def development_fixture(_paths, report, *, progress, **_kwargs):
+    wait_after_progress(report, progress, "Capturing immutable DEV source snapshot")
+
+deploy._stable_deploy = stable_fixture
+deploy._development_deploy = development_fixture
+raise SystemExit(deploy.main([mode], paths_override=paths))
+"""
+    env = os.environ.copy()
+    env.pop("PYTHONUNBUFFERED", None)
+    proc = subprocess.Popen(
+        [sys.executable, "-B", "-c", driver, str(MODULE), str(tmp_path), mode],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    output = bytearray()
+    try:
+        deadline = time.monotonic() + 8
+        expected = expected_source.encode()
+        milestones = [expected]
+        if mode == "--dev":
+            milestones.append(b"Source /srv/fwrouter @ abcdef0 (dirty)")
+        while not all(milestone in output for milestone in milestones) and time.monotonic() < deadline:
+            ready, _, _ = select.select([proc.stdout], [], [], max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            chunk = os.read(proc.stdout.fileno(), 4096)
+            if not chunk:
+                break
+            output.extend(chunk)
+        assert all(milestone in output for milestone in milestones)
+        assert b"Result:" not in output
+        assert proc.poll() is None
+        with (tmp_path / "opt/.fwrouter-deploy-command.lock").open("rb") as transaction:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(transaction, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        remaining, diagnostics = proc.communicate(input=b"continue\n", timeout=8)
+        output.extend(remaining)
+        text = output.decode()
+        assert proc.returncode == 0, diagnostics.decode()
+        assert text.count("FWRouter Deployment") == 1
+        assert text.index(expected_source) < text.index("Result: NOOP")
+        assert not diagnostics
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=5)
+
+
+def test_deployment_json_excludes_progress_and_failure_is_diagnostic_on_stderr(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, *_ = deployment_fixture
+
+    def fail_fixture(_paths, _report, *, progress, **_kwargs):
+        progress("Checking storage preflight")
+        raise deploy.DeploymentError("fixture storage unavailable")
+
+    monkeypatch.setattr(deploy, "_stable_deploy", fail_fixture)
+    assert deploy.main(["--stable", "--json"], paths_override=paths) == 1
+    output = capsys.readouterr()
+    report = json.loads(output.out)
+    assert report["result"] == "FAILED"
+    assert "fixture storage unavailable" in output.err
+    assert "Checking storage preflight" not in output.out
+
+
+def test_dev_cli_defaults_to_srv_and_passes_explicit_acknowledgement(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, *_ = deployment_fixture
+    resolved = []
+
+    def development_fixture(_paths, report, *, source_path, acknowledge_stable_replacement, **_kwargs):
+        resolved.append((source_path, acknowledge_stable_replacement))
+        report["result"] = "NOOP"
+
+    monkeypatch.setattr(deploy, "_development_deploy", development_fixture, raising=False)
+    assert deploy.main(["--dev", "--acknowledge-stable-replacement", "--json"], paths_override=paths) == 0
+    assert json.loads(capsys.readouterr().out)["mode"] == "DEV"
+    assert resolved == [(Path("/srv/fwrouter"), True)]
+
+
+def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_dev(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, old_source, database_marker, env, active, calls, owner_driver, system_driver = deployment_fixture
+    real_report = deploy._report_lifecycle
+
+    def report_fixture(target, target_paths, lifecycle):
+        real_report(target, target_paths, lifecycle)
+        if not target.get("pending_units"):
+            deploy._stage(target, "Timers", "PASS", "disposable timer readback")
+
+    monkeypatch.setattr(deploy, "_report_lifecycle", report_fixture)
+    run = deploy._run
+
+    def guard_runtime_commands(argv, **kwargs):
+        assert Path(argv[0]).name not in {"docker", "systemctl"}, argv
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(deploy, "_run", guard_runtime_commands)
+    origin = pristine_checkout(old_source.parent / "shared-runtime-origin")
+    developer = pristine_checkout(old_source.parent / "shared-runtime-dev")
+    legacy_sha = command(["/usr/bin/git", "-C", str(developer), "rev-parse", "HEAD"]).stdout.strip()
+    with (origin / "backend/fwrouter_api/__init__.py").open("a", encoding="utf-8") as stream:
+        stream.write("\n# accepted Stable source absent from the developer Git history\n")
+    command(["/usr/bin/git", "-C", str(origin), "add", "backend/fwrouter_api/__init__.py"])
+    command(["/usr/bin/git", "-C", str(origin), "-c", "user.name=FWRouter Test",
+             "-c", "user.email=fwrouter-test@example.invalid", "commit", "--quiet", "-m", "fixture next Stable"])
+    sha = command(["/usr/bin/git", "-C", str(origin), "rev-parse", "HEAD"]).stdout.strip()
+    command(["/usr/bin/git", "-C", str(origin), "update-ref", "refs/heads/main", sha])
+    monkeypatch.setattr(deploy, "MAIN_ORIGIN", str(origin))
+    qualification_calls = []
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+    def qualify(_source, source_sha, *_args):
+        qualification_calls.append(source_sha)
+        return _qualification(source_sha)
+    monkeypatch.setattr(deploy, "_stable_qualification", qualify)
+    monkeypatch.setattr(deploy, "_gh_api", lambda *_args: pytest.fail("fixture unexpectedly tried GitHub"))
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+        "status": "PASS", "reason": None, "scope": "ui", "proof_sha256": "e" * 64})
+    deploy._write_config(paths.config, old_source, legacy_sha, paths.owner_uid)
+
+    def invoke(*argv):
+        code = deploy.main([*argv, "--json"], paths_override=paths, owner_driver=owner_driver,
+                           system_driver=system_driver)
+        return code, json.loads(capsys.readouterr().out)
+
+    code, stable = invoke("--stable")
+    assert code == 0, stable["stages"]
+    baseline = deploy._read_identity(paths)
+    accepted = baseline["stable_current"]
+    stable_ui = paths.target("opt/fwrouter-ui").resolve()
+    previous = baseline.get("stable_previous")
+    identity_file = paths.state_dir / "deployment-identity.json"
+    database_bytes = database_marker.read_bytes()
+    env_bytes = env.read_bytes()
+    index_bytes = (developer / ".git/index").read_bytes()
+    tracked = developer / "ui/index.html"
+    extra = developer / "backend/dirty-dev-only.py"
+    tracked.write_text("dirty DEV one\n")
+    extra.write_text("FIXTURE = 1\n")
+    args = ("--dev", "--source", str(developer))
+    existing = identity_file.read_bytes()
+    before = dict(calls)
+    code, denied = invoke(*args)
+    assert code != 0
+    assert denied["result"] in {"INCOMPLETE", "FAILED"}
+    assert identity_file.read_bytes() == existing and calls == before
+
+    code, first = invoke(*args, "--acknowledge-stable-replacement")
+    assert code == 0, first["stages"]
+    assert first["stages"]["CI"]["status"] == "SKIP"
+    assert len(qualification_calls) == 1
+    assert (paths.target("opt/fwrouter-api/dirty-dev-only.py")).read_text() == "FIXTURE = 1\n"
+    assert (paths.target("opt/fwrouter-ui/index.html")).read_text() == "dirty DEV one\n"
+    identity = deploy._read_identity(paths)
+    assert identity["last_verified_install"]["mode"] == "DEV"
+    assert identity["last_verified_install"]["dirty"] is True
+    assert identity["stable_current"] == accepted and identity.get("stable_previous") == previous
+    first_ui = paths.target("opt/fwrouter-ui").resolve()
+    assert first_ui != stable_ui
+    first_capsule = Path(identity["dev_current"]["snapshot_path"])
+    assert first_capsule.is_file()
+    unrelated_capsule = first_capsule.with_name("f" * 64 + ".tar")
+    unrelated_capsule.write_bytes(b"independently managed data")
+    unrelated_capsule.chmod(0o600)
+
+    tracked.write_text("dirty DEV two\n")
+    extra.unlink()
+    code, second = invoke(*args)
+    assert code == 0, second["stages"]
+    assert not paths.target("opt/fwrouter-api/dirty-dev-only.py").exists()
+    assert (paths.target("opt/fwrouter-ui/index.html")).read_text() == "dirty DEV two\n"
+    assert not first_capsule.exists()
+    assert not first_ui.exists() and stable_ui.is_dir()
+    second_ui = paths.target("opt/fwrouter-ui").resolve()
+    assert second["storage"]["cleanup_reclaimed_bytes"] > 0
+    second_capsule = Path(deploy._read_identity(paths)["dev_current"]["snapshot_path"])
+    assert second_capsule.is_file()
+    assert unrelated_capsule.read_bytes() == b"independently managed data"
+    assert len(qualification_calls) == 1
+    before = dict(calls)
+    existing = identity_file.read_bytes()
+    code, noop = invoke(*args)
+    assert code == 0 and noop["result"] == "NOOP"
+    assert identity_file.read_bytes() == existing and calls == before
+    code, checked = invoke("--dev", "--check")
+    assert code == 0
+    assert checked["storage"]["dev_current"]
+    assert checked["storage"]["stable_rollback"] == sha
+    assert identity_file.read_bytes() == existing
+
+    component_installs = []
+    run_installer = deploy._run_installer
+    with monkeypatch.context() as ui_only:
+        def record_components(source, target, components, **kwargs):
+            component_installs.append(components)
+            return run_installer(source, target, components, **kwargs)
+
+        ui_only.setattr(deploy, "_run_installer", record_components)
+        ui_only.setattr(deploy, "_ensure_dev_baseline_backup",
+                        lambda *_args, **_kwargs: pytest.fail("UI-only deploy tried to prepare a SQLite backup"))
+        tracked.write_text("dirty DEV UI only\n")
+        code, ui = invoke(*args)
+        assert code == 0, ui["stages"]
+        assert ui["components"]["updated"] == ["UI"]
+        assert component_installs == [["ui"]]
+    assert not second_capsule.exists()
+    assert not second_ui.exists() and stable_ui.is_dir()
+    active_ui = paths.target("opt/fwrouter-ui").resolve()
+    active_capsule = Path(deploy._read_identity(paths)["dev_current"]["snapshot_path"])
+    assert active_capsule.is_file()
+
+    code, restored = invoke("--stable")
+    assert code == 0, restored["stages"]
+    assert deploy._read_identity(paths)["stable_current"]["source_sha"] == sha
+    assert deploy._read_identity(paths)["last_verified_install"]["mode"] == "STABLE"
+    assert not active_capsule.exists()
+    assert not active_ui.exists() and stable_ui.is_dir()
+    assert unrelated_capsule.read_bytes() == b"independently managed data"
+    assert (paths.target("opt/fwrouter-ui/index.html")).read_bytes() == (origin / "ui/index.html").read_bytes()
+    assert len(qualification_calls) == 2
+    assert (developer / ".git/index").read_bytes() == index_bytes
+    assert tracked.read_text() == "dirty DEV UI only\n"
+    assert database_marker.read_bytes() == database_bytes and env.read_bytes() == env_bytes
+    assert active["fwrouter-xray.service"] and active["fwrouter-mihomo.service"]
+
+
+@pytest.mark.parametrize("accept_dev_before_rollback", [False, True])
+def test_interrupted_dev_resumes_and_rolls_back_after_original_source_is_deleted(
+        deployment_fixture, monkeypatch, capsys, accept_dev_before_rollback) -> None:
+    deploy, paths, _, old_source, _db, _env, _active, calls, owner_driver, system_driver = deployment_fixture
+    real_report = deploy._report_lifecycle
+
+    def report_fixture(target, target_paths, lifecycle):
+        real_report(target, target_paths, lifecycle)
+        if not target.get("pending_units"):
+            deploy._stage(target, "Timers", "PASS", "disposable timer readback")
+
+    monkeypatch.setattr(deploy, "_report_lifecycle", report_fixture)
+    origin = pristine_checkout(old_source.parent / "dev-resume-origin")
+    developer = pristine_checkout(old_source.parent / "dev-resume-source")
+    sha = command(["/usr/bin/git", "-C", str(origin), "rev-parse", "HEAD"]).stdout.strip()
+    command(["/usr/bin/git", "-C", str(origin), "update-ref", "refs/heads/main", sha])
+    monkeypatch.setattr(deploy, "MAIN_ORIGIN", str(origin))
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda _source, source_sha, *_: _qualification(source_sha))
+    monkeypatch.setattr(deploy, "_gh_api", lambda *_: pytest.fail("fixture unexpectedly tried GitHub"))
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+        "status": "PASS", "reason": None, "scope": "ui", "proof_sha256": "e" * 64})
+    deploy._write_config(paths.config, old_source, sha, paths.owner_uid)
+
+    def invoke(*argv, driver=owner_driver):
+        code = deploy.main([*argv, "--json"], paths_override=paths, owner_driver=driver,
+                           system_driver=system_driver)
+        return code, json.loads(capsys.readouterr().out)
+
+    code, stable = invoke("--stable")
+    assert code == 0, stable["stages"]
+    (developer / "backend/dev-resume-local.py").write_text("SENTINEL = True\n")
+    (developer / "ui/index.html").write_text("captured before interruption\n")
+
+    def interrupted(lifecycle, action, *args):
+        if action == "resume":
+            raise KeyboardInterrupt
+        return owner_driver(lifecycle, action, *args)
+
+    args = ("--dev", "--source", str(developer))
+    code, partial = invoke(*args, "--acknowledge-stable-replacement", driver=interrupted)
+    assert code == 130, partial["stages"]
+    assert partial["result"] == "INCOMPLETE"
+    assert (paths.target("opt/fwrouter-api/dev-resume-local.py")).exists()
+    before = dict(calls)
+    shutil.rmtree(developer)
+
+    proof = deploy._native_acceptance
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+        "status": "NOT_VERIFIED", "reason": "fixture native proof unavailable"})
+    code, incomplete = invoke(*args)
+    assert code == 3 and incomplete["result"] == "INCOMPLETE", incomplete["stages"]
+    assert incomplete["native_proof"]["status"] == "NOT_VERIFIED"
+    assert deploy._read_identity(paths)["dev_admission"]["mode"] == "DEV"
+    assert calls == before
+    assert incomplete["stages"]["CI"]["status"] == "SKIP"
+    assert (paths.target("opt/fwrouter-ui/index.html")).read_text() == "captured before interruption\n"
+    monkeypatch.setattr(deploy, "_native_acceptance", proof)
+
+    if accept_dev_before_rollback:
+        code, recovered = invoke(*args)
+        if code != 0:
+            pytest.fail(f"Captured DEV retry: {recovered['stages']} / {recovered.get('health')}", pytrace=False)
+        assert calls == before
+        assert deploy._read_identity(paths).get("dev_admission") is None
+
+    code, rolled_back = invoke("--rollback")
+    assert code == 0, rolled_back["stages"]
+    assert not paths.target("opt/fwrouter-api/dev-resume-local.py").exists()
+    identity = deploy._read_identity(paths)
+    assert identity["last_verified_install"]["mode"] == "STABLE"
+    assert identity["stable_current"]["source_sha"] == sha
+
+
+def test_dev_baseline_recovery_creates_a_separate_verified_pin_and_reuses_it(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    stable_sha, manifest = "a" * 40, "b" * 64
+    previous = {"id": "d" * 32, "source_sha": "c" * 40, "backend_sha256": "f" * 64, "schema": 27,
+                "filename": "rollback-" + "d" * 32 + ".bak", "sha256": "8" * 64, "snapshot_sha256": "9" * 64}
+    identity = {"stable_current": {"source_sha": stable_sha, "installed_content": {"backend_sha256": manifest}},
+                "database_rollback": previous.copy(), "dev_admission": {"test": True}}
+    current_manifest = [manifest]
+    lifecycle = SimpleNamespace(_manifest_digest=lambda _items: current_manifest[0],
+                                _backend_manifest=lambda _path: [])
+    writes = []
+    verified = []
+    created = []
+
+    @contextmanager
+    def lock(_paths):
+        yield
+
+    def prepare(_paths, _lifecycle, reservation):
+        assert identity["dev_baseline_backup"] == reservation
+        created.append(reservation)
+        return {**reservation, "filename": "rollback-" + "d" * 32 + ".bak",
+                "sha256": "1" * 64, "snapshot_sha256": "2" * 64}
+
+    monkeypatch.setattr(deploy, "_configuration_component_lock", lock)
+    monkeypatch.setattr(deploy, "_read_identity", lambda _paths: identity)
+    monkeypatch.setattr(deploy, "_write_identity", lambda _paths, record: writes.append(dict(record)))
+    monkeypatch.setattr(deploy, "_prepare_managed_backup", prepare)
+    monkeypatch.setattr(deploy, "_validate_managed_backup", lambda _paths, _lifecycle, pin: verified.append(pin))
+
+    result = {}
+    deploy._ensure_dev_baseline_backup(paths, lifecycle, {}, result)
+    assert result["backup"]["status"] == "CREATED"
+    assert len(created) == 1 and len(writes) == 2
+    assert identity["database_rollback"] == previous
+    pin = identity["dev_baseline_backup"]
+    assert pin["source_sha"] == stable_sha and pin["backend_sha256"] == manifest
+    assert verified == [pin]
+
+    current_manifest[0] = "0" * 64
+    identity["stable_admission"] = {"test": True}
+    deploy._ensure_dev_baseline_backup(paths, lifecycle, {}, result, returning=True)
+    assert result["backup"]["status"] == "REUSED"
+    assert len(created) == 1 and len(writes) == 2 and verified == [pin, pin]
+    assert identity["database_rollback"] == previous
+
+    identity.pop("dev_baseline_backup")
+    with pytest.raises(deploy.DeploymentIncomplete, match="no verified SQLite recovery backup"):
+        deploy._ensure_dev_baseline_backup(paths, lifecycle, {}, result, returning=True)
+    assert len(created) == 1 and len(writes) == 2
+
+
+@pytest.mark.parametrize("stable_command", ["--stable", "--rollback"])
+def test_byte_identical_dev_returns_to_stable_without_publication(
+        deployment_fixture, monkeypatch, capsys, stable_command) -> None:
+    deploy, paths, _, old_source, _db, _env, _active, calls, owner_driver, system_driver = deployment_fixture
+    origin = pristine_checkout(old_source.parent / "identical-origin")
+    developer = pristine_checkout(old_source.parent / "identical-dev")
+    sha = command(["/usr/bin/git", "-C", str(origin), "rev-parse", "HEAD"]).stdout.strip()
+    command(["/usr/bin/git", "-C", str(origin), "update-ref", "refs/heads/main", sha])
+    monkeypatch.setattr(deploy, "MAIN_ORIGIN", str(origin))
+    monkeypatch.setattr(deploy, "_current_main", lambda: sha)
+    monkeypatch.setattr(deploy, "_stable_qualification", lambda _source, source_sha, *_: _qualification(source_sha))
+    monkeypatch.setattr(deploy, "_gh_api", lambda *_: pytest.fail("fixture unexpectedly tried GitHub"))
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+        "status": "PASS", "reason": None, "scope": "ui", "proof_sha256": "e" * 64})
+    report_lifecycle = deploy._report_lifecycle
+
+    def report_fixture(target, target_paths, lifecycle):
+        report_lifecycle(target, target_paths, lifecycle)
+        if not target.get("pending_units"):
+            deploy._stage(target, "Timers", "PASS", "disposable timer readback")
+
+    monkeypatch.setattr(deploy, "_report_lifecycle", report_fixture)
+    deploy._write_config(paths.config, old_source, sha, paths.owner_uid)
+
+    def invoke(*argv):
+        code = deploy.main([*argv, "--json"], paths_override=paths, owner_driver=owner_driver,
+                           system_driver=system_driver)
+        return code, json.loads(capsys.readouterr().out)
+
+    code, stable = invoke("--stable")
+    assert code == 0, stable["stages"]
+    before = dict(calls)
+    (developer / "installer/README.md").write_text("dirty source with byte-identical runtime components\n")
+    monkeypatch.setattr(deploy, "_run_installer", lambda *_a, **_k: pytest.fail("identical content republished"))
+
+    code, dev = invoke("--dev", "--source", str(developer), "--acknowledge-stable-replacement")
+    assert code == 0, dev["stages"]
+    assert "_dev_unadmitted_snapshot" not in dev
+    assert dev["stages"]["Install"]["status"] == "SKIP"
+    pin = deploy._read_identity(paths)["dev_current"]
+    assert pin["dirty"] is True and Path(pin["snapshot_path"]).is_file()
+
+    code, stable = invoke(stable_command)
+    assert code == 0, stable["stages"]
+    assert stable["stages"]["Install"]["status"] == "SKIP"
+    record = deploy._read_identity(paths)
+    assert record["last_verified_install"]["mode"] == "STABLE"
+    assert record["last_verified_install"]["git_sha"] == sha
+    assert record["last_verified_install"]["acceptance"]["status"] == "VERIFIED"
+    assert record.get("dev_current") is None
+    assert record.get("dev_admission") is None
+    assert not Path(pin["snapshot_path"]).exists()
+    assert calls == before
+
+
+def test_dev_admission_rechecks_installed_mode_and_snapshot_under_component_lock(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    stable = {"mode": "STABLE", "git_sha": "a" * 40}
+    record = {"last_verified_install": stable}
+    monkeypatch.setattr(deploy, "_identity_record_base", lambda _paths: record)
+    monkeypatch.setattr(deploy, "_write_identity", lambda *_args: pytest.fail("stale DEV admission was persisted"))
+
+    with pytest.raises(deploy.DeploymentIncomplete, match="Installed identity changed"):
+        deploy._remember_development_admission(paths, {}, {"mode": "DEV", "git_sha": "b" * 40}, False)
+    with pytest.raises(deploy.DeploymentIncomplete, match="acknowledge-stable-replacement"):
+        deploy._remember_development_admission(paths, {}, stable, False)
+    missing = {"snapshot_path": str(paths.state_dir / "missing.tar"), "snapshot_sha256": "a" * 64}
+    with pytest.raises(FileNotFoundError):
+        deploy._remember_development_admission(paths, missing, stable, True)
+    assert "dev_admission" not in record

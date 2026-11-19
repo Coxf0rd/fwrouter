@@ -5347,7 +5347,7 @@
       "opt_in": false,
       "path": "installer/tests/test_local_deployment.py",
       "primary_level": "L4",
-      "risk_notes": "Local deploy command installation, source pinning, check/no-op, same-operation source CAS, failed installer/start and forward completion; excludes physical Debian/live VPN acceptance",
+      "risk_notes": "Local deploy command installation, source pinning, check/no-op, same-operation source CAS, failed installer/start and forward completion; includes repeated Stable/DEV and interrupted recovery in disposable targets; excludes physical Debian/live VPN acceptance",
       "runtime_dependencies": [
         "Python 3.11",
         "pytest",
@@ -5355,7 +5355,7 @@
         "Git"
       ],
       "slow": false,
-      "timeout_seconds": 120,
+      "timeout_seconds": 300,
       "execution_group": "installer-startup",
       "runner": "pytest"
     },

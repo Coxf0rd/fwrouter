@@ -57,6 +57,64 @@ class AtomicUiPublicationTests(unittest.TestCase):
     def publish(self) -> str:
         return ui_publication.publish(self.ui, self.active, self.backend_source, self.backend_installed)
 
+    def prune(self, retired, protected=()):
+        fd, _ = component_install_lock.acquire(self.active.parent)
+        try:
+            return ui_publication.prune_retired_releases(
+                self.active, retired=retired, protected=set(protected), owner_uid=os.geteuid())
+        finally:
+            component_install_lock.release(fd)
+
+    def test_retirement_preserves_active_previous_and_unknown_directories(self) -> None:
+        self.publish()
+        previous = self.active.resolve()
+        (self.ui / "index.html").write_text("candidate-v2")
+        self.publish()
+        current = self.active.resolve()
+        releases = current.parent
+        obsolete = releases / f"release-{self.initial_digest}"
+        unknown = releases / ("release-" + "f" * 64)
+        unknown.mkdir()
+        (unknown / "operator-file").write_text("independently managed")
+        pins = {}
+        for release in (obsolete, previous, current):
+            info = release.lstat()
+            pins[release.name[8:]] = info.st_dev, info.st_ino
+        result = self.prune(pins, protected={previous.name[8:]})
+        self.assertEqual(result["removed"], [self.initial_digest])
+        self.assertGreater(result["reclaimed_bytes"], 0)
+        self.assertTrue(previous.is_dir())
+        self.assertEqual(self.active.resolve(), current)
+        self.assertEqual((unknown / "operator-file").read_text(), "independently managed")
+
+    def test_retirement_can_resume_only_the_verified_quarantined_inode(self) -> None:
+        self.publish()
+        releases = self.active.resolve().parent
+        original = releases / f"release-{self.initial_digest}"
+        info = original.lstat()
+        pin = {self.initial_digest: (info.st_dev, info.st_ino)}
+        quarantine = releases / f".retired-{self.initial_digest}"
+        original.rename(quarantine)
+        (quarantine / "index.html").unlink()
+        rejected = self.prune({self.initial_digest: (info.st_dev, info.st_ino + 1)})
+        self.assertIn(self.initial_digest, rejected["failed"])
+        self.assertTrue(quarantine.is_dir())
+        self.assertEqual(self.prune(pin)["removed"], [self.initial_digest])
+        self.assertFalse(quarantine.exists())
+        repeated = self.prune(pin)
+        self.assertEqual(repeated["removed"], [self.initial_digest])
+        self.assertEqual(repeated["reclaimed_bytes"], 0)
+
+    def test_retirement_preserves_releases_referenced_by_interrupted_exchange(self) -> None:
+        self.publish()
+        obsolete = self.active.resolve().parent / f"release-{self.initial_digest}"
+        info = obsolete.lstat()
+        recovery = self.active.parent / f".fwrouter-ui-next-{uuid.uuid4().hex}"
+        recovery.symlink_to(f"{obsolete.parent.name}/{obsolete.name}")
+        result = self.prune({self.initial_digest: (info.st_dev, info.st_ino)})
+        self.assertIn(self.initial_digest, result["retained"])
+        self.assertTrue(obsolete.is_dir())
+
     def _actual_installer_fixture(self) -> tuple[Path, Path, Path]:
         source = self.root / "disposable-source"
         (source / "installer").mkdir(parents=True)
@@ -100,6 +158,27 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.assertFalse(retired.exists())
         self.assertEqual((active / "index.html").read_text(), "new immutable ui\n")
         self.assertEqual(protected.read_bytes(), b"user data must survive source cleanup")
+
+    def test_ui_only_installer_avoids_backend_post_actions(self) -> None:
+        source, target, active = self._actual_installer_fixture()
+        (source / "ui/large-asset.bin").unlink()
+        marker = self.root / "unexpected-backend-bootstrap"
+        for root in (source / "backend", target / "opt/fwrouter-api"):
+            script = root / "scripts/bootstrap-state.sh"
+            script.parent.mkdir()
+            script.write_text(f"#!/bin/sh\nprintf ran > '{marker}'\n")
+            script.chmod(0o755)
+        env = target / "opt/fwrouter-api/.env"
+        env.write_text("FIXTURE=preserve\n")
+        env.chmod(0o660)
+        result = subprocess.run(
+            [str(source / "installer/install.sh"), "--deploy", "--component", "ui", "--target", str(target)],
+            cwd=source, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((active / "index.html").read_text(), "new immutable ui\n")
+        self.assertFalse(marker.exists())
+        self.assertEqual(stat_mode(env), 0o660)
 
     def _copy_failure_installer_fixture(self) -> tuple[Path, Path, Path, Path]:
         source = self.root / "copy-failure-source"

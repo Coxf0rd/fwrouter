@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Apply one explicitly selected, clean local FWRouter checkout on this host."""
+"""Deploy FWRouter through its existing installer and lifecycle owner."""
 from __future__ import annotations
 
 import argparse
 import ast
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import fcntl
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import selectors
+import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 from typing import Callable
 import uuid
 import zipfile
@@ -32,6 +37,9 @@ MAX_TREE_ENTRIES = 10000
 MAX_OLD_SOURCE_COMMITS = 1000
 MAX_SOURCE_ENTRIES = 100000
 IDENTITY_NAME = "deployment-identity.json"
+MAIN_REPO = "repos/Coxf0rd/fwrouter"
+MAIN_ORIGIN = "git@github.com:Coxf0rd/fwrouter.git"
+MAIN_WORKFLOW = ".github/workflows/test-gates.yml"
 HOST_ROWS = (
     ("host/libexec/fwrouter/fwrouter-boot-preflight.sh",
      "usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh", 0o755),
@@ -41,6 +49,124 @@ HOST_ROWS = (
 
 class DeploymentError(RuntimeError):
     pass
+
+
+class DeploymentIncomplete(DeploymentError):
+    pass
+
+
+def _hex(value: object, size: int) -> bool:
+    return (isinstance(value, str) and len(value) == size
+            and all(ch in "0123456789abcdef" for ch in value))
+
+
+def _positive_id(value: object) -> bool:
+    return type(value) is int and value > 0
+
+
+def _valid_qualification(value: object) -> bool:
+    return (isinstance(value, dict)
+            and set(value) == {"source_sha", "run_id", "run_attempt", "artifact_id", "artifact_digest"}
+            and _hex(value["source_sha"], 40)
+            and all(_positive_id(value[key]) for key in ("run_id", "run_attempt", "artifact_id"))
+            and isinstance(value["artifact_digest"], str) and value["artifact_digest"].startswith("sha256:")
+            and _hex(value["artifact_digest"][7:], 64))
+
+
+@dataclass(frozen=True)
+class StableSource:
+    root: Path
+    qualification: dict
+
+    @property
+    def commit(self) -> str:
+        return self.qualification["source_sha"]
+
+    def provenance(self) -> dict:
+        return {"path": MAIN_ORIGIN, "git_sha": self.commit, "mode": "STABLE",
+                "provenance": "verified_actual_main_ci", "qualification_status": "VERIFIED_MAIN_CI",
+                "dirty": False, "qualification": self.qualification}
+
+
+def _emit_progress(message: str) -> None:
+    print(message, flush=True)
+
+
+def _emit_result(value: dict, *, as_json: bool, verbose: bool = False, heading: bool = True) -> None:
+    if as_json:
+        _emit_progress(json.dumps(value, sort_keys=True))
+        return
+    status = str(value.get("status", "INCOMPLETE"))
+    mode = str(value.get("mode", "UNKNOWN")).upper()
+    lines = [f"FWRouter Deployment — {mode}"] if heading else []
+    for name, row in value.get("stages", {}).items():
+        lines.append(f"[{row['status']}] {name:<12} {row['detail']}")
+    for name, row in value.get("health", {}).items():
+        lines.append(f"[{row['status']}] {name:<12} {row['detail']}")
+    lines.append(f"Result: {value.get('result', status)}")
+    if value.get("installed_version"):
+        last = (value.get("deployment_identity") or {}).get("last_verified_install") or {}
+        installed = last.get("base_git_sha") or last.get("base_sha") or last.get("git_sha") or value["installed_version"]
+        suffix = " + local changes" if last.get("dirty") is True else ""
+        installed_mode = last.get("mode")
+        label = f"Installed {installed_mode}" if installed_mode in {"STABLE", "DEV"} else "Installed version"
+        lines.append(f"{label}: {installed[:12]}{suffix}")
+    if value.get("previous_version"):
+        previous = value.get("previous_base_git_sha") or value["previous_version"]
+        lines.append(f"Previous version: {previous[:12]}" +
+                     (" + local changes" if value.get("previous_dirty") else ""))
+    components = value.get("components")
+    if components:
+        if components.get("updated"):
+            lines.append(f"Updated components: {', '.join(components['updated'])}")
+        if components.get("unchanged"):
+            lines.append(f"Unchanged components: {', '.join(components['unchanged'])}")
+    backup = value.get("backup")
+    if isinstance(backup, dict) and backup.get("status"):
+        detail = f" · {backup['detail']}" if backup.get("detail") else ""
+        lines.append(f"Deployment backup: {backup['status']}{detail}")
+    storage = value.get("storage")
+    if isinstance(storage, dict):
+        stable = storage.get("stable_current") or "UNKNOWN"
+        rollback = storage.get("stable_rollback")
+        if "stable_rollback" not in storage:
+            rollback = stable if storage.get("dev_current") and stable != "UNKNOWN" else storage.get("stable_previous")
+        label = "Active Stable" if stable == value.get("installed_version") else "Last accepted Stable"
+        lines.append(f"{label}: {stable[:12] if stable != 'UNKNOWN' else stable}")
+        dev_current = storage.get("dev_current")
+        if isinstance(dev_current, dict):
+            dev_sha = dev_current.get("base_git_sha") or dev_current.get("base_sha") or dev_current.get("git_sha") or "UNKNOWN"
+            dev_current = dev_sha[:12] + (" (dirty)" if dev_current.get("dirty") else "")
+        lines.append(f"Active DEV: {dev_current[:24] if dev_current else 'None'}")
+        lines.append(f"Stable rollback: {rollback[:12] if rollback else 'Unavailable'}")
+        lines.append(f"Managed storage: {storage.get('managed_bytes', 0)} bytes. "
+                     f"Reclaimed: {storage.get('cleanup_reclaimed_bytes', 0)} bytes")
+        if storage.get("dev_snapshot_bytes"):
+            lines.append(f"DEV snapshot: {storage['dev_snapshot_bytes']} bytes")
+        if "temporary_staging_bytes" in storage:
+            lines.append(f"Temporary staging: {storage['temporary_staging_bytes']} bytes")
+        if "rollback_database_backup" in value:
+            lines.append(f"Rollback database backup: {value['rollback_database_backup']}")
+        if "dev_baseline_database_backup" in value:
+            lines.append(f"DEV baseline database backup: {value['dev_baseline_database_backup']}")
+        for retained in storage.get("retained", []):
+            name = retained.get("resource") or retained.get("digest", "resource")
+            name = name[:12] if _hex(name.removesuffix(".tar"), 64) else name
+            lines.append(f"[SKIP] Retained {name}: {retained.get('reason', 'ownership or recovery reference')}")
+        for failure in storage.get("cleanup_failures", []):
+            name = failure.get("resource") or failure.get("digest", "resource")
+            name = name[:12] if _hex(name, 64) else name
+            lines.append(f"[FAIL] Cleanup {name}: {failure.get('reason', 'see verbose diagnostics')}")
+    if value.get("pending_units"):
+        lines.append(f"Pending units: {', '.join(value['pending_units'])}")
+    for warning in value.get("warnings", []):
+        lines.append(f"Action: {warning}")
+    if "duration_seconds" in value:
+        lines.append(f"Duration: {value['duration_seconds']:.1f}s")
+    if verbose:
+        lines.append(json.dumps({key: item for key, item in value.items() if key != "deployment_identity"},
+                                sort_keys=True, indent=2))
+    _emit_progress("\n".join(lines))
 
 
 @dataclass(frozen=True)
@@ -56,6 +182,9 @@ class Paths:
     api_active: bool = False
     runtime_healthy: bool = False
     lifecycle_units_stopped: bool = False
+    stable_source: StableSource | None = None
+    development_source: dict | None = None
+    retire_paths: list[dict] | None = None
 
     def target(self, relative: str) -> Path:
         return self.target_root / relative
@@ -84,15 +213,17 @@ def _git_environment(base: dict[str, str] | None = None) -> dict[str, str]:
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "core.fsmonitor",
                 "GIT_CONFIG_VALUE_0": "false", "GIT_CONFIG_KEY_1": "core.hooksPath",
-                "GIT_CONFIG_VALUE_1": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1"})
+                "GIT_CONFIG_VALUE_1": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
     return env
 
 
 def _run(argv: list[str], *, timeout: int = 30, pass_fds: tuple[int, ...] = (),
          env_overrides: dict[str, str] | None = None,
-         clean_git_env: bool = False) -> subprocess.CompletedProcess:
+         clean_git_env: bool = False, host_environment: bool = False) -> subprocess.CompletedProcess:
     try:
-        env = os.environ.copy()
+        env = ({"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "SYSTEMD_COLORS": "0"}
+               if host_environment else os.environ.copy())
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         if env_overrides:
             env.update(env_overrides)
@@ -391,8 +522,10 @@ def _find_source_commit(source: Path, installed_backend: Path, lifecycle) -> str
 
 def _run_bytes(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess:
     try:
+        env = _git_environment()
+        env["GIT_ALLOW_PROTOCOL"] = ""
         return subprocess.run(argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              timeout=timeout, env=_git_environment())
+                              timeout=timeout, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentError("cannot inspect local Git source history") from exc
 
@@ -458,6 +591,71 @@ def _materialize_old_source(source: Path, commit: str, destination: Path) -> Pat
     return destination
 
 
+def _materialize_installed_backend_source(paths: Paths, selected_source: Path, lifecycle,
+                                          destination: Path) -> Path:
+    """Build a temporary owner input from the durably pinned installed backend."""
+    manifest = lifecycle._backend_manifest(paths.target("opt/fwrouter-api"))
+    digest = lifecycle._manifest_digest(manifest)
+    if not _known_installed_backend(paths, digest):
+        raise DeploymentError("installed backend has no durable source identity for lifecycle recovery")
+    destination.mkdir(mode=0o700)
+    backend = destination / "backend"
+    backend.mkdir(mode=0o700)
+    for entry in manifest:
+        rel = PurePosixPath(entry["path"])
+        if not rel.parts or any(part in {"", ".", ".."} for part in rel.parts):
+            raise DeploymentError("installed backend manifest contains an unsafe path")
+        source = paths.target("opt/fwrouter-api").joinpath(*rel.parts)
+        target = backend.joinpath(*rel.parts)
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = source.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != paths.owner_uid:
+            raise DeploymentError("installed backend changed ownership or type during recovery preparation")
+        fd_in = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        fd_out = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd_in, "rb") as input_stream, os.fdopen(fd_out, "wb") as output_stream:
+            shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        if _digest(target) != entry["sha256"]:
+            raise DeploymentError("installed backend changed while preparing lifecycle recovery")
+        os.chmod(target, stat.S_IMODE(info.st_mode))
+    helper = destination / "installer"
+    helper.mkdir(mode=0o700)
+    owner = selected_source / "installer/controlled_backend_lifecycle.py"
+    if not owner.is_file() or not callable(getattr(lifecycle, "_preflight_timer_restore", None)):
+        raise DeploymentIncomplete("selected lifecycle owner lacks the D2 timer restoration contract")
+    shutil.copyfile(owner, helper / owner.name)
+    os.chmod(helper / owner.name, 0o600)
+    return destination
+
+
+def _materialize_recoverable_old_source(paths: Paths, selected_source: Path, lifecycle,
+                                        destination: Path) -> Path:
+    installed = paths.target("opt/fwrouter-api")
+    digest = lifecycle._manifest_digest(lifecycle._backend_manifest(installed))
+    if _known_installed_backend(paths, digest):
+        return _materialize_installed_backend_source(paths, selected_source, lifecycle, destination)
+    candidates = []
+    if paths.development_source and isinstance(paths.development_source.get("path"), str):
+        candidates.append(Path(paths.development_source["path"]))
+    if paths.config.exists():
+        try:
+            configured, _ = _read_config(paths.config, paths.owner_uid)
+            candidates.append(configured)
+        except DeploymentError:
+            pass
+    for candidate in dict.fromkeys(candidates):
+        try:
+            _check_trusted_tree(candidate, paths.owner_uid)
+            _validate_source_tree(candidate, paths.owner_uid)
+            commit = _find_source_commit(candidate, installed, lifecycle)
+            return _materialize_old_source(candidate, commit, destination)
+        except (DeploymentError, OSError):
+            continue
+    raise DeploymentIncomplete("The installed OLD backend is UNKNOWN and no trusted local source reconstructs it.")
+
+
 def _digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -515,8 +713,12 @@ def _read_identity(paths: Paths) -> dict:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise DeploymentError("deployment identity record is malformed") from exc
+    required_keys = {"schema", "last_verified_install", "operation", "components"}
     if (not isinstance(value, dict) or value.get("schema") != "fwrouter-deployment-identity/v1"
-            or set(value) != {"schema", "last_verified_install", "operation", "components"}):
+            or set(value) - {"stable_admission", "stable_current", "stable_previous", "dev_current", "dev_admission", "dev_retired", "dev_baseline_backup", "rollback_admission",
+                             "database_rollback", "database_rollback_candidate", "database_rollback_retired",
+                             "retired_ui_releases"} != required_keys
+            or ("stable_admission" in value and not _valid_qualification(value["stable_admission"]))):
         raise DeploymentError("deployment identity record has an invalid shape")
     def valid_digest(item: object) -> bool:
         return (isinstance(item, str) and len(item) == 64
@@ -530,12 +732,36 @@ def _read_identity(paths: Paths) -> dict:
                 and all(valid_digest(digest) for digest in item["host_pair_sha256"].values()))
 
     def validate_native(item: object) -> bool:
-        return (isinstance(item, dict) and item.get("status") == "NOT_VERIFIED"
-                and isinstance(item.get("scope"), str) and isinstance(item.get("evidence_refs"), list)
-                and all(isinstance(ref, str) for ref in item["evidence_refs"]))
+        if (not isinstance(item, dict) or not isinstance(item.get("scope"), str)
+                or not isinstance(item.get("evidence_refs"), list)
+                or any(not isinstance(ref, str) for ref in item["evidence_refs"])):
+            return False
+        return (item.get("status") == "NOT_VERIFIED"
+                or (item.get("status") == "PASS" and item["scope"] == "ui"
+                    and len(item["evidence_refs"]) == 1 and _hex(item["evidence_refs"][0], 64)))
 
     def validate_acceptance(item: object) -> bool:
-        return isinstance(item, dict) and item.get("status") == "NOT_VERIFIED"
+        return (isinstance(item, dict) and (item.get("status") == "NOT_VERIFIED"
+                or (item.get("status") == "VERIFIED" and isinstance(item.get("verified_at"), str))))
+
+    def stable_provenance(item: dict) -> bool:
+        qualification = item.get("qualification")
+        return (_valid_qualification(qualification) and item.get("mode") == "STABLE"
+                and item.get("path") == MAIN_ORIGIN and item.get("dirty") is False
+                and item.get("provenance") == "verified_actual_main_ci"
+                and item.get("qualification_status") == "VERIFIED_MAIN_CI"
+                and item.get("git_sha") == qualification["source_sha"])
+
+    def dev_provenance(item: dict) -> bool:
+        return (item.get("mode") == "DEV" and item.get("provenance") == "local_development_worktree"
+                and item.get("qualification_status") == "NOT_VERIFIED"
+                and _hex(item.get("git_sha"), 40) and _hex(item.get("base_git_sha"), 40)
+                and isinstance(item.get("dirty"), bool) and valid_digest(item.get("content_sha256"))
+                and valid_digest(item.get("snapshot_sha256"))
+                and isinstance(item.get("path"), str) and item["path"].startswith("/")
+                and isinstance(item.get("snapshot_path"), str)
+                and Path(item["snapshot_path"]).name == f"{item['content_sha256']}.tar"
+                and Path(item["snapshot_path"]).parent.name == DEV_SOURCE_ROOT)
 
     components = value["components"]
     if not isinstance(components, dict) or set(components) != {"backend", "ui", "host_pair", "updater"}:
@@ -548,10 +774,17 @@ def _read_identity(paths: Paths) -> dict:
                 or len(component["source_sha"]) != 40
                 or any(ch not in "0123456789abcdef" for ch in component["source_sha"])
                 or not isinstance(component.get("provenance"), str)
-                or component.get("provenance") not in {"local_git", "verified_actual_main_ci"}
+                or component.get("provenance") not in {"local_git", "verified_actual_main_ci", "local_development_worktree"}
                 or not isinstance(component.get("installed_sha256"), (str, dict))
                 or not isinstance(component.get("operation_id"), str)
-                or component.get("mode") != "UNKNOWN"
+                or component.get("mode") not in {"UNKNOWN", "STABLE", "DEV"}
+                or (component.get("mode") == "STABLE"
+                    and (component.get("source_path") != MAIN_ORIGIN
+                         or component.get("provenance") != "verified_actual_main_ci"
+                         or component.get("qualification_status") != "VERIFIED_MAIN_CI"))
+                or (component.get("mode") == "DEV"
+                    and (component.get("provenance") != "local_development_worktree"
+                         or component.get("qualification_status") != "NOT_VERIFIED"))
                 or component.get("qualification_status") not in {"NOT_VERIFIED", "VERIFIED_MAIN_CI"}):
             raise DeploymentError(f"deployment identity {name} component is malformed")
         try:
@@ -573,9 +806,10 @@ def _read_identity(paths: Paths) -> dict:
         if (not isinstance(last, dict) or not isinstance(last.get("path"), str)
                 or not isinstance(last.get("git_sha"), str) or len(last["git_sha"]) != 40
                 or any(ch not in "0123456789abcdef" for ch in last["git_sha"])
-                or last.get("provenance") not in {"local_git", "UNKNOWN"}
-                or last.get("qualification_status") != "NOT_VERIFIED"
-                or last.get("mode") != "UNKNOWN" or not isinstance(last.get("dirty"), bool)
+                or not (stable_provenance(last) or dev_provenance(last)
+                        or (last.get("provenance") in {"local_git", "UNKNOWN"}
+                            and last.get("qualification_status") == "NOT_VERIFIED"
+                            and last.get("mode") == "UNKNOWN" and isinstance(last.get("dirty"), bool)))
                 or not validate_content(last.get("source_content"))
                 or not validate_content(last.get("installed_content"))
                 or last.get("source_content") != last.get("installed_content")
@@ -626,9 +860,10 @@ def _read_identity(paths: Paths) -> dict:
                     or not isinstance(requested, dict) or not isinstance(requested.get("path"), str)
                     or not isinstance(requested.get("git_sha"), str) or len(requested["git_sha"]) != 40
                     or any(ch not in "0123456789abcdef" for ch in requested["git_sha"])
-                    or requested.get("mode") != "UNKNOWN" or requested.get("provenance") != "local_git"
-                    or requested.get("qualification_status") != "NOT_VERIFIED"
-                    or not isinstance(requested.get("dirty"), bool)
+                    or not (stable_provenance(requested) or dev_provenance(requested)
+                            or (requested.get("mode") == "UNKNOWN" and requested.get("provenance") == "local_git"
+                                and requested.get("qualification_status") == "NOT_VERIFIED"
+                                and isinstance(requested.get("dirty"), bool)))
                     or not validate_content(operation.get("source_content"))
                     or not validate_native(operation.get("native_proof"))
                     or not validate_acceptance(operation.get("acceptance"))
@@ -644,6 +879,58 @@ def _read_identity(paths: Paths) -> dict:
                     raise ValueError
             except (ValueError, TypeError, AttributeError) as exc:
                 raise DeploymentError("deployment identity install operation ID is malformed") from exc
+    for pin_name in ("stable_current", "stable_previous"):
+        previous = value.get(pin_name)
+        if previous is None:
+            continue
+        if (not isinstance(previous, dict) or set(previous) != {"source_sha", "qualification", "installed_content",
+                "accepted_at", "proof_sha256"} or not _hex(previous["source_sha"], 40)
+                or not _valid_qualification(previous["qualification"])
+                or previous["qualification"]["source_sha"] != previous["source_sha"]
+                or not validate_content(previous["installed_content"])
+                or not isinstance(previous["accepted_at"], str) or not _hex(previous["proof_sha256"], 64)):
+            raise DeploymentError("Stable accepted version pin is malformed")
+    dev_pin = value.get("dev_current")
+    if dev_pin is not None and (not isinstance(dev_pin, dict) or not dev_provenance(dev_pin)):
+        raise DeploymentError("Development source pin is malformed")
+    dev_retired = value.get("dev_retired")
+    if dev_retired is not None and (not isinstance(dev_retired, dict) or not dev_provenance(dev_retired)):
+        raise DeploymentError("retired Development snapshot pin is malformed")
+    dev_admission = value.get("dev_admission")
+    if dev_admission is not None:
+        if (not isinstance(dev_admission, dict) or not dev_provenance(dev_admission)
+                or not isinstance(dev_admission.get("retire_paths"), list)
+                or len(dev_admission["retire_paths"]) > MAX_TREE_ENTRIES
+                or any(not isinstance(row, dict) or set(row) != {"path", "sha256", "size"}
+                       or not isinstance(row.get("path"), str) or not _hex(row.get("sha256"), 64)
+                       or type(row.get("size")) is not int or row["size"] < 0
+                       for row in dev_admission["retire_paths"])):
+            raise DeploymentError("Development recovery admission is malformed")
+    if value.get("dev_baseline_backup") is not None and not (
+            _valid_managed_backup(value["dev_baseline_backup"], complete=False)
+            or _valid_managed_backup(value["dev_baseline_backup"], complete=True)):
+        raise DeploymentError("Development baseline database backup pin is malformed")
+    rollback = value.get("rollback_admission")
+    if rollback is not None and (not isinstance(rollback, dict) or not _valid_qualification(rollback)):
+        raise DeploymentError("Stable rollback admission is malformed")
+    if rollback is not None and value.get("stable_admission") != rollback:
+        raise DeploymentError("Stable rollback admission does not match its source pin")
+    retired = value.get("retired_ui_releases", {})
+    if (not isinstance(retired, dict) or len(retired) > 128
+            or any(not _hex(digest, 64) or not isinstance(pin, list) or len(pin) != 2
+                   or any(type(part) is not int or part < 0 for part in pin)
+                   for digest, pin in retired.items())):
+        raise DeploymentError("retired UI release ownership pins are malformed")
+    if value.get("database_rollback") is not None and not _valid_managed_backup(
+            value["database_rollback"], complete=True):
+        raise DeploymentError("managed database rollback pin is malformed")
+    candidate = value.get("database_rollback_candidate")
+    if candidate is not None and not (_valid_managed_backup(candidate, complete=False)
+                                      or _valid_managed_backup(candidate, complete=True)):
+        raise DeploymentError("managed database rollback candidate is malformed")
+    retired_backup = value.get("database_rollback_retired")
+    if retired_backup is not None and not _valid_managed_backup(retired_backup, complete=True):
+        raise DeploymentError("retired database rollback pin is malformed")
     return value
 
 
@@ -655,6 +942,8 @@ def _write_identity(paths: Paths, value: dict) -> None:
             or info.st_uid != paths.owner_uid or stat.S_IMODE(info.st_mode) != 0o700):
         raise DeploymentError("controlled lifecycle state directory is unsafe")
     payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(payload) > 128 * 1024:
+        raise DeploymentIncomplete("deployment identity exceeds its durable recovery bound")
     fd = -1
     temporary = ""
     try:
@@ -690,6 +979,77 @@ def _source_content_identity(source: Path, lifecycle, ui, paths: Paths) -> dict:
     ui_digest, _ = ui._walk_tree(source / "ui", owner_uid=paths.owner_uid, require_index=True)
     host = {source_rel: _digest(source / source_rel) for source_rel, _, _ in HOST_ROWS}
     return {"backend_sha256": backend, "ui_sha256": ui_digest, "host_pair_sha256": host}
+
+
+def _tree_bytes(root: Path) -> int:
+    """Bounded advisory size estimate that skips symlinked venv/runtime entries."""
+    if not root.exists():
+        return 0
+    total = 0
+    entries = 0
+    for directory, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        base = Path(directory)
+        for name in list(dirnames):
+            info = (base / name).lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                dirnames.remove(name)
+                continue
+            entries += 1
+        for name in filenames:
+            info = (base / name).lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            total += info.st_size
+            entries += 1
+            if entries > MAX_SOURCE_ENTRIES:
+                raise DeploymentError("storage preflight exceeds the bounded source inventory")
+    return total
+
+
+def _existing_mount_path(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists():
+        if candidate == candidate.parent:
+            return candidate
+        candidate = candidate.parent
+    return candidate
+
+
+def _storage_preflight(paths: Paths, source: Path, changed: list[str], result: dict) -> None:
+    source_bytes = _tree_bytes(source / "backend") + _tree_bytes(source / "ui")
+    old_bytes = 0
+    target_root = paths.target("opt")
+    if "Backend" in changed:
+        old_bytes += _tree_bytes(paths.target("opt/fwrouter-api"))
+    if "UI" in changed:
+        old_bytes += _tree_bytes(paths.target("opt/fwrouter-ui"))
+    # Transactional publication can temporarily hold the candidate and the current
+    # generation together. Keep a 20% margin for directory entries and metadata.
+    required = int((source_bytes + old_bytes) * 1.2) + 16 * 1024 * 1024
+    temp_free = __import__("shutil").disk_usage("/tmp").free
+    install_free = __import__("shutil").disk_usage(_existing_mount_path(target_root)).free
+    database = paths.target("var/lib/fwrouter-v2/fwrouter.db")
+    database_bytes = database.stat().st_size if database.exists() and "Backend" in changed else 0
+    for suffix in ("-wal", "-shm"):
+        sidecar = database.with_name(database.name + suffix)
+        if sidecar.exists() and "Backend" in changed:
+            database_bytes += sidecar.stat().st_size
+    backup_free = __import__("shutil").disk_usage(_existing_mount_path(paths.state_dir)).free
+    result["storage"] = {"temporary_required_bytes": source_bytes,
+                         "temporary_available_bytes": temp_free,
+                         "persistent_required_bytes": required,
+                         "persistent_available_bytes": install_free,
+                         "database_backup_required_bytes": database_bytes,
+                         "database_backup_available_bytes": backup_free,
+                         "managed_release_bytes": _tree_bytes(paths.target("opt/fwrouter-api"))
+                            + _tree_bytes(paths.target("opt/.fwrouter-ui-releases")),
+                         "cleanup_reclaimed_bytes": 0, "retained": []}
+    if temp_free < source_bytes:
+        raise DeploymentIncomplete(f"temporary storage needs {source_bytes} bytes; /tmp has {temp_free} available")
+    if install_free < required:
+        raise DeploymentIncomplete(f"deployment needs {required} bytes on the installation filesystem; only {install_free} are available")
+    if backup_free < database_bytes:
+        raise DeploymentIncomplete(f"rollback backup needs {database_bytes} bytes on the database state filesystem; only {backup_free} are available")
 
 
 def _installed_content_identity(source: Path, paths: Paths, lifecycle, ui) -> dict:
@@ -743,10 +1103,21 @@ def _record_operation(paths: Paths, lock_module, source: Path, commit: str, life
         contents = _source_content_identity(source, lifecycle, ui, paths)
         operation = _new_operation_identity(source, commit, contents, operation_id,
                                             lifecycle_status, status)
+        if paths.stable_source is not None:
+            operation["requested_source"] = paths.stable_source.provenance()
+            operation["native_proof"]["scope"] = "owner_readback_required"
+            operation["acceptance"]["reason"] = "native_proof_requires_independent_runtime_pins"
+        elif paths.development_source is not None:
+            operation["requested_source"] = {**paths.development_source, "git_sha": commit,
+                "mode": "DEV", "qualification_status": "NOT_VERIFIED"}
+            operation["native_proof"]["scope"] = "owner_readback_required"
+            operation["acceptance"]["reason"] = "development_source_is_not_stable_qualified"
         operation["pending_units"] = pending_units or []
         operation["pending_units_status"] = "OBSERVED" if pending_units is not None else "UNKNOWN"
         if details:
             operation.update(details)
+        if paths.retire_paths is not None:
+            operation["retire_paths"] = paths.retire_paths
         if status in {"FAILED", "PENDING"}:
             try:
                 operation["actual_installed_content"] = _installed_content_identity(
@@ -767,19 +1138,28 @@ def _record_operation(paths: Paths, lock_module, source: Path, commit: str, life
                 "lifecycle_operation_id": operation_id, "completed_at": time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "observed_runtime_image_id": _observed_runtime_image_ids(paths),
-                "qualification_status": "NOT_VERIFIED",
                 "native_proof": operation["native_proof"], "acceptance": operation["acceptance"]}
+            if paths.development_source is not None:
+                old_dev = record.get("dev_current")
+                new_dev = operation["requested_source"]
+                if isinstance(old_dev, dict) and old_dev.get("snapshot_sha256") != new_dev.get("snapshot_sha256"):
+                    record["dev_retired"] = old_dev
+                record["dev_current"] = operation["requested_source"]
             operation["completed_at"] = record["last_verified_install"]["completed_at"]
+            provenance = operation["requested_source"]
+            component_origin = {key: provenance[key] for key in ("provenance", "mode", "qualification_status")}
+            source_base = (operation["requested_source"].get("path")
+                           if operation["requested_source"].get("mode") == "DEV" else None)
             for name, source_rel, digest_key in (
                     ("backend", "backend", "backend_sha256"),
                     ("ui", "ui", "ui_sha256")):
-                record["components"][name] = {"source_path": str(source / source_rel),
-                    "source_sha": commit, "provenance": "local_git", "mode": "UNKNOWN",
-                    "qualification_status": "NOT_VERIFIED", "installed_sha256": installed[digest_key],
+                record["components"][name] = {"source_path": MAIN_ORIGIN if paths.stable_source else
+                    str(Path(source_base) / source_rel) if source_base else str(source / source_rel),
+                    "source_sha": commit, **component_origin, "installed_sha256": installed[digest_key],
                     "operation_id": operation_id}
-            record["components"]["host_pair"] = {"source_path": str(source / "host"),
-                "source_sha": commit, "provenance": "local_git", "mode": "UNKNOWN",
-                "qualification_status": "NOT_VERIFIED", "installed_sha256": installed["host_pair_sha256"],
+            record["components"]["host_pair"] = {"source_path": MAIN_ORIGIN if paths.stable_source else
+                str(Path(source_base) / "host") if source_base else str(source / "host"),
+                "source_sha": commit, **component_origin, "installed_sha256": installed["host_pair_sha256"],
                 "operation_id": operation_id}
             updater_source = source / "installer/local_deploy.py"
             updater_installed = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
@@ -788,10 +1168,11 @@ def _record_operation(paths: Paths, lock_module, source: Path, commit: str, life
                 if updater_digest == _digest(updater_source):
                     prior_updater = record["components"].get("updater")
                     if not isinstance(prior_updater, dict) or prior_updater.get("installed_sha256") != updater_digest:
-                        record["components"]["updater"] = {"source_path": str(updater_source),
-                            "source_sha": commit, "provenance": "local_git", "mode": "UNKNOWN",
-                            "qualification_status": "NOT_VERIFIED", "installed_sha256": updater_digest,
+                        record["components"]["updater"] = {"source_path": MAIN_ORIGIN if paths.stable_source else str(updater_source),
+                            "source_sha": commit, **component_origin, "installed_sha256": updater_digest,
                             "operation_id": operation_id}
+            if paths.stable_source and not record.get("rollback_admission"):
+                record.pop("stable_admission", None)
         record["operation"] = operation
         _write_identity(paths, record)
     finally:
@@ -816,23 +1197,493 @@ def _observed_runtime_image_ids(paths: Paths) -> dict:
 
 
 def _assert_requested_source(paths: Paths, source: Path, commit: str) -> None:
+    if paths.stable_source is not None:
+        selected = paths.stable_source
+        if (source != selected.root or commit != selected.commit
+                or _read_identity(paths).get("stable_admission") != selected.qualification
+                or _source_commit(source, paths.owner_uid) != commit):
+            raise DeploymentError("qualified Stable source or durable admission changed during deployment")
+        return
+    if paths.development_source is not None:
+        identity = _read_identity(paths)
+        if identity.get("stable_admission") is not None:
+            raise DeploymentError("rerun --stable to complete the admitted Stable operation")
+        admission = identity.get("dev_admission")
+        if isinstance(admission, dict) and (admission.get("git_sha") != commit
+                or admission.get("snapshot_sha256") != paths.development_source.get("snapshot_sha256")):
+            raise DeploymentError("Development recovery admission changed before source publication")
+        operation = identity.get("operation") if identity.get("status") != "UNKNOWN" else None
+        if isinstance(operation, dict) and operation.get("status") in {"PENDING", "FAILED"}:
+            requested = operation.get("requested_source", {})
+            if (requested.get("mode") != "DEV" or requested.get("git_sha") != commit
+                    or requested.get("snapshot_sha256") != paths.development_source.get("snapshot_sha256")):
+                raise DeploymentError("unfinished deployment must resume from its captured Development snapshot")
+        if _source_commit(source, paths.owner_uid) != commit:
+            raise DeploymentError("captured Development source changed before publication")
+        return
     if paths.test_driver and not paths.config.exists():
         return
+    identity = _read_identity(paths)
+    if identity.get("stable_admission") is not None:
+        raise DeploymentError("rerun --stable to complete the interrupted Stable deployment")
+    if identity.get("dev_admission") is not None:
+        raise DeploymentError("rerun --dev to complete the interrupted Development deployment")
     configured_source, configured_commit = _read_config(paths.config, paths.owner_uid)
     if configured_source != source or configured_commit != commit:
         raise DeploymentError("selected source configuration changed during deployment")
 
 
+def _known_installed_backend(paths: Paths, digest: str) -> bool:
+    """Check a backend against durable Stable/DEV identity, independent of source checkout."""
+    identity = _read_identity(paths)
+    rows = [identity.get("last_verified_install"), identity.get("stable_current"),
+            identity.get("stable_previous")]
+    operation = identity.get("operation")
+    if isinstance(operation, dict):
+        rows.append(operation.get("actual_installed_content"))
+    for row in rows:
+        content = row.get("installed_content") if isinstance(row, dict) else None
+        if ((isinstance(content, dict) and content.get("backend_sha256") == digest)
+                or (isinstance(row, dict) and row.get("backend_sha256") == digest)):
+            return True
+    return False
+
+
+def _installed_source_reconstruction_required(paths: Paths) -> bool:
+    last = _read_identity(paths).get("last_verified_install") or {}
+    return paths.development_source is not None or last.get("mode") == "DEV"
+
+
+def _prepare_backend_retirements(paths: Paths, source: Path, lifecycle) -> list[dict]:
+    """Pin source-owned backend removals before stopping lifecycle units."""
+    selected = lifecycle._backend_manifest(source / "backend")
+    selected_paths = {entry["path"] for entry in selected}
+    installed = lifecycle._backend_manifest(paths.target("opt/fwrouter-api"))
+    installed_digest = lifecycle._manifest_digest(installed)
+    if not _known_installed_backend(paths, installed_digest):
+        recovered = False
+        candidates = []
+        if paths.development_source and isinstance(paths.development_source.get("path"), str):
+            candidates.append(Path(paths.development_source["path"]))
+        if paths.config.exists():
+            try:
+                configured, _ = _read_config(paths.config, paths.owner_uid)
+                candidates.append(configured)
+            except DeploymentError:
+                pass
+        for candidate in dict.fromkeys(candidates):
+            try:
+                _check_trusted_tree(candidate, paths.owner_uid)
+                _validate_source_tree(candidate, paths.owner_uid)
+                _find_source_commit(candidate, paths.target("opt/fwrouter-api"), lifecycle)
+                recovered = True
+                break
+            except (DeploymentError, OSError):
+                continue
+        if not recovered and {entry["path"] for entry in installed} - selected_paths:
+            raise DeploymentIncomplete("Installed backend has unknown ownership; cannot safely retire extra source files.")
+        if not recovered and not {entry["path"] for entry in installed}.issubset(selected_paths):
+            raise DeploymentIncomplete("Installed backend has unknown ownership; cannot safely proceed with DEV.")
+        if not recovered:
+            return []
+    return [{"path": item["path"], "sha256": item["sha256"], "size": item["size"]}
+            for item in installed if item["path"] not in selected_paths]
+
+
+def _retire_installed_backend_files(paths: Paths, source: Path, lifecycle,
+                                   retirement: list[dict]) -> None:
+    if not retirement:
+        return
+    selected = {entry["path"] for entry in lifecycle._backend_manifest(source / "backend")}
+    plan = {item["path"]: item for item in retirement}
+    current = lifecycle._backend_manifest(paths.target("opt/fwrouter-api"))
+    for entry in current:
+        name = entry["path"]
+        if name in selected:
+            continue
+        pinned = plan.get(name)
+        if pinned is None or entry["sha256"] != pinned["sha256"] or entry["size"] != pinned["size"]:
+            raise DeploymentError("installed backend contains an unpinned extra file; refusing DEV retirement")
+    for name, pinned in plan.items():
+        rel = PurePosixPath(name)
+        if rel.is_absolute() or any(part in {"", ".", ".."} for part in rel.parts):
+            raise DeploymentError("backend retirement plan contains an unsafe path")
+        target = paths.target("opt/fwrouter-api").joinpath(*rel.parts)
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            continue
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != paths.owner_uid or info.st_size != pinned["size"]
+                or _digest(target) != pinned["sha256"]):
+            raise DeploymentError("backend retirement target changed from its pinned source identity")
+        target.unlink()
+        parent = target.parent
+        backend_root = paths.target("opt/fwrouter-api")
+        while parent != backend_root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def _record_development_acceptance(paths: Paths, proof: dict, lifecycle, ui,
+                                  source: Path, commit: str) -> None:
+    if proof.get("status") != "PASS" or proof.get("scope") != "ui" or not _hex(proof.get("proof_sha256"), 64):
+        raise DeploymentError("Development runtime proof does not contain verified evidence")
+    if paths.development_source is None:
+        raise DeploymentError("Development acceptance requires the admitted snapshot")
+    with _configuration_component_lock(paths):
+        installed = _installed_content_identity(source, paths, lifecycle, ui)
+        record = _identity_record_base(paths)
+        operation = record.get("operation") or {}
+        last = record.get("last_verified_install") or {}
+        requested = operation.get("requested_source") or {}
+        admission = record.get("dev_admission")
+        if (operation.get("status") != "VERIFIED_CONTENT"
+                or requested.get("mode") != "DEV" or requested.get("git_sha") != commit
+                or last.get("mode") != "DEV" or last.get("git_sha") != commit
+                or last.get("installed_content") != installed
+                or any(requested.get(key) != value for key, value in paths.development_source.items())
+                or (admission is not None and any(admission.get(key) != value
+                    for key, value in paths.development_source.items()))):
+            raise DeploymentError("Development identity changed before runtime acceptance publication")
+        if last.get("acceptance", {}).get("status") == "VERIFIED" and admission is None:
+            return
+        acceptance = {"status": "VERIFIED", "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        evidence = {"status": "PASS", "scope": "ui", "evidence_refs": [proof["proof_sha256"]]}
+        for target in (operation, last):
+            target["native_proof"] = evidence
+            target["acceptance"] = acceptance
+        record.pop("dev_admission", None)
+        _write_identity(paths, record)
+
+
+def _cleanup_development_snapshots(paths: Paths, result: dict) -> None:
+    directory = _dev_source_directory(paths)
+    storage = result.setdefault("storage", {})
+    try:
+        with _configuration_component_lock(paths):
+            record = _read_identity(paths)
+            retired = record.get("dev_retired")
+            current = record.get("dev_current")
+            admission = record.get("dev_admission")
+            operation = record.get("operation") or {}
+            protected = {item["snapshot_path"] for item in
+                         (current, admission, operation.get("requested_source"))
+                         if isinstance(item, dict) and item.get("snapshot_path")}
+            for anchor in sorted(protected):
+                storage.setdefault("retained", []).append(
+                    {"resource": Path(anchor).name, "reason": "current or pending DEV recovery reference"})
+            if retired is None or retired["snapshot_path"] in protected:
+                return
+            capsule = Path(retired["snapshot_path"])
+            if capsule.parent != directory or capsule.name != f"{retired['content_sha256']}.tar":
+                raise DeploymentError("retired DEV snapshot is outside the owned snapshot directory")
+            reclaimed = 0
+            try:
+                info = capsule.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                root = directory.lstat()
+                if (not stat.S_ISDIR(root.st_mode) or root.st_uid != paths.owner_uid
+                        or stat.S_IMODE(root.st_mode) != 0o700 or not stat.S_ISREG(info.st_mode)
+                        or info.st_uid != paths.owner_uid or stat.S_IMODE(info.st_mode) != 0o600
+                        or info.st_nlink != 1 or _backup_file_digest(capsule, info) != retired["snapshot_sha256"]):
+                    raise DeploymentError("retired DEV snapshot ownership could not be verified")
+                reclaimed = info.st_blocks * 512
+                capsule.unlink()
+            try:
+                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                pass
+            else:
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            record.pop("dev_retired")
+            _write_identity(paths, record)
+            storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + reclaimed
+    except (OSError, DeploymentError) as exc:
+        storage.setdefault("cleanup_failures", []).append(
+            {"resource": "DEV snapshots", "reason": str(exc) if isinstance(exc, DeploymentError)
+             else type(exc).__name__})
+
+
+def _remember_development_admission(paths: Paths, source: dict, previous: dict,
+                                    acknowledged: bool) -> None:
+    with _configuration_component_lock(paths):
+        record = _identity_record_base(paths)
+        if record.get("stable_admission") is not None:
+            raise DeploymentIncomplete("Stable admission appeared before DEV recovery reservation")
+        current = record.get("last_verified_install") or {}
+        admitted = record.get("dev_admission")
+        if admitted is not None:
+            if admitted != source:
+                raise DeploymentIncomplete("A different DEV snapshot is already admitted; resume it first")
+            return
+        if current != previous:
+            raise DeploymentIncomplete("Installed identity changed during DEV preparation; repeat the command.")
+        if current.get("mode") != "DEV" and not acknowledged:
+            raise DeploymentIncomplete("The active runtime is Stable. Rerun with --acknowledge-stable-replacement.")
+        capsule = Path(source["snapshot_path"])
+        info = capsule.lstat()
+        if (capsule.parent != _dev_source_directory(paths) or not stat.S_ISREG(info.st_mode)
+                or info.st_uid != paths.owner_uid or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1 or _backup_file_digest(capsule, info) != source["snapshot_sha256"]):
+            raise DeploymentError("Development snapshot changed before durable admission")
+        record["dev_admission"] = source
+        _write_identity(paths, record)
+
+
+def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
+                              acknowledge_stable_replacement: bool, owner_driver, system_driver,
+                              progress) -> None:
+    identity = _read_identity(paths)
+    if identity.get("stable_admission") is not None:
+        raise DeploymentIncomplete("A Stable operation is pending; rerun --stable to complete it first.")
+    operation = identity.get("operation") if identity.get("status") != "UNKNOWN" else None
+    admission = identity.get("dev_admission")
+    pending_dev = (operation if isinstance(operation, dict)
+                  and operation.get("status") in {"PENDING", "FAILED"}
+                  and operation.get("requested_source", {}).get("mode") == "DEV" else None)
+    if isinstance(operation, dict) and operation.get("status") in {"PENDING", "FAILED"} and pending_dev is None:
+        raise DeploymentIncomplete("Another deployment operation is pending; resume it before selecting DEV.")
+
+    last = identity.get("last_verified_install") or {}
+    current_mode = last.get("mode", "UNKNOWN")
+    replacing_stable = current_mode != "DEV" and admission is None
+    if replacing_stable and not acknowledge_stable_replacement:
+        raise DeploymentIncomplete("DEV will replace the currently installed runtime. Rerun with --acknowledge-stable-replacement.")
+    if replacing_stable:
+        result["previous_version"] = last.get("git_sha")
+        progress("Acknowledged: DEV will replace the active Stable runtime; the qualified Stable rollback pin is retained")
+
+    if pending_dev is not None:
+        metadata = dict(pending_dev["requested_source"])
+        metadata["retire_paths"] = operation.get("retire_paths", [])
+    elif admission is not None:
+        metadata = dict(admission)
+    else:
+        if identity.get("dev_retired") is not None:
+            _cleanup_development_snapshots(paths, result)
+            if result.get("storage", {}).get("cleanup_failures"):
+                raise DeploymentIncomplete("An older DEV snapshot could not be safely retired; resolve cleanup before another DEV deployment.")
+        progress("Capturing immutable DEV source snapshot")
+        with _configuration_component_lock(paths):
+            metadata = _dev_snapshot_capture(source_path, paths)
+        if metadata.pop("_created_by_capture", False):
+            result["_dev_unadmitted_snapshot"] = dict(metadata)
+    if not isinstance(metadata.get("snapshot_path"), str):
+        raise DeploymentError("Development snapshot reference is unavailable")
+    if pending_dev is not None:
+        progress("Resuming captured Development snapshot")
+    else:
+        progress("Captured immutable Development snapshot")
+
+    with _materialize_development_snapshot(paths, metadata) as (source, commit):
+        retire_paths = metadata.pop("retire_paths", None)
+        dev_source = {**metadata, "git_sha": commit, "mode": "DEV",
+                      "qualification_status": "NOT_VERIFIED"}
+        if retire_paths is None:
+            provisional = replace(paths, development_source=dev_source)
+            retire_paths = _prepare_backend_retirements(provisional, source,
+                                                         _source_modules(source, provisional)[0])
+        if (not isinstance(retire_paths, list) or len(retire_paths) > MAX_TREE_ENTRIES
+                or any(not isinstance(row, dict) or set(row) != {"path", "sha256", "size"}
+                       or not isinstance(row.get("path"), str) or not _hex(row.get("sha256"), 64)
+                       or type(row.get("size")) is not int or row["size"] < 0
+                       for row in retire_paths)):
+            raise DeploymentError("Development recovery retirement plan is malformed")
+        selected = replace(paths, development_source=dev_source, retire_paths=retire_paths)
+        lifecycle, lock_module, ui = _source_modules(source, selected)
+        if not callable(getattr(lifecycle, "_preflight_timer_restore", None)):
+            raise DeploymentIncomplete("Selected lifecycle owner lacks D2 automatic timer restoration; update the Development source first.")
+        owner_source_text = (source / "installer/controlled_backend_lifecycle.py").read_text(encoding="utf-8")
+        if "--restore-timers" not in owner_source_text:
+            raise DeploymentIncomplete("Selected lifecycle owner cannot safely restore prior active timers; update the Development source first.")
+        result["source_commit"] = metadata["base_git_sha"]
+        result["source"] = {key: metadata[key] for key in
+                             ("path", "base_git_sha", "dirty", "content_sha256", "file_count")}
+        result["source"]["snapshot_sha256"] = metadata["snapshot_sha256"]
+        progress(f"Source {metadata['path']} @ {metadata['base_git_sha'][:12]}"
+                 + (" (dirty)" if metadata["dirty"] else " (clean)"))
+        _stage(result, "Source", "PASS", f"{metadata['path']} @ {metadata['base_git_sha'][:12]}"
+               + (" (dirty)" if metadata["dirty"] else "") + "; immutable snapshot verified")
+        _stage(result, "CI", "SKIP", "CI qualification is not required for DEV")
+
+        status = check(selected, source, commit)
+        facts = _facts(source, selected, lifecycle, ui)
+        changed = [name for name, same in zip(("Backend", "UI", "Host files"), facts[:3]) if not same]
+        result["components"] = {"updated": [], "unchanged": [name for name in
+                                  ("Backend", "UI", "Host files") if name not in changed]}
+        unhealthy_current = status == "UNHEALTHY_CURRENT_SOURCE"
+        deploying = status not in {"NOOP", "UNHEALTHY_CURRENT_SOURCE"}
+        admitted_source = {**dev_source, "retire_paths": retire_paths}
+        publication_error = None
+        if deploying:
+            progress("Checking DEV preflight and lifecycle recovery")
+            _storage_preflight(selected, source, changed, result)
+            _strict_database_preflight(paths, lifecycle, source)
+            if "Backend" in changed:
+                _verify_dependency_compatibility(paths, source)
+            if not paths.test_driver:
+                checkpoint_path = paths.state_dir / "pending.json"
+                checkpoint = lifecycle._read_checkpoint(checkpoint_path) if checkpoint_path.exists() else {}
+                active = (checkpoint["active_units"] if checkpoint.get("status") == "pending" else
+                          {unit: lifecycle._is_active(unit) for unit in lifecycle.PERSISTENT_TIMERS})
+                lifecycle._preflight_timer_restore(source, active)
+            _stage(result, "Storage", "PASS", "temporary, installation and schema-27 recovery space verified")
+            _stage(result, "Preflight", "PASS", "shared lifecycle owner and timer restoration are ready")
+            if "Backend" in changed:
+                installed_digest = lifecycle._manifest_digest(
+                    lifecycle._backend_manifest(paths.target("opt/fwrouter-api")))
+                if not _known_installed_backend(paths, installed_digest):
+                    with _managed_staging_workspace(paths) as recovery_scratch:
+                        _materialize_recoverable_old_source(paths, source, lifecycle,
+                                                            recovery_scratch / "old-source")
+            _remember_development_admission(selected, admitted_source, last,
+                                            acknowledge_stable_replacement)
+            if "Backend" in changed:
+                _ensure_dev_baseline_backup(selected, lifecycle, _read_acceptance_policy(paths), result)
+            else:
+                result["backup"] = {"status": "NOT_REQUIRED", "detail": "no backend change requires a database recovery snapshot"}
+            backup_status = result.get("backup", {}).get("status")
+            _stage(result, "Backup", "PASS" if backup_status in {"CREATED", "REUSED", "VERIFIED"}
+                   else "SKIP" if backup_status in {"SKIP", "NOT_REQUIRED"} else "INCOMPLETE",
+                   result.get("backup", {}).get("detail") or "database recovery status unavailable")
+            if "UI" in changed:
+                _pin_retired_ui_release(selected, ui, expected_admission=admitted_source, development=True)
+            result.pop("_dev_unadmitted_snapshot", None)
+            progress(f"Applying DEV snapshot from base {metadata['base_git_sha'][:12]} through shared lifecycle")
+            try:
+                outcome = apply(selected, source, commit, owner_driver=owner_driver, system_driver=system_driver)
+                result["install_status"] = outcome["status"]
+                result["pending_units"] = outcome.get("pending_units", [])
+                result["components"]["updated"] = changed
+                result["components"]["unchanged"] = [name for name in ("Backend", "UI", "Host files")
+                                                        if name not in changed]
+            except (DeploymentError, RuntimeError, OSError, ValueError) as exc:
+                publication_error = str(exc) if isinstance(exc, (DeploymentError, RuntimeError)) else type(exc).__name__
+                result["warnings"].append("Inspect the lifecycle checkpoint and rerun --dev to resume the admitted snapshot.")
+                result["install_error"] = publication_error
+                result["pending_units"] = []
+        else:
+            _stage(result, "Storage", "SKIP", "content is unchanged")
+            _stage(result, "Backup", "SKIP", "no database migration or compatibility change")
+            _stage(result, "Preflight", "SKIP", "content NOOP; no component publication")
+            if not unhealthy_current and (identity.get("dev_current") != dev_source
+                    or last.get("mode") != "DEV"):
+                _remember_development_admission(selected, admitted_source, last,
+                                                acknowledge_stable_replacement)
+                op_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"fwrouter-dev:{commit}:{metadata['content_sha256']}"))
+                _record_operation(selected, lock_module, source, commit, lifecycle, ui, op_id,
+                                  "complete", "VERIFIED_CONTENT", [], details={"kind": "development_deploy"})
+
+        installed = _installed_content_identity(source, selected, lifecycle, ui)
+        matches = installed == _source_content_identity(source, lifecycle, ui, selected)
+        _stage(result, "Install", "FAIL" if publication_error else
+               "PASS" if matches and deploying else "SKIP" if matches else "FAIL",
+               publication_error or
+               (", ".join(changed) + " updated" if changed else "installed component files already match"))
+        result["installed_content"] = "VERIFIED" if matches else "FAILED"
+        _stage(result, "Identity", "PASS" if matches else "FAIL",
+               "installed component content matches the immutable DEV snapshot" if matches
+               else "installed content differs from captured DEV source")
+        _report_lifecycle(result, paths, lifecycle)
+        if paths.test_driver and "Timers" not in result["stages"]:
+            _stage(result, "Timers", "INCOMPLETE", "systemd timer state is intentionally not observed in a disposable fixture")
+        policy = _read_acceptance_policy(paths)
+        progress("Verifying DEV health and native runtime acceptance")
+        result["health"] = _read_health(paths, lifecycle, policy)
+        proof = (_native_acceptance(paths, lifecycle, installed["backend_sha256"], policy)
+                 if matches and not publication_error
+                 else {"status": "NOT_VERIFIED", "reason": "installed content verification failed"})
+        result["native_proof"] = proof
+        _stage(result, "Native proof", {"PASS": "PASS", "FAIL": "FAIL", "NOT_VERIFIED": "INCOMPLETE"}[proof["status"]],
+               proof.get("reason") or "fenced runtime acceptance verified")
+        states = {row["status"] for row in (*result["stages"].values(), *result["health"].values())}
+        acceptance_ready = (proof["status"] == "PASS" and matches
+                            and all(row["status"] == "PASS" for row in result["health"].values())
+                            and not result.get("pending_units")
+                            and all(result["stages"].get(name, {}).get("status") == "PASS"
+                                    for name in ("Lifecycle", "Timers", "Identity", "Native proof")))
+        if acceptance_ready and not unhealthy_current:
+            _record_development_acceptance(selected, proof, lifecycle, ui, source, commit)
+        if "FAIL" in states:
+            result["result"] = "FAILED"
+            result["warnings"].append("Resolve the failed health or installed-content check before repeating deployment.")
+        elif "INCOMPLETE" in states:
+            result["result"] = "INCOMPLETE"
+        else:
+            result["result"] = ("INCOMPLETE" if unhealthy_current and any(
+                row["status"] == "INCOMPLETE" for row in result["health"].values()) else
+                "FAILED" if unhealthy_current else
+                "SUCCESS" if deploying or last.get("mode") != "DEV" else "NOOP")
+        result["status"] = result["result"]
+        result["mode"] = "DEV"
+        result["acceptance"] = {"status": "VERIFIED" if acceptance_ready else "NOT_VERIFIED"}
+        _installed_version(result, _read_identity(paths))
+        result.setdefault("backup", {"status": "NOT_REQUIRED", "detail": "database schema remains 27"})
+        if result["result"] in {"SUCCESS", "NOOP"}:
+            _cleanup_retired_ui(paths, ui, result)
+            _cleanup_development_snapshots(paths, result)
+            if not paths.test_driver:
+                cleanup = _cleanup_expired_staging(paths)
+                result.setdefault("storage", {})["cleanup_reclaimed_bytes"] = (
+                    result["storage"].get("cleanup_reclaimed_bytes", 0) + cleanup["reclaimed_bytes"])
+                result["storage"].setdefault("cleanup_failures", []).extend(cleanup["failures"])
+        _refresh_storage_summary(paths, result, lifecycle=lifecycle)
+
+
+def _development_deploy(paths: Paths, result: dict, *, source_path: Path,
+                        acknowledge_stable_replacement: bool, owner_driver, system_driver,
+                        progress) -> None:
+    try:
+        _development_deploy_inner(paths, result, source_path=source_path,
+                                  acknowledge_stable_replacement=acknowledge_stable_replacement,
+                                  owner_driver=owner_driver, system_driver=system_driver, progress=progress)
+    finally:
+        metadata = result.pop("_dev_unadmitted_snapshot", None)
+        if isinstance(metadata, dict) and isinstance(metadata.get("snapshot_path"), str):
+            try:
+                with _configuration_component_lock(paths):
+                    identity = _read_identity(paths)
+                    operation = identity.get("operation") or {}
+                    refs = [identity.get("dev_current"), identity.get("dev_retired"),
+                            identity.get("dev_admission"), operation.get("requested_source")]
+                    referenced = any(isinstance(item, dict)
+                                     and item.get("snapshot_path") == metadata["snapshot_path"] for item in refs)
+                    capsule = Path(metadata["snapshot_path"])
+                    if (not referenced and capsule.parent == _dev_source_directory(paths)
+                            and capsule.name == f"{metadata.get('content_sha256')}.tar"):
+                        info = capsule.lstat()
+                        if (not stat.S_ISREG(info.st_mode) or info.st_uid != paths.owner_uid
+                                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                                or _backup_file_digest(capsule, info) != metadata.get("snapshot_sha256")):
+                            raise DeploymentError("unadmitted DEV snapshot ownership could not be verified")
+                        capsule.unlink()
+            except FileNotFoundError:
+                pass
+            except (OSError, DeploymentError) as exc:
+                result.setdefault("storage", {}).setdefault("cleanup_failures", []).append(
+                    {"resource": "unadmitted DEV snapshot", "reason": str(exc) if isinstance(
+                        exc, DeploymentError) else type(exc).__name__})
+
+
 @contextmanager
-def _configuration_component_lock(paths: Paths):
-    """Use the existing common component mutex without importing selected-source code."""
+def _configuration_component_lock(paths: Paths, *, command: bool = False):
+    """Acquire the CLI transaction mutex or the shared component mutex."""
     parent = paths.target("opt")
     parent_info = parent.lstat()
     if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
             or parent_info.st_uid not in {0, paths.owner_uid}
             or parent_info.st_mode & UNSAFE_WRITE):
         raise DeploymentError("component lock directory is unsafe")
-    lock_path = parent / ".fwrouter-component-install.lock"
+    lock_path = parent / (".fwrouter-deploy-command.lock" if command else ".fwrouter-component-install.lock")
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
@@ -852,7 +1703,7 @@ def _configuration_component_lock(paths: Paths):
 
 def _gh_api(endpoint: str, *, output_limit: int = 4 * 1024 * 1024) -> dict:
     if not Path("/usr/bin/gh").is_file():
-        raise DeploymentError("explicit updater self-upgrade requires /usr/bin/gh")
+        raise DeploymentError("GitHub qualification requires /usr/bin/gh")
     try:
         raw = _bounded_process(["/usr/bin/gh", "api", "--hostname", "github.com", endpoint],
                                limit=output_limit, timeout=30)
@@ -871,6 +1722,7 @@ def _gh_artifact_zip(artifact_id: str, destination: Path, *, expected_size: int,
                      size_limit: int = 128 * 1024 * 1024) -> None:
     if not isinstance(expected_size, int) or expected_size <= 0 or expected_size > size_limit:
         raise DeploymentError("GitHub evidence artifact size is invalid or exceeds its bound")
+    _require_staging_space(destination.parent, expected_size, 1)
     command = ["/usr/bin/gh", "api", "--hostname", "github.com", "-H",
                "Accept: application/vnd.github+json",
                f"repos/Coxf0rd/fwrouter/actions/artifacts/{artifact_id}/zip"]
@@ -965,6 +1817,10 @@ def _extract_evidence_zip(archive_path: Path, destination: Path) -> None:
             entries = archive.infolist()
             if not entries or len(entries) > max_entries:
                 raise DeploymentError("evidence artifact entry count is outside its bound")
+            expanded = sum(item.file_size for item in entries)
+            if expanded > max_bytes:
+                raise DeploymentError("evidence artifact exceeds its expanded-size bound")
+            _require_staging_space(destination if destination.exists() else destination.parent, expanded, len(entries) * 2)
             for item in entries:
                 name = item.filename
                 clean = name[:-1] if name.endswith("/") else name
@@ -1025,6 +1881,516 @@ def _successful_main_jobs(value: dict) -> bool:
     return len(required) == 1
 
 
+def _main_run_matches(run: dict, sha: str, run_id: int, attempt: int) -> bool:
+    return (run.get("id") == run_id and run.get("run_attempt") == attempt
+            and run.get("event") == "push" and run.get("head_branch") == "main"
+            and run.get("head_sha") == sha and run.get("status") == "completed"
+            and run.get("conclusion") == "success" and run.get("path") == MAIN_WORKFLOW
+            and isinstance(run.get("repository"), dict)
+            and run["repository"].get("full_name") == "Coxf0rd/fwrouter")
+
+
+def _main_artifact_matches(artifact: dict, qualification: dict) -> bool:
+    sha = qualification["source_sha"]
+    run_id, attempt = qualification["run_id"], qualification["run_attempt"]
+    workflow_run = artifact.get("workflow_run")
+    return (artifact.get("id") == qualification["artifact_id"] and artifact.get("expired") is False
+            and artifact.get("name") == f"fwrouter-main-evidence-{sha}-{run_id}-{attempt}"
+            and artifact.get("digest") == qualification["artifact_digest"]
+            and isinstance(workflow_run, dict) and workflow_run.get("id") == run_id
+            and workflow_run.get("head_sha") == sha and workflow_run.get("head_branch") == "main")
+
+
+def _verify_main_bundle(source: Path, scratch: Path, artifact: dict, qualification: dict) -> None:
+    sha = qualification["source_sha"]
+    run_id, attempt = str(qualification["run_id"]), str(qualification["run_attempt"])
+    archive_path = scratch / "main-evidence.zip"
+    _gh_artifact_zip(str(qualification["artifact_id"]), archive_path, expected_size=artifact.get("size_in_bytes"))
+    if f"sha256:{_digest(archive_path)}" != qualification["artifact_digest"]:
+        raise DeploymentError("downloaded evidence artifact differs from its GitHub API digest")
+    bundle_path = scratch / "bundle"
+    bundle_path.mkdir(mode=0o700)
+    _extract_evidence_zip(archive_path, bundle_path)
+    result = _run(["/usr/bin/python3", "-I", "-B", str(source / "tests/gates/evidence_bundle.py"),
+                   "verify", "--bundle", str(bundle_path), "--expected-sha", sha, "--event", "push",
+                   "--ref", "refs/heads/main", "--run-id", run_id, "--attempt", attempt, "--require-main"],
+                  timeout=180, clean_git_env=True)
+    if result.returncode != 0:
+        raise DeploymentError("exact-Main trusted evidence verifier rejected the downloaded artifact")
+    try:
+        verified = json.loads(result.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise DeploymentError("trusted evidence verifier returned no qualification result") from exc
+    expected = {"status": "evidence_verified_not_deploy_authorized", "source_sha": sha,
+                "run_id": run_id, "run_attempt": attempt, "strict_aggregate": "passed",
+                "offline_source_checkout": "verified"}
+    if not isinstance(verified, dict) or any(verified.get(key) != value for key, value in expected.items()):
+        raise DeploymentError("trusted evidence verifier result does not match Main qualification")
+
+
+def _api_rows(reply: dict, key: str) -> list[dict]:
+    rows = reply.get(key)
+    if (not isinstance(rows, list) or reply.get("total_count") != len(rows)
+            or any(not isinstance(row, dict) for row in rows)):
+        raise DeploymentError(f"GitHub {key} response is incomplete or paginated")
+    return rows
+
+
+def _current_main() -> str:
+    sha = _gh_api(f"{MAIN_REPO}/commits/main").get("sha")
+    if not _hex(sha, 40):
+        raise DeploymentError("GitHub returned no valid origin/main SHA")
+    return sha
+
+
+def _stable_qualification(source: Path, sha: str, scratch: Path, owner_uid: int) -> dict:
+    runs = _api_rows(_gh_api(
+        f"{MAIN_REPO}/actions/workflows/test-gates.yml/runs?branch=main&event=push&head_sha={sha}&per_page=100"),
+        "workflow_runs")
+    if not runs:
+        raise DeploymentIncomplete("Release Acceptance has no run for the exact origin/main SHA")
+    if any(not _positive_id(row.get("id")) or row.get("head_sha") != sha for row in runs):
+        raise DeploymentError("Release Acceptance run listing does not match the selected Main SHA")
+    run_id = max(row["id"] for row in runs)
+    run_endpoint = f"{MAIN_REPO}/actions/runs/{run_id}"
+    run = _gh_api(run_endpoint)
+    attempt = run.get("run_attempt")
+    if not _positive_id(attempt) or not _main_run_matches(run, sha, run_id, attempt):
+        if run.get("head_sha") == sha and run.get("status") in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            raise DeploymentIncomplete("Release Acceptance has not completed for the exact origin/main SHA")
+        raise DeploymentError("Release Acceptance did not pass exact-SHA push-to-Main qualification")
+    jobs_endpoint = f"{run_endpoint}/attempts/{attempt}/jobs?per_page=100"
+    if not _successful_main_jobs(_gh_api(jobs_endpoint)):
+        raise DeploymentError("Release Acceptance jobs are incomplete, failed, skipped or paginated")
+    artifacts = _api_rows(_gh_api(f"{run_endpoint}/artifacts?per_page=100"), "artifacts")
+    expected_name = f"fwrouter-main-evidence-{sha}-{run_id}-{attempt}"
+    matches = [row for row in artifacts if row.get("name") == expected_name]
+    if not matches:
+        raise DeploymentIncomplete("Release Acceptance is missing the exact-run sealed Main evidence artifact")
+    if len(matches) != 1:
+        raise DeploymentError("Release Acceptance returned ambiguous sealed Main evidence")
+    qualification = {"source_sha": sha, "run_id": run_id, "run_attempt": attempt,
+                     "artifact_id": matches[0].get("id"), "artifact_digest": matches[0].get("digest")}
+    if not _valid_qualification(qualification):
+        raise DeploymentError("Release Acceptance artifact has no valid immutable identity")
+    artifact_endpoint = f"{MAIN_REPO}/actions/artifacts/{qualification['artifact_id']}"
+    artifact = _gh_api(artifact_endpoint)
+    if artifact.get("expired") is True:
+        raise DeploymentIncomplete("Release Acceptance evidence has expired for the selected Main SHA")
+    if not _main_artifact_matches(artifact, qualification):
+        raise DeploymentError("Release Acceptance artifact metadata does not match the exact Main run")
+    _verify_candidate_tree(source, sha, owner_uid)
+    _verify_main_bundle(source, scratch, artifact, qualification)
+    if (_current_main() != sha or not _main_run_matches(_gh_api(run_endpoint), sha, run_id, attempt)
+            or not _successful_main_jobs(_gh_api(jobs_endpoint))
+            or not _main_artifact_matches(_gh_api(artifact_endpoint), qualification)):
+        raise DeploymentError("Main or Release Acceptance changed during source qualification; rerun --stable")
+    return qualification
+
+
+@contextmanager
+def _temporary_main(paths: Paths, recovery: dict | None, additionally_fetch_sha: str | None = None):
+    with _managed_staging_workspace(paths) as scratch:
+        source = scratch / "source"
+        sha = recovery["source_sha"] if recovery else _current_main()
+        ref = sha if recovery else "refs/heads/main"
+
+        def git(*args: str, timeout: int = 30) -> str:
+            result = _run(["/usr/bin/git", "-C", str(source), *args], timeout=timeout)
+            if result.returncode != 0:
+                raise DeploymentError(f"cannot {args[0]} the exact Stable source from GitHub")
+            return result.stdout.strip()
+
+        source.mkdir(mode=0o700)
+        git("init", "--quiet", "--template=")
+        # The live Main evidence verifier replays history-dependent checks.
+        # Exact, previously admitted recovery uses pinned source content.
+        shallow_args = ("--depth=1",) if recovery is not None and additionally_fetch_sha else ()
+        git("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", *shallow_args,
+            MAIN_ORIGIN, ref, timeout=300)
+        if git("rev-parse", "FETCH_HEAD^{commit}") != sha:
+            raise DeploymentError("origin/main advanced during fetch; rerun --stable")
+        if additionally_fetch_sha and additionally_fetch_sha != sha:
+            if not _hex(additionally_fetch_sha, 40):
+                raise DeploymentError("the accepted current Stable source pin is malformed")
+            result = _run(["/usr/bin/git", "-C", str(source), "fetch", "--quiet", "--no-tags",
+                           "--no-recurse-submodules", "--depth=1", MAIN_ORIGIN,
+                           f"{additionally_fetch_sha}:refs/fwrouter/old-owner"], timeout=300)
+            if result.returncode or git("rev-parse", "refs/fwrouter/old-owner^{commit}") != additionally_fetch_sha:
+                raise DeploymentIncomplete("the accepted current source is unavailable for rollback ownership checks")
+        git("checkout", "--quiet", "--detach", sha, timeout=90)
+        if _source_commit(source, paths.owner_uid) != sha:
+            raise DeploymentError("temporary Stable tree differs from the exact Main commit")
+        qualification = recovery or _stable_qualification(source, sha, scratch, paths.owner_uid)
+        if recovery:
+            _verify_candidate_tree(source, sha, paths.owner_uid)
+        yield StableSource(source, qualification)
+
+
+def _dev_git(source: Path, *args: str) -> bytes:
+    result = _run_bytes(["/usr/bin/git", "-C", str(source), *args], timeout=40)
+    if result.returncode != 0 or len(result.stdout) > 16 * 1024 * 1024:
+        raise DeploymentError("cannot read the bounded Development Git inventory")
+    return result.stdout
+
+
+def _dev_inventory(source: Path) -> tuple[str, dict[bytes, bytes], dict[bytes, bytes], set[bytes]]:
+    def entries(raw: bytes, *, index: bool) -> dict[bytes, bytes]:
+        rows = {}
+        for entry in raw.split(b"\0")[:-1]:
+            meta, name = entry.split(b"\t", 1)
+            mode, second, third = meta.split()
+            if mode not in {b"100644", b"100755"} or name in rows or (index and third != b"0"):
+                raise DeploymentError("Development source has a link, submodule or unresolved index entry")
+            rows[name] = mode + b" " + (second if index else third)
+        return rows
+
+    sha = _dev_git(source, "rev-parse", "--verify", "HEAD^{commit}").strip().decode("ascii")
+    if not _hex(sha, 40):
+        raise DeploymentError("Development checkout must have a full SHA-1 HEAD")
+    base = entries(_dev_git(source, "ls-tree", "-rz", sha), index=False)
+    index = entries(_dev_git(source, "ls-files", "--stage", "-z"), index=True)
+    untracked = set(_dev_git(source, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")[:-1])
+    if len(set(index) | untracked) > MAX_TREE_ENTRIES:
+        raise DeploymentError("Development source exceeds the bounded file count")
+    return sha, base, index, untracked
+
+
+def _dev_read_file(root: int, name: bytes, remaining: int,
+                   owner_uid: int | None = None) -> tuple[bytes, str, int] | None:
+    parts = name.split(b"/")
+    if any(part in {b"", b".", b"..", b".git"} for part in parts):
+        raise DeploymentError("Development file inventory contains an unsafe path")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    parent = os.dup(root)
+    try:
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, flags | os.O_DIRECTORY, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            fd = os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=parent)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_size > remaining
+                    or (owner_uid is not None and (before.st_uid != owner_uid or before.st_mode & UNSAFE_WRITE))):
+                raise DeploymentError("Development file has an unsafe type or exceeds the capture bound")
+            git_hash = hashlib.sha1(f"blob {before.st_size}\0".encode(), usedforsecurity=False)
+            content_hash = hashlib.sha256()
+            size = 0
+            while block := stream.read(65536):
+                size += len(block)
+                if size > before.st_size:
+                    raise DeploymentError("Development source changed while reading a file")
+                git_hash.update(block)
+                content_hash.update(block)
+            after = os.fstat(stream.fileno())
+            named = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+            def fence(info):
+                return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode
+            if size != before.st_size or fence(before) != fence(after) or fence(before) != fence(named):
+                raise DeploymentError("Development source changed while reading a file")
+            mode = b"100755" if before.st_mode & stat.S_IXUSR else b"100644"
+            return mode + b" " + git_hash.hexdigest().encode(), content_hash.hexdigest(), size
+    finally:
+        os.close(parent)
+
+
+def _dev_content(source: Path, index: dict, untracked: set,
+                 owner_uid: int | None = None) -> tuple[dict, str]:
+    root = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        files = {}
+        digest = hashlib.sha256(b"fwrouter-development-source/v1\n")
+        remaining = 512 * 1024 * 1024
+        for name in sorted(set(index) | untracked):
+            actual = _dev_read_file(root, name, remaining, owner_uid)
+            if actual is None:
+                if name in untracked:
+                    raise DeploymentError("Development source changed while collecting untracked files")
+                continue
+            git_identity, sha256, size = actual
+            files[name] = git_identity
+            remaining -= size
+            digest.update(git_identity[:6] + b" " + sha256.encode() + b" " + name + b"\0")
+        return files, digest.hexdigest()
+    finally:
+        os.close(root)
+
+
+def _development_source(path: Path) -> dict:
+    top = _dev_git(path, "rev-parse", "--show-toplevel").decode().rstrip("\n")
+    source = Path(top).resolve(strict=True)
+    inventory = _dev_inventory(source)
+    sha, base, index, untracked = inventory
+    captured = _dev_content(source, index, untracked)
+    if captured != _dev_content(source, index, untracked) or inventory != _dev_inventory(source):
+        raise DeploymentError("Development source changed during capture; retry with a stable working tree")
+    files, digest = captured
+    return {"path": str(source), "git_sha": sha, "dirty": base != files or base != index,
+            "provenance": "local_development_worktree", "content_sha256": digest,
+            "file_count": len(files)}
+
+
+DEV_SOURCE_ROOT = "dev-snapshots"
+DEV_SOURCE_PREFIXES = (b"backend/", b"ui/", b"host/", b"installer/")
+DEV_SOURCE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _dev_source_directory(paths: Paths) -> Path:
+    return paths.state_dir / DEV_SOURCE_ROOT
+
+
+def _dev_snapshot_capture(source: Path, paths: Paths) -> dict:
+    """Capture only installer-owned source trees and durably retain the exact archive."""
+    top = _dev_git(source, "rev-parse", "--show-toplevel").decode().rstrip("\n")
+    source = Path(top).resolve(strict=True)
+    _check_trusted_tree(source, paths.owner_uid)
+    inventory = _dev_inventory(source)
+    sha, base, index, untracked = inventory
+    selected_index = {name: value for name, value in index.items()
+                      if name.startswith(DEV_SOURCE_PREFIXES)}
+    selected_base = {name: value for name, value in base.items()
+                     if name.startswith(DEV_SOURCE_PREFIXES)}
+    selected_untracked = {name for name in untracked if name.startswith(DEV_SOURCE_PREFIXES)}
+    entries = sorted(set(selected_index) | selected_untracked)
+    with _managed_staging_workspace(paths) as scratch:
+        free = shutil.disk_usage(scratch).free
+        reserve = 16 * 1024 * 1024
+        if free <= reserve:
+            raise DeploymentIncomplete("Temporary storage is insufficient for a DEV snapshot; free space under /tmp.")
+        tree = scratch / "tree"
+        tree.mkdir(mode=0o700)
+        root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        digest = hashlib.sha256(b"fwrouter-development-source/v1\n")
+        files = {}
+        total = 0
+        try:
+            for name in entries:
+                actual = _dev_read_file(root_fd, name, DEV_SOURCE_MAX_BYTES - total, paths.owner_uid)
+                if actual is None:
+                    if name in selected_untracked:
+                        raise DeploymentError("Development source changed while capturing an untracked file")
+                    continue
+                git_identity, content_hash, size = actual
+                files[name] = git_identity
+                total += size
+                if total * 2 + len(files) * 4096 + reserve > free:
+                    raise DeploymentIncomplete("Temporary storage is insufficient for a DEV snapshot; free space under /tmp.")
+                digest.update(git_identity[:6] + b" " + content_hash.encode() + b" " + name + b"\0")
+                parts = [part.decode("utf-8", "strict") for part in name.split(b"/")]
+                target = tree.joinpath(*parts)
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                # Read the same fenced file descriptor again into the staged tree. The
+                # final inventory/content pass below detects any mutation between reads.
+                data = _dev_read_bytes(root_fd, name, DEV_SOURCE_MAX_BYTES - total + size, paths.owner_uid)
+                if hashlib.sha256(data).hexdigest() != content_hash or len(data) != size:
+                    raise DeploymentError("Development source changed while creating its snapshot")
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(data)
+                os.chmod(target, 0o755 if git_identity.startswith(b"100755 ") else 0o644)
+                os.chown(target, paths.owner_uid, -1)
+            captured_digest = digest.hexdigest()
+            if inventory != _dev_inventory(source):
+                raise DeploymentError("Development source changed during snapshot creation; retry")
+            # Fence a second complete read against the bytes staged above.
+            check_files, check_digest = _dev_content(source, selected_index, selected_untracked, paths.owner_uid)
+            if check_files != files or check_digest != captured_digest:
+                raise DeploymentError("Development source changed during snapshot creation; retry")
+        finally:
+            os.close(root_fd)
+
+        archive_path = scratch / "snapshot.tar"
+        with tarfile.open(archive_path, "w", format=tarfile.PAX_FORMAT) as archive:
+            for file in sorted(tree.rglob("*")):
+                rel = file.relative_to(tree).as_posix()
+                item = file.lstat()
+                if stat.S_ISDIR(item.st_mode):
+                    info = tarfile.TarInfo(rel + "/")
+                    info.type, info.mode, info.uid, info.gid = tarfile.DIRTYPE, 0o755, paths.owner_uid, 0
+                    archive.addfile(info)
+                elif stat.S_ISREG(item.st_mode) and item.st_nlink == 1:
+                    info = archive.gettarinfo(str(file), arcname=rel)
+                    info.mtime = 0
+                    info.uid, info.gid, info.uname, info.gname = paths.owner_uid, 0, "", ""
+                    info.pax_headers = {}
+                    with file.open("rb") as stream:
+                        archive.addfile(info, stream)
+                else:
+                    raise DeploymentError("Development snapshot contains an unsupported file type")
+        directory = _dev_source_directory(paths)
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != paths.owner_uid
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise DeploymentError("Development snapshot directory has unsafe ownership or mode")
+        capsule = directory / f"{captured_digest}.tar"
+        expected_archive_digest = _digest(archive_path)
+        capsule_created = False
+        if not os.path.lexists(capsule):
+            required = archive_path.stat().st_size + reserve
+            if shutil.disk_usage(directory).free < required:
+                raise DeploymentIncomplete(f"DEV recovery snapshot needs {required} free bytes in {directory.parent}.")
+            fd, temporary = tempfile.mkstemp(prefix=".capture-", dir=directory)
+            try:
+                with os.fdopen(fd, "wb") as stream, archive_path.open("rb") as source_archive:
+                    shutil.copyfileobj(source_archive, stream, 1024 * 1024)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if os.path.lexists(capsule):
+                    raise DeploymentError("Development snapshot path appeared during publication")
+                os.replace(temporary, capsule)
+                capsule_created = True
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+            dfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        info = capsule.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != paths.owner_uid
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                or _backup_file_digest(capsule, info) != expected_archive_digest):
+            raise DeploymentError("existing Development snapshot capsule does not match captured source content")
+        return {"path": str(source), "base_git_sha": sha,
+                "dirty": selected_base != files or selected_base != selected_index,
+                "provenance": "local_development_worktree", "content_sha256": captured_digest,
+                "file_count": len(files), "snapshot_sha256": expected_archive_digest,
+                "snapshot_path": str(capsule), "_created_by_capture": capsule_created}
+
+
+def _dev_read_bytes(root: int, name: bytes, remaining: int, owner_uid: int) -> bytes:
+    parts = name.split(b"/")
+    parent = os.dup(root)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid
+                    or before.st_mode & UNSAFE_WRITE or before.st_size > remaining):
+                raise DeploymentError("Development file changed type or exceeds the snapshot size bound")
+            data = stream.read(remaining + 1)
+            after = os.fstat(stream.fileno())
+            named = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+            fence = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
+                                   value.st_ctime_ns, value.st_mode)
+            if len(data) != before.st_size or fence(before) != fence(after) or fence(before) != fence(named):
+                raise DeploymentError("Development source changed while creating its snapshot")
+            return data
+    finally:
+        os.close(parent)
+
+
+@contextmanager
+def _materialize_development_snapshot(paths: Paths, metadata: dict):
+    capsule = Path(metadata["snapshot_path"])
+    expected = metadata["snapshot_sha256"]
+    if (capsule.parent != _dev_source_directory(paths) or capsule.name != f"{metadata['content_sha256']}.tar"
+            or not _hex(expected, 64)):
+        raise DeploymentError("Development recovery snapshot reference is malformed")
+    info = capsule.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != paths.owner_uid
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or _digest(capsule) != expected):
+        raise DeploymentError("Development recovery snapshot failed its ownership or digest check")
+    with _managed_staging_workspace(paths) as scratch:
+        source = scratch / "source"
+        source.mkdir(mode=0o700)
+        count = total = 0
+        try:
+            with tarfile.open(capsule, "r:") as archive:
+                for member in archive:
+                    count += 1
+                    parts = PurePosixPath(member.name).parts
+                    if (count > MAX_TREE_ENTRIES * 4 or not parts
+                            or any(part in {"", ".", "..", ".git"} for part in parts)
+                            or parts[0] not in {"backend", "ui", "host", "installer"}):
+                        raise DeploymentError("Development snapshot contains an unsafe path or too many entries")
+                    target = source.joinpath(*parts)
+                    if member.isdir():
+                        target.mkdir(mode=0o755, parents=True, exist_ok=True)
+                        os.chmod(target, member.mode & 0o755)
+                        continue
+                    if not member.isfile() or member.size > DEV_SOURCE_MAX_BYTES - total:
+                        raise DeploymentError("Development snapshot contains an unsafe entry or exceeds size bound")
+                    total += member.size
+                    target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                    stream = archive.extractfile(member)
+                    if stream is None:
+                        raise DeploymentError("Development snapshot is incomplete")
+                    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, "wb") as output:
+                        shutil.copyfileobj(stream, output, 1024 * 1024)
+                    os.chmod(target, member.mode & 0o755)
+        except (OSError, tarfile.TarError) as exc:
+            raise DeploymentError("Development recovery snapshot could not be materialized") from exc
+        digest = hashlib.sha256(b"fwrouter-development-source/v1\n")
+        files = sorted(path for path in source.rglob("*") if path.is_file())
+        if len(files) != metadata.get("file_count"):
+            raise DeploymentError("Development snapshot file count differs from its captured identity")
+        for path in files:
+            rel = path.relative_to(source).as_posix().encode("utf-8", "strict")
+            mode = b"100755" if path.stat().st_mode & stat.S_IXUSR else b"100644"
+            digest.update(mode + b" " + _digest(path).encode("ascii") + b" " + rel + b"\0")
+        if digest.hexdigest() != metadata.get("content_sha256"):
+            raise DeploymentError("Development snapshot content digest does not match its captured identity")
+        _initialize_development_git(source, paths.owner_uid, metadata)
+        commit = _source_commit(source, paths.owner_uid)
+        yield source, commit
+
+
+def _initialize_development_git(source: Path, owner_uid: int, metadata: dict) -> None:
+    def git(args: list[str], *, env: dict[str, str] | None = None, input_text: str | None = None) -> str:
+        process_env = _git_environment()
+        if env:
+            process_env.update(env)
+        try:
+            result = subprocess.run(["/usr/bin/git", "-C", str(source), *args], check=False,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    timeout=60, env=process_env, encoding="utf-8", input=input_text)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentError("could not create an immutable Git identity for the Development snapshot") from exc
+        if result.returncode:
+            raise DeploymentError("could not create an immutable Git identity for the Development snapshot")
+        return result.stdout.strip()
+
+    git(["init", "--quiet", "--template="])
+    files = sorted(path for path in source.rglob("*") if path.is_file() and ".git" not in path.parts)
+    index_rows = []
+    for start in range(0, len(files), 64):
+        batch = files[start:start + 64]
+        names = [path.relative_to(source).as_posix() for path in batch]
+        oids = git(["hash-object", "-w", "--no-filters", "--", *names]).splitlines()
+        if len(oids) != len(names) or any(not _hex(oid, 40) for oid in oids):
+            raise DeploymentError("Development snapshot Git object inventory is incomplete")
+        for path, name, oid in zip(batch, names, oids, strict=True):
+            mode = "100755" if path.stat().st_mode & stat.S_IXUSR else "100644"
+            index_rows.append(f"{mode} {oid}\t{name}\0")
+    git(["update-index", "-z", "--index-info"], input_text="".join(index_rows))
+    tree = git(["write-tree"])
+    env = {"GIT_AUTHOR_NAME": "FWRouter Development Snapshot", "GIT_AUTHOR_EMAIL": "fwrouter@localhost",
+           "GIT_COMMITTER_NAME": "FWRouter Development Snapshot", "GIT_COMMITTER_EMAIL": "fwrouter@localhost",
+           "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z"}
+    commit = git(["commit-tree", tree, "-m", "Development snapshot"], env=env)
+    git(["update-ref", "refs/heads/snapshot", commit])
+    git(["symbolic-ref", "HEAD", "refs/heads/snapshot"])
+    for root, dirs, files in os.walk(source, topdown=True):
+        for name in dirs:
+            os.chown(Path(root) / name, owner_uid, -1)
+        for name in files:
+            os.chown(Path(root) / name, owner_uid, -1)
+
+
 def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namespace) -> dict:
     pins = (args.main_sha, args.run_id, args.run_attempt, args.artifact_id,
             args.artifact_digest, args.expected_installed_module_sha256, args.confirm_main_sha)
@@ -1045,6 +2411,14 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
     confirm_digest = args.artifact_digest.removeprefix("sha256:")
     if any(ch not in "0123456789abcdef" for ch in confirm_digest):
         raise DeploymentError("artifact digest has an invalid format")
+    qualified_selection = paths.stable_source
+    source_location = MAIN_ORIGIN if qualified_selection else str(source)
+    if qualified_selection:
+        _assert_requested_source(paths, source, commit)
+        expected = qualified_selection.qualification
+        if (int(args.run_id), int(args.run_attempt), int(args.artifact_id), args.artifact_digest) != (
+                expected["run_id"], expected["run_attempt"], expected["artifact_id"], expected["artifact_digest"]):
+            raise DeploymentError("updater transition differs from the admitted Stable qualification")
 
     module_path = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
     wrapper_path = paths.target("usr/local/sbin/fwrouter-deploy")
@@ -1082,7 +2456,7 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
         run_id=args.run_id, run_attempt=args.run_attempt, artifact_id=args.artifact_id,
         artifact_digest=args.artifact_digest, old_digest=args.expected_installed_module_sha256,
         candidate_digest=candidate_module_digest, wrapper_digest=wrapper_digest)
-    pending_resume = pending_resume and prior_operation.get("source_path") == str(source)
+    pending_resume = pending_resume and prior_operation.get("source_path") == source_location
     if prior_operation and prior_operation.get("status") in {"PENDING", "FAILED"} and not pending_resume:
         raise DeploymentError("another unfinished deployment operation prevents updater self-upgrade")
     if prior_operation and prior_operation.get("kind") == "self_upgrade" and prior_operation.get("status") == "COMPLETE":
@@ -1101,28 +2475,20 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
 
     verifier_files = list(prior_operation.get("verifier_sources", [])) if pending_resume else []
     main = run = jobs = artifact = None
-    if not pending_resume:
+    if not pending_resume and not qualified_selection:
         main = _gh_api("repos/Coxf0rd/fwrouter/commits/main")
         if main.get("sha") != sha:
             raise DeploymentError("pinned source is no longer the current GitHub Main head")
         run = _gh_api(f"repos/Coxf0rd/fwrouter/actions/runs/{args.run_id}")
-        if (run.get("id") != int(args.run_id) or run.get("run_attempt") != int(args.run_attempt)
-                or run.get("event") != "push" or run.get("head_branch") != "main"
-                or run.get("head_sha") != sha or run.get("status") != "completed"
-                or run.get("conclusion") != "success" or run.get("path") != ".github/workflows/test-gates.yml"
-                or not isinstance(run.get("repository"), dict)
-                or run["repository"].get("full_name") != "Coxf0rd/fwrouter"):
+        if not _main_run_matches(run, sha, int(args.run_id), int(args.run_attempt)):
             raise DeploymentError("GitHub run is not a successful exact-SHA push to Main")
         jobs = _gh_api(f"repos/Coxf0rd/fwrouter/actions/runs/{args.run_id}/jobs?per_page=100")
         if not _successful_main_jobs(jobs):
             raise DeploymentError("GitHub run jobs are incomplete, failed, skipped or paginated")
         artifact = _gh_api(f"repos/Coxf0rd/fwrouter/actions/artifacts/{args.artifact_id}")
-        expected_name = f"fwrouter-main-evidence-{sha}-{args.run_id}-{args.run_attempt}"
-        workflow_run = artifact.get("workflow_run")
-        if (artifact.get("id") != int(args.artifact_id) or artifact.get("expired") is not False
-                or artifact.get("name") != expected_name or artifact.get("digest") != args.artifact_digest
-                or not isinstance(workflow_run, dict) or workflow_run.get("id") != int(args.run_id)
-                or workflow_run.get("head_sha") != sha or workflow_run.get("head_branch") != "main"):
+        qualification = {"source_sha": sha, "run_id": int(args.run_id), "run_attempt": int(args.run_attempt),
+                         "artifact_id": int(args.artifact_id), "artifact_digest": args.artifact_digest}
+        if not _main_artifact_matches(artifact, qualification):
             raise DeploymentError("GitHub artifact metadata does not match the pinned Main run")
 
     verifier_files = verifier_files or _verify_candidate_tree(source, sha, paths.owner_uid)
@@ -1130,39 +2496,15 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
                      "installer/controlled_backend_lifecycle.py", "host/sbin/fwrouter-deploy"):
         if _read_stable_source_file(source / relative, paths.owner_uid) != _git_blob_bytes(source, sha, relative):
             raise DeploymentError("candidate updater, helper or wrapper differs from its exact Git blob")
-    if not pending_resume:
-        with tempfile.TemporaryDirectory(prefix="fwrouter-updater-qualification-") as scratch:
-            scratch_path = Path(scratch)
-            archive_path = scratch_path / "main-evidence.zip"
-            _gh_artifact_zip(args.artifact_id, archive_path, expected_size=artifact.get("size_in_bytes"))
-            if _digest(archive_path) != confirm_digest:
-                raise DeploymentError("downloaded evidence artifact differs from its GitHub API digest")
-            bundle_path = scratch_path / "bundle"
-            bundle_path.mkdir(mode=0o700)
-            _extract_evidence_zip(archive_path, bundle_path)
-            verifier = source / "tests/gates/evidence_bundle.py"
-            result = _run(["/usr/bin/python3", "-I", "-B", str(verifier), "verify", "--bundle",
-                           str(bundle_path), "--expected-sha", sha, "--event", "push",
-                           "--ref", "refs/heads/main", "--run-id", args.run_id,
-                           "--attempt", args.run_attempt, "--require-main"], timeout=180,
-                          env_overrides={"GIT_NO_REPLACE_OBJECTS": "1"}, clean_git_env=True)
-            if result.returncode != 0:
-                raise DeploymentError("exact-Main trusted evidence verifier rejected the downloaded artifact")
-        try:
-            verified_evidence = json.loads(result.stdout.strip().splitlines()[-1])
-        except (json.JSONDecodeError, IndexError) as exc:
-            raise DeploymentError("trusted evidence verifier returned no qualification result") from exc
-        expected_evidence = {"status": "evidence_verified_not_deploy_authorized", "source_sha": sha,
-                             "run_id": args.run_id, "run_attempt": args.run_attempt,
-                             "strict_aggregate": "passed", "offline_source_checkout": "verified"}
-        if any(verified_evidence.get(key) != value for key, value in expected_evidence.items()):
-            raise DeploymentError("trusted evidence verifier result does not match the pinned Main qualification")
+    if not pending_resume and not qualified_selection:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-updater-qualification-", dir="/tmp") as scratch:
+            _verify_main_bundle(source, Path(scratch), artifact, qualification)
     lock = _load_module(source / "installer/component_install_lock.py", "fwrouter_updater_component_lock")
     lock_fd = None
     try:
         lock_fd, _ = lock.acquire(paths.target("opt"), maintenance_mode="shared")
         _assert_requested_source(paths, source, commit)
-        if not pending_resume:
+        if not pending_resume and not qualified_selection:
             if _gh_api("repos/Coxf0rd/fwrouter/commits/main").get("sha") != sha:
                 raise DeploymentError("GitHub Main changed before updater publication")
             final_run = _gh_api(f"repos/Coxf0rd/fwrouter/actions/runs/{args.run_id}")
@@ -1195,7 +2537,7 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
                 run_id=args.run_id, run_attempt=args.run_attempt, artifact_id=args.artifact_id,
                 artifact_digest=args.artifact_digest, old_digest=args.expected_installed_module_sha256,
                 candidate_digest=candidate_module_digest, wrapper_digest=wrapper_digest)
-            same_transition = same_transition and active_transition.get("source_path") == str(source)
+            same_transition = same_transition and active_transition.get("source_path") == source_location
             if current.get("status") == "pending":
                 raise DeploymentError("pending lifecycle operation prevents updater self-upgrade")
         else:
@@ -1206,7 +2548,7 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
                 run_id=args.run_id, run_attempt=args.run_attempt, artifact_id=args.artifact_id,
                 artifact_digest=args.artifact_digest, old_digest=args.expected_installed_module_sha256,
                 candidate_digest=candidate_module_digest, wrapper_digest=wrapper_digest)
-            same_transition = same_transition and active_transition.get("source_path") == str(source)
+            same_transition = same_transition and active_transition.get("source_path") == source_location
         if active_transition and active_transition.get("status") in {"PENDING", "FAILED"} and not same_transition:
             raise DeploymentError("another unfinished deployment operation prevents updater self-upgrade")
         current_module_digest = _digest(module_path)
@@ -1215,7 +2557,7 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
         record = _identity_record_base(paths)
         if not same_transition:
             record["operation"] = {"kind": "self_upgrade", "status": "PENDING",
-                "operation_id": operation_id, "source_sha": sha, "source_path": str(source),
+                "operation_id": operation_id, "source_sha": sha, "source_path": source_location,
                 "source_mode": "UNKNOWN", "provenance": "verified_actual_main_ci",
                 "run_id": args.run_id, "run_attempt": args.run_attempt, "artifact_id": args.artifact_id,
                 "artifact_digest": args.artifact_digest,
@@ -1232,7 +2574,7 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
                 or final_info.st_nlink != 1):
             raise DeploymentError("atomic updater replacement failed exact post-publication verification")
         record["operation"] = {"kind": "self_upgrade", "status": "COMPLETE",
-            "operation_id": operation_id, "source_sha": sha, "source_path": str(source),
+            "operation_id": operation_id, "source_sha": sha, "source_path": source_location,
             "source_mode": "UNKNOWN", "provenance": "verified_actual_main_ci",
             "run_id": args.run_id, "run_attempt": args.run_attempt, "artifact_id": args.artifact_id,
             "artifact_digest": args.artifact_digest, "candidate_module_sha256": candidate_module_digest,
@@ -1240,8 +2582,8 @@ def _self_upgrade(paths: Paths, source: Path, commit: str, args: argparse.Namesp
             "wrapper": "unchanged", "wrapper_sha256": wrapper_digest, "verifier_sources": verifier_files,
             "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "acceptance": {"status": "NOT_VERIFIED", "scope": "updater_self_upgrade_only"}}
-        record["components"]["updater"] = {"source_path": str(source / "installer/local_deploy.py"),
-            "source_sha": sha, "provenance": "verified_actual_main_ci", "mode": "UNKNOWN",
+        record["components"]["updater"] = {"source_path": MAIN_ORIGIN if qualified_selection else str(source / "installer/local_deploy.py"),
+            "source_sha": sha, "provenance": "verified_actual_main_ci", "mode": "STABLE" if qualified_selection else "UNKNOWN",
             "qualification_status": "VERIFIED_MAIN_CI", "installed_sha256": candidate_module_digest,
             "operation_id": operation_id, "run_id": args.run_id, "run_attempt": args.run_attempt,
             "artifact_id": args.artifact_id, "artifact_digest": args.artifact_digest,
@@ -1460,12 +2802,14 @@ def _run_installer(source: Path, paths: Paths, components: list[str], *, host_pl
     if host_plan is not None:
         argv.extend(("--host-plan", str(host_plan)))
     if inherited:
+        maintenance_mode = "exclusive" if "backend" in components or host_plan else "shared"
         argv.extend(("--_component-lock-fd", str(INSTALLER_LOCK_FD),
-                     "--_maintenance-lock-mode", "exclusive"))
+                     "--_maintenance-lock-mode", maintenance_mode))
         pass_fds = (INSTALLER_LOCK_FD, MAINTENANCE_LOCK_FD) if paths.target_root == Path("/") else (INSTALLER_LOCK_FD,)
     else:
         pass_fds = ()
-    result = _run(argv, timeout=1800, pass_fds=pass_fds)
+    result = _run(argv, timeout=1800, pass_fds=pass_fds,
+                  host_environment=bool((paths.stable_source or paths.development_source) and not paths.test_driver))
     if result.returncode != 0:
         raise DeploymentError(f"installer failed for component set: {','.join(components)}")
 
@@ -1479,15 +2823,18 @@ def _publish_host_pair(source: Path, paths: Paths, plan: Path) -> None:
                    "--_component-lock-fd", str(INSTALLER_LOCK_FD), "--_maintenance-lock-mode", "exclusive"],
                   timeout=1800,
                   pass_fds=(INSTALLER_LOCK_FD, MAINTENANCE_LOCK_FD)
-                  if paths.target_root == Path("/") else (INSTALLER_LOCK_FD,))
+                  if paths.target_root == Path("/") else (INSTALLER_LOCK_FD,),
+                  host_environment=bool((paths.stable_source or paths.development_source) and not paths.test_driver))
     if result.returncode != 0:
         raise DeploymentError("selective host pair publication failed")
     if paths.target_root == Path("/"):
-        reload_result = _run(["/usr/bin/systemctl", "daemon-reload"])
+        reload_result = _run(["/usr/bin/systemctl", "daemon-reload"],
+                             host_environment=bool(paths.stable_source or paths.development_source))
         if reload_result.returncode != 0:
             raise DeploymentError("systemd could not reload the published API unit")
         check = _run(["/usr/bin/systemd-analyze", "verify",
-                      str(paths.target("etc/systemd/system/fwrouter-api.service"))])
+                      str(paths.target("etc/systemd/system/fwrouter-api.service"))],
+                     host_environment=bool(paths.stable_source or paths.development_source))
         if check.returncode != 0:
             raise DeploymentError("published API unit failed systemd verification")
 
@@ -1556,6 +2903,12 @@ def check(paths: Paths, source: Path, commit: str) -> str:
     checkpoint_path = paths.state_dir / "pending.json"
     if checkpoint_path.exists():
         checkpoint = lifecycle._read_checkpoint(checkpoint_path)
+        if (checkpoint["status"] == "complete" and isinstance(operation, dict)
+                and operation.get("status") in {"PENDING", "FAILED"}
+                and operation.get("lifecycle_operation_id") == checkpoint["operation_id"]
+                and operation.get("requested_source", {}).get("git_sha") == commit
+                and backend_same and ui_same and host_same):
+            return "FINALIZE_PENDING_IDENTITY"
         if checkpoint["status"] == "pending":
             manifest = lifecycle._backend_manifest(source / "backend")
             if checkpoint.get("maintenance_operation") is not None or checkpoint.get("runtime_quiescence") is not None:
@@ -1565,7 +2918,11 @@ def check(paths: Paths, source: Path, commit: str) -> str:
                 return "RESUME_PENDING_UNITS"
             installed = lifecycle._manifest_digest(lifecycle._backend_manifest(paths.target("opt/fwrouter-api")))
             if installed == checkpoint["backend_manifest_sha256"]:
-                _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
+                if _installed_source_reconstruction_required(paths):
+                    if not _known_installed_backend(paths, installed):
+                        raise DeploymentError("installed backend has no durable DEV or Stable identity for recovery")
+                else:
+                    _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
                 return "TRANSFER_PENDING_OPERATION"
             raise DeploymentError("pending lifecycle checkpoint and installed backend identities disagree")
     if backend_same and ui_same and host_same and healthy:
@@ -1578,6 +2935,7 @@ def check(paths: Paths, source: Path, commit: str) -> str:
 def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool = False,
           owner_driver: Callable[[object, str, Path, bool, Path, list[str]], subprocess.CompletedProcess] | None = None,
           system_driver: Callable[[list[str]], subprocess.CompletedProcess] | None = None) -> dict:
+    _assert_requested_source(paths, source, commit)
     initial_identity = _read_identity(paths)
     initial_operation = initial_identity.get("operation") if initial_identity.get("status") != "UNKNOWN" else None
     if (isinstance(initial_operation, dict) and initial_operation.get("kind") == "self_upgrade"
@@ -1592,6 +2950,15 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
     pending = None
     if state_file.exists():
         pending = lifecycle._read_checkpoint(state_file)
+        if (pending["status"] == "complete" and isinstance(initial_operation, dict)
+                and initial_operation.get("status") in {"PENDING", "FAILED"}
+                and initial_operation.get("lifecycle_operation_id") == pending["operation_id"]
+                and initial_operation.get("requested_source", {}).get("git_sha") == commit
+                and pending["backend_manifest_sha256"] == selected_digest
+                and all(_facts(source, paths, lifecycle, ui)[:3])):
+            _record_operation(paths, lock_module, source, commit, lifecycle, ui, pending["operation_id"],
+                              "complete", "VERIFIED_CONTENT", [])
+            return {"status": "APPLIED", "pending_units": [], "source_commit": commit}
         if pending["status"] == "pending":
             if pending.get("maintenance_operation") is not None or pending.get("runtime_quiescence") is not None:
                 raise DeploymentError("interrupted operation is outside the simple deployment contract")
@@ -1622,7 +2989,10 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
                 action, *owner_args]
         if action == "resume" and allow_timer_catchup:
             argv.append("--allow-timer-catchup")
-        return _run(argv, timeout=1800)
+        elif action == "resume" and (paths.stable_source or paths.development_source):
+            argv.append("--restore-timers")
+        return _run(argv, timeout=1800,
+                    host_environment=bool(paths.stable_source or paths.development_source))
 
     def owner_output(result: subprocess.CompletedProcess, action: str) -> dict:
         try:
@@ -1757,8 +3127,10 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
                 or after_resume["status"] != outcome["status"]):
             raise DeploymentError("lifecycle operation changed during resume; refusing to claim another operation")
         backend_same, ui_same, host_same, healthy = _facts(source, paths, lifecycle, ui)
-        if not (backend_same and ui_same and host_same and healthy):
-            raise DeploymentError("postflight failed: backend, UI, host pair, API, Gateway, Xray or Mihomo is not ready")
+        if not (backend_same and ui_same and host_same):
+            raise DeploymentError("postflight failed: installed backend, UI or host pair differs from source")
+        if not healthy and not (paths.stable_source or paths.development_source):
+            raise DeploymentError("postflight failed: API, Gateway, Xray or Mihomo is not ready")
         _record_operation(paths, lock_module, source, commit, lifecycle, ui, expected_operation_id,
                           after_resume["status"], "VERIFIED_CONTENT" if outcome["status"] == "complete"
                           else "PENDING", outcome.get("pending_units", []), lock_held=lock_held)
@@ -1803,9 +3175,14 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
         # Re-enter the existing owner's idempotent stop on every old-source
         # transfer resume. A prior stop can have durably checkpointed before a
         # unit-stop error, so apply must confirm quiescence before source CAS.
-        old_commit = _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
-        with tempfile.TemporaryDirectory(prefix="fwrouter-old-source-") as temp:
-            old_root = _materialize_old_source(source, old_commit, Path(temp) / "source")
+        if _installed_source_reconstruction_required(paths):
+            old_commit = None
+        else:
+            old_commit = _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
+        with _managed_staging_workspace(paths) as temp:
+            old_root = (_materialize_recoverable_old_source(paths, source, lifecycle, temp / "source")
+                        if _installed_source_reconstruction_required(paths) else
+                        _materialize_old_source(source, old_commit, temp / "source"))
             pending = owner_transition("stop", old_root, [], pending, pending["operation_id"],
                                        "lifecycle_stop_recovery", checkpoint_after_stop)
         transfer_args = ["--expected-operation-id", pending["operation_id"],
@@ -1821,9 +3198,14 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
             stopped_pending = owner_transition("stop", source, [], before_stop, None,
                                                "lifecycle_stop", checkpoint_after_stop)
         else:
-            old_commit = _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
-            with tempfile.TemporaryDirectory(prefix="fwrouter-old-source-") as temp:
-                old_root = _materialize_old_source(source, old_commit, Path(temp) / "source")
+            if _installed_source_reconstruction_required(paths):
+                old_commit = None
+            else:
+                old_commit = _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
+            with _managed_staging_workspace(paths) as temp:
+                old_root = (_materialize_recoverable_old_source(paths, source, lifecycle, temp / "source")
+                            if _installed_source_reconstruction_required(paths) else
+                            _materialize_old_source(source, old_commit, temp / "source"))
                 before_stop = lifecycle._read_checkpoint(state_file) if state_file.exists() else None
                 pending = owner_transition("stop", old_root, [], before_stop, None,
                                            "lifecycle_stop", checkpoint_after_stop)
@@ -1880,7 +3262,24 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
             _rows, host_plan = _host_plan(source, paths)
             if host_plan is not None:
                 _publish_host_pair(source, paths, host_plan)
-            _run_installer(source, paths, ["backend", "ui"], inherited=True)
+            changed_components = ["backend", "ui"]
+            if paths.stable_source or paths.development_source:
+                changed_components = []
+                if installed_under_lock != selected_manifest:
+                    changed_components.append("backend")
+                try:
+                    source_ui_digest, _ = ui._walk_tree(source / "ui", owner_uid=paths.owner_uid, require_index=True)
+                    active_ui = ui._managed_release(paths.target("opt/fwrouter-ui"),
+                        paths.target("opt/.fwrouter-ui-releases"), paths.owner_uid) or paths.target("opt/fwrouter-ui")
+                    installed_ui_digest, _ = ui._walk_tree(active_ui, owner_uid=paths.owner_uid, require_index=True)
+                    if source_ui_digest != installed_ui_digest:
+                        changed_components.append("ui")
+                except (OSError, RuntimeError, ValueError):
+                    changed_components.append("ui")
+            if changed_components:
+                if "backend" in changed_components and paths.retire_paths:
+                    _retire_installed_backend_files(paths, source, lifecycle, paths.retire_paths)
+                _run_installer(source, paths, changed_components, inherited=True)
         completed_stage = "component_publication"
         backend_same, ui_same, host_same, _healthy = _facts(source, paths, lifecycle, ui)
         if not (backend_same and ui_same and host_same):
@@ -1896,7 +3295,8 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
             saved_maintenance_target = None
         systemctl = ["/usr/bin/systemctl", "start", "fwrouter-api.service"]
         if paths.target_root == Path("/"):
-            result = system_driver(systemctl) if system_driver is not None else _run(systemctl)
+            result = (system_driver(systemctl) if system_driver is not None
+                      else _run(systemctl, host_environment=bool(paths.stable_source or paths.development_source)))
             if result.returncode != 0:
                 raise DeploymentError("API unit did not start after source installation")
         elif system_driver is not None:
@@ -1944,10 +3344,1374 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
             lock_module.release(lock_fd)
 
 
+def _stage(result: dict, name: str, status: str, detail: str) -> None:
+    result["stages"][name] = {"status": status, "detail": detail}
+
+
+def _json_object(output: str) -> dict:
+    try:
+        value = json.loads(output.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _stable_service_state(paths: Paths, lifecycle) -> None:
+    """Verify that the API unit and read-only owner CLI use the canonical state root."""
+    result = _run(["/usr/bin/systemctl", "show", "--property=LoadState,Environment,EnvironmentFiles,DropInPaths,"
+                   "PassEnvironment,MainPID", lifecycle.API_UNIT], timeout=10, host_environment=True)
+    rows = [line.split("=", 1) for line in result.stdout.splitlines() if "=" in line]
+    props = dict(rows)
+    env_file = paths.target("opt/fwrouter-api/.env")
+    if (result.returncode or len(rows) != len(props) or props.get("LoadState") != "loaded"
+            or props.get("DropInPaths", "") != ""
+            or props.get("PassEnvironment", "") != ""
+            or props.get("EnvironmentFiles") != f"{env_file} (ignore_errors=yes)"):
+        raise DeploymentError("API unit environment is outside the supported Stable state-root contract.")
+    override = rb"\b(?:FWROUTER_STATE_DIR|STATE_DIR)[ \t]*="
+    if re.search(override, props.get("Environment", "").encode()):
+        raise DeploymentError("API unit overrides the canonical Stable state root.")
+    try:
+        if os.path.lexists(env_file) and re.search(
+                rb"(?m)^[ \t]*(?:FWROUTER_STATE_DIR|STATE_DIR)[ \t]*=",
+                _read_stable_source_file(env_file, paths.owner_uid, limit=128 * 1024)):
+            raise DeploymentError("API environment file overrides the canonical Stable state root.")
+        pid = props.get("MainPID", "")
+        if not pid.isascii() or not pid.isdecimal():
+            raise DeploymentError("API unit process identity is unavailable.")
+        if int(pid):
+            env_path = Path("/proc") / pid / "environ"
+            with env_path.open("rb") as stream:
+                environment = stream.read(1024 * 1024 + 1)
+            if len(environment) > 1024 * 1024 or not environment:
+                raise DeploymentError("API process environment readback is unavailable.")
+            if any(entry.startswith((b"FWROUTER_STATE_DIR=", b"STATE_DIR=")) for entry in environment.split(b"\0")):
+                raise DeploymentError("Running API uses a custom state root.")
+    except OSError as exc:
+        raise DeploymentError("API environment could not be inspected safely.") from exc
+
+
+def _strict_database_preflight(paths: Paths, lifecycle, source: Path) -> None:
+    if paths.test_driver:
+        return
+    _stable_service_state(paths, lifecycle)
+    python = lifecycle._verified_backend_interpreter()
+    expected = {"ok": True, "status": "already_current", "current_schema": 27,
+                "target_schema": 27, "database_changed": False}
+    command = ["database", "upgrade", "--expected-schema", "27"]
+    source_cli = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+                  "from fwrouter_api.core.config import get_settings; "
+                  "sys.exit(1) if get_settings().paths.db_path != Path(sys.argv[2]) else None; "
+                  "from fwrouter_api.cli import main; raise SystemExit(main(sys.argv[3:]))")
+    for label, entrypoint in (("installed", ["-m", "fwrouter_api.cli"]),
+                              ("selected", ["-c", source_cli, str(source / "backend"),
+                                            str(paths.target("var/lib/fwrouter-v2/fwrouter.db"))])):
+        result = _run([str(python), "-I", "-B", *entrypoint, *command], timeout=120, host_environment=True)
+        payload = _json_object(result.stdout)
+        if result.returncode != 0 or payload != expected or payload.get("database_changed") is not False:
+            reason = payload.get("error_code")
+            if (not isinstance(reason, str) or not reason.startswith("DATABASE_")
+                    or len(reason) > 100 or not reason.replace("_", "").isalnum()):
+                reason = "DATABASE_SCHEMA_PREFLIGHT_UNVERIFIED"
+            raise DeploymentError(f"Database preflight ({label}) {reason}. Resolve strict schema admission before deployment.")
+
+
+def _verify_dependency_compatibility(paths: Paths, source: Path) -> None:
+    if paths.test_driver:
+        return
+    installed = paths.target("opt/fwrouter-api/pyproject.toml")
+    candidate = source / "backend/pyproject.toml"
+    try:
+        dependency_contract = [tomllib.loads(_read_stable_source_file(path, paths.owner_uid).decode())["project"]
+                               for path in (installed, candidate)]
+    except (OSError, KeyError, ValueError) as exc:
+        raise DeploymentIncomplete("The installed and selected backend dependency contracts could not be compared.") from exc
+    old, new = dependency_contract
+    for key in ("requires-python", "dependencies"):
+        if old.get(key) != new.get(key):
+            raise DeploymentIncomplete("The backend dependency contract changed. Qualify the prepared runtime before deploying.")
+
+
+def _read_acceptance_policy(paths: Paths) -> dict:
+    path = paths.target("etc/fwrouter/deploy-acceptance.json")
+    try:
+        if not path.exists():
+            return {}
+        _check_trusted_tree(path.parent, paths.owner_uid)
+        info = path.lstat()
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise DeploymentError("deployment acceptance policy must use mode 0600")
+        data = _json_object(_read_stable_source_file(path, paths.owner_uid, limit=4096).decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise DeploymentError("deployment acceptance policy cannot be read safely") from exc
+    if data.get("schema") != "fwrouter-deploy-acceptance/v1" or set(data) - {"recovery"} != {
+            "schema", "xray_image", "mihomo_image", "ui_port", "ui_path"}:
+        raise DeploymentError("deployment acceptance policy is malformed")
+    if any(not isinstance(data[key], str) or not data[key].startswith("sha256:")
+           or not _hex(data[key][7:], 64) for key in ("xray_image", "mihomo_image")):
+        raise DeploymentError("deployment acceptance policy requires independently approved runtime image IDs")
+    if (not _positive_id(data["ui_port"]) or data["ui_port"] > 65535
+            or not isinstance(data["ui_path"], str) or not data["ui_path"].startswith("/")
+            or data["ui_path"].startswith("//") or len(data["ui_path"]) > 256
+            or not all(32 < ord(char) < 127 for char in data["ui_path"])):
+        raise DeploymentError("deployment acceptance policy has an invalid loopback UI endpoint")
+    return data
+
+
+def _verify_backend_recovery(paths: Paths, lifecycle, policy: dict, old_manifest: str) -> dict:
+    if paths.test_driver:
+        return {"status": "SKIP", "detail": "disposable installer target"}
+    recovery = policy.get("recovery")
+    if (not isinstance(recovery, dict)
+            or set(recovery) != {"backup_path", "backup_sha256", "installed_backend_sha256"}
+            or recovery.get("installed_backend_sha256") != old_manifest
+            or not _hex(recovery.get("backup_sha256"), 64)
+            or not isinstance(recovery.get("backup_path"), str)):
+        raise DeploymentIncomplete("A qualified recovery backup pin for the current backend is required before backend publication.")
+    path = Path(recovery["backup_path"])
+    try:
+        _check_trusted_tree(path.parent, paths.owner_uid)
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != paths.owner_uid
+                or stat.S_IMODE(info.st_mode) != 0o600):
+            raise DeploymentError("recovery backup is not an owner-only standalone database")
+        for suffix in ("-wal", "-shm", "-journal"):
+            if path.with_name(path.name + suffix).exists():
+                raise DeploymentError("recovery backup has a SQLite sidecar")
+        python = lifecycle._verified_backend_interpreter()
+        script = (
+            "import sys; from pathlib import Path; "
+            "from fwrouter_api.services.database_admin import _validate_database_file, _hash_regular_file; "
+            "p = Path(sys.argv[1]); _validate_database_file(p, allow_legacy_schema27_profiles=False); "
+            "raise SystemExit(0 if _hash_regular_file(p) == sys.argv[2] else 1)"
+        )
+        verified = _run([str(python), "-I", "-B", "-c", script, str(path), recovery["backup_sha256"]],
+                        timeout=180, host_environment=True)
+        after = path.lstat()
+        fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if verified.returncode or any(getattr(after, key) != getattr(info, key) for key in fields):
+            raise DeploymentError("recovery backup failed structural or pinned content verification")
+    except OSError as exc:
+        raise DeploymentError("recovery backup could not be read safely") from exc
+    return {"status": "REUSED", "detail": "approved backup schema, integrity, foreign keys and SHA-256 verified"}
+
+
+def _valid_managed_backup(value: object, *, complete: bool) -> bool:
+    keys = {"id", "source_sha", "backend_sha256", "schema"}
+    if complete:
+        keys.update(("filename", "sha256", "snapshot_sha256"))
+    return (isinstance(value, dict) and value.keys() == keys
+            and _hex(value["id"], 32) and _hex(value["source_sha"], 40)
+            and _hex(value["backend_sha256"], 64)
+            and type(value["schema"]) is int and value["schema"] == 27
+            and (not complete or (
+                isinstance(value["filename"], str)
+                and re.fullmatch(r"rollback-[0-9a-f]{32}\.bak", value["filename"]) is not None
+                and _hex(value["sha256"], 64) and _hex(value["snapshot_sha256"], 64))))
+
+
+def _backup_directory(paths: Paths, pin: dict) -> Path:
+    return paths.state_dir / "deploy-rollback-backups" / pin["id"]
+
+
+def _protected_backup_file(paths: Paths, path: Path) -> os.stat_result:
+    _check_trusted_tree(path.parent, paths.owner_uid)
+    if (path.parent.stat().st_uid != paths.owner_uid or stat.S_IMODE(path.parent.stat().st_mode) != 0o700):
+        raise DeploymentError("managed rollback backup directory is not private")
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or info.st_uid != paths.owner_uid or stat.S_IMODE(info.st_mode) != 0o600
+            or any(os.path.lexists(path.with_name(path.name + suffix)) for suffix in ("-wal", "-shm", "-journal"))):
+        raise DeploymentError("managed rollback backup is not a private standalone database")
+    return info
+
+
+def _backup_file_digest(path: Path, before: os.stat_result) -> str:
+    fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+    signature = tuple(getattr(before, name) for name in fields)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    digest = hashlib.sha256()
+    with os.fdopen(fd, "rb") as stream:
+        if tuple(getattr(os.fstat(fd), name) for name in fields) != signature:
+            raise DeploymentError("managed rollback backup changed before verification")
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+        if (tuple(getattr(os.fstat(fd), name) for name in fields) != signature
+                or tuple(getattr(path.lstat(), name) for name in fields) != signature):
+            raise DeploymentError("managed rollback backup changed during verification")
+    return digest.hexdigest()
+
+
+def _sqlite_backup_command(lifecycle, script: str, *args: str) -> dict:
+    python = lifecycle._verified_backend_interpreter()
+    result = _run([str(python), "-I", "-B", "-c", script, *args], timeout=180, host_environment=True)
+    data = _json_object(result.stdout)
+    if result.returncode or not data:
+        raise DeploymentError("SQLite backup owner could not verify a recoverable schema-27 snapshot")
+    return data
+
+
+_READ_BACKUP_SNAPSHOT = """
+import json, sqlite3, sys
+from pathlib import Path
+from fwrouter_api.services.database_admin import _validate_database_file
+from fwrouter_api.services.database_backup import _logical_digest
+path = Path(sys.argv[1])
+schema = _validate_database_file(path, allow_legacy_schema27_profiles=False)
+with sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True) as connection:
+    connection.execute("PRAGMA query_only=ON")
+    print(json.dumps({"schema": int(schema["actual_schema_version"]), "snapshot_sha256": _logical_digest(connection)}))
+"""
+
+
+def _validate_managed_backup(paths: Paths, lifecycle, pin: dict) -> None:
+    if not _valid_managed_backup(pin, complete=True):
+        raise DeploymentError("managed rollback backup pin is malformed")
+    path = _backup_directory(paths, pin) / pin["filename"]
+    before = _protected_backup_file(paths, path)
+    result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path))
+    if (result != {"schema": 27, "snapshot_sha256": pin["snapshot_sha256"]}
+            or _backup_file_digest(path, before) != pin["sha256"]):
+        raise DeploymentError("managed rollback backup does not match its schema and digest pin")
+
+
+def _recover_backup_reservation(paths: Paths, directory: Path) -> list[Path]:
+    """Remove only interrupted SQLite-owner scratch inside a reserved directory."""
+    _check_trusted_tree(directory, paths.owner_uid)
+    info = directory.lstat()
+    if info.st_uid != paths.owner_uid or stat.S_IMODE(info.st_mode) != 0o700:
+        raise DeploymentError("SQLite backup reservation is not private")
+    entries = list(directory.iterdir())
+    published = [entry for entry in entries if re.fullmatch(r"rollback-[0-9a-f]{32}\.bak", entry.name)]
+    scratch = [entry for entry in entries if re.fullmatch(r"\.backup-tmp-[0-9a-f]{32}", entry.name)]
+    if len(published) > 1 or len(entries) != len(published) + len(scratch):
+        raise DeploymentIncomplete("Managed backup reservation contains unrecognised recovery data.")
+    known_final = published[0].lstat() if published else None
+    removals = {}
+    for temporary in scratch:
+        before = temporary.lstat()
+        if (not stat.S_ISDIR(before.st_mode) or before.st_uid != paths.owner_uid
+                or stat.S_IMODE(before.st_mode) != 0o700 or os.path.ismount(temporary)):
+            raise DeploymentIncomplete("Interrupted SQLite backup scratch has unknown ownership.")
+        children = list(temporary.iterdir())
+        for child in children:
+            child_info = child.lstat()
+            linked_publication = (child.name == "database.sqlite" and known_final is not None
+                                  and stat.S_ISREG(known_final.st_mode)
+                                  and known_final.st_uid == paths.owner_uid and known_final.st_nlink == 2
+                                  and (child_info.st_dev, child_info.st_ino) == (known_final.st_dev, known_final.st_ino))
+            if (child.name not in {"database.sqlite", "database.sqlite-journal", "database.sqlite-wal", "database.sqlite-shm"}
+                    or not stat.S_ISREG(child_info.st_mode) or child_info.st_uid != paths.owner_uid
+                    or child_info.st_dev != before.st_dev or (child_info.st_nlink != 1 and not linked_publication)):
+                raise DeploymentIncomplete("Interrupted SQLite backup contains unrecognised scratch files.")
+        removals[temporary] = children
+    for temporary, children in removals.items():
+        for child in children:
+            child.unlink()
+        temporary.rmdir()
+    if removals:
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    return published
+
+
+def _prepare_managed_backup(paths: Paths, lifecycle, reservation: dict) -> dict:
+    """Use the SQLite backup owner inside a durably reserved private directory."""
+    if not _valid_managed_backup(reservation, complete=False):
+        raise DeploymentError("managed rollback backup reservation is malformed")
+    directory = _backup_directory(paths, reservation)
+    _check_trusted_tree(paths.state_dir, paths.owner_uid)
+    directory.parent.mkdir(mode=0o700, exist_ok=True)
+    _check_trusted_tree(directory.parent, paths.owner_uid)
+    if directory.parent.stat().st_uid != paths.owner_uid or stat.S_IMODE(directory.parent.stat().st_mode) != 0o700:
+        raise DeploymentError("managed rollback backup root is not private")
+    entries = _recover_backup_reservation(paths, directory) if os.path.lexists(directory) else []
+    if entries:
+        path = entries[0]
+        before = _protected_backup_file(paths, path)
+        # This reservation was durable before creation. The SQLite owner
+        # exposes only a complete atomic publication under the final name.
+        result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path))
+        pin = {**reservation, "filename": path.name, "sha256": _backup_file_digest(path, before),
+               "snapshot_sha256": result.get("snapshot_sha256")}
+        if result.get("schema") != 27 or not _valid_managed_backup(pin, complete=True):
+            raise DeploymentError("interrupted SQLite backup failed strict verification")
+        return pin
+
+    result = _sqlite_backup_command(lifecycle, """
+import json, sys
+from pathlib import Path
+from fwrouter_api.services.database_backup import create_sqlite_backup
+print(json.dumps(create_sqlite_backup(Path(sys.argv[1]), Path(sys.argv[2]), prefix="rollback-")))
+""", str(paths.target("var/lib/fwrouter-v2/fwrouter.db")), str(directory))
+    filename = result.get("backup_path")
+    if not isinstance(filename, str):
+        raise DeploymentError("SQLite backup owner returned no publication path")
+    path = Path(filename)
+    if path.parent != directory or result.get("source_snapshot") != "sqlite_read_transaction":
+        raise DeploymentError("SQLite backup owner returned unexpected publication metadata")
+    pin = {**reservation, "filename": path.name, "sha256": result.get("backup_sha256"),
+           "snapshot_sha256": result.get("snapshot_sha256")}
+    _validate_managed_backup(paths, lifecycle, pin)
+    return pin
+
+
+def _ensure_dev_baseline_backup(paths: Paths, lifecycle, policy: dict, result: dict, *,
+                                returning: bool = False) -> None:
+    """Protect the accepted Stable database without replacing its rollback backup."""
+    if paths.test_driver:
+        result["backup"] = {"status": "SKIP", "detail": "disposable installer target"}
+        return
+    with _configuration_component_lock(paths):
+        record = _read_identity(paths)
+        admission = "stable_admission" if returning else "dev_admission"
+        if record.get(admission) is None:
+            raise DeploymentError("deployment admission changed before SQLite recovery verification")
+        stable = record.get("stable_current") or _accepted_stable_pin(record.get("last_verified_install"))
+        actual = lifecycle._manifest_digest(lifecycle._backend_manifest(paths.target("opt/fwrouter-api")))
+        if stable is None:
+            result["backup"] = _verify_backend_recovery(paths, lifecycle, policy, actual)
+            return
+        expected = {"source_sha": stable["source_sha"], "schema": 27,
+                    "backend_sha256": stable["installed_content"]["backend_sha256"]}
+        for key in ("database_rollback", "dev_baseline_backup"):
+            pin = record.get(key)
+            if (_valid_managed_backup(pin, complete=True)
+                    and all(pin.get(field) == value for field, value in expected.items())):
+                _validate_managed_backup(paths, lifecycle, pin)
+                result["backup"] = {"status": "REUSED", "detail": "verified SQLite backup for the accepted Stable baseline"}
+                return
+        approved = policy.get("recovery")
+        if isinstance(approved, dict) and approved.get("installed_backend_sha256") == expected["backend_sha256"]:
+            result["backup"] = _verify_backend_recovery(paths, lifecycle, policy, expected["backend_sha256"])
+            return
+        reservation = record.get("dev_baseline_backup")
+        if reservation is not None:
+            if (not _valid_managed_backup(reservation, complete=False)
+                    or any(reservation.get(key) != value for key, value in expected.items())):
+                raise DeploymentIncomplete("A pending SQLite recovery backup belongs to a different Stable baseline.")
+            if actual != expected["backend_sha256"]:
+                raise DeploymentIncomplete("The backend changed before the reserved SQLite baseline was verified.")
+        elif actual == expected["backend_sha256"]:
+            reservation = {"id": uuid.uuid4().hex, **expected}
+            record["dev_baseline_backup"] = reservation
+            _write_identity(paths, record)
+        else:
+            raise DeploymentIncomplete("The accepted Stable baseline has no verified SQLite recovery backup. Supply an approved backup for that baseline before changing the backend.")
+        prepared = _prepare_managed_backup(paths, lifecycle, reservation)
+        _validate_managed_backup(paths, lifecycle, prepared)
+        record["dev_baseline_backup"] = prepared
+        _write_identity(paths, record)
+        result["backup"] = {"status": "CREATED", "detail": "verified SQLite backup for the accepted Stable baseline"}
+
+
+def _cleanup_dev_baseline_backup(paths: Paths, lifecycle, result: dict) -> None:
+    storage = result.setdefault("storage", {})
+    try:
+        with _configuration_component_lock(paths):
+            record = _read_identity(paths)
+            backup = record.get("dev_baseline_backup")
+            if backup is None:
+                return
+            stable = record.get("stable_current")
+            operation = record.get("operation") or {}
+            accepted = _accepted_stable_pin(record.get("last_verified_install"))
+            if (record.get("stable_admission") or record.get("dev_admission") or record.get("rollback_admission")
+                    or operation.get("status") != "VERIFIED_CONTENT" or not accepted or accepted != stable
+                    or stable["source_sha"] != backup["source_sha"]
+                    or stable["installed_content"]["backend_sha256"] != backup["backend_sha256"]):
+                storage.setdefault("retained", []).append(
+                    {"resource": "DEV baseline backup", "reason": "still pinned for Stable recovery"})
+                return
+            pinned = [record.get(key) for key in ("database_rollback", "database_rollback_retired",
+                                                 "database_rollback_candidate")]
+            if any(pin and pin["id"] == backup["id"] for pin in pinned):
+                return
+            if not _valid_managed_backup(backup, complete=True):
+                raise DeploymentError("DEV baseline backup reservation has not been verified")
+            path = _backup_directory(paths, backup) / backup["filename"]
+            recovery = _read_acceptance_policy(paths).get("recovery") or {}
+            if recovery.get("backup_path"):
+                external = Path(recovery["backup_path"])
+                if external.resolve() == path or (external.exists() and path.exists() and external.samefile(path)):
+                    storage.setdefault("retained", []).append(
+                        {"resource": "DEV baseline backup", "reason": "referenced by the approved recovery policy"})
+                    return
+            if path.exists():
+                _validate_managed_backup(paths, lifecycle, backup)
+            reclaimed = _remove_obsolete_managed_backup(paths, backup)
+            record.pop("dev_baseline_backup")
+            _write_identity(paths, record)
+            storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + reclaimed
+    except (OSError, DeploymentError) as exc:
+        storage.setdefault("cleanup_failures", []).append(
+            {"resource": "DEV baseline backup", "reason": str(exc) if isinstance(exc, DeploymentError)
+             else type(exc).__name__})
+
+
+def _remove_obsolete_managed_backup(paths: Paths, pin: dict) -> int:
+    """Remove a superseded pin only after its owner has verified replacement."""
+    if not _valid_managed_backup(pin, complete=True):
+        raise DeploymentError("invalid retired rollback backup pin")
+    directory = _backup_directory(paths, pin)
+    if not os.path.lexists(directory):
+        return 0
+    _check_trusted_tree(directory, paths.owner_uid)
+    info = directory.lstat()
+    if info.st_uid != paths.owner_uid or stat.S_IMODE(info.st_mode) != 0o700:
+        raise DeploymentError("retired SQLite backup directory is not private")
+    path = directory / pin["filename"]
+    entries = list(directory.iterdir())
+    if any(entry != path for entry in entries):
+        raise DeploymentError("retired SQLite backup directory contains unowned resources")
+    size = 0
+    if entries:
+        before = _protected_backup_file(paths, path)
+        if _backup_file_digest(path, before) != pin["sha256"]:
+            raise DeploymentError("retired SQLite backup content no longer matches its ownership pin")
+        path.unlink()
+        size = before.st_blocks * 512
+    directory.rmdir()
+    fd = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return size
+
+
+STAGING_ROOT = Path("/tmp")
+STAGING_PREFIX = "fwrouter-main-"
+STAGING_LEASE = ".fwrouter-deployment-lease"
+STAGING_SIGNATURE = b"fwrouter-deployment-staging/v1\n"
+STAGING_MAX_AGE = 24 * 60 * 60
+
+
+def _require_staging_space(root: Path, bytes_needed: int, inodes_needed: int) -> None:
+    fs = os.statvfs(root)
+    available = fs.f_bavail * fs.f_frsize
+    reserve = 16 * 1024 * 1024
+    required = bytes_needed + inodes_needed * fs.f_frsize + reserve
+    if available < required or (fs.f_files and fs.f_favail < inodes_needed + 128):
+        raise DeploymentIncomplete(
+            f"Temporary storage requires {required} bytes and {inodes_needed + 128} inodes of safe space.")
+
+
+@contextmanager
+def _managed_staging_workspace(paths: Paths):
+    _require_staging_space(STAGING_ROOT, 0, 0)
+    with tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, dir=STAGING_ROOT) as directory:
+        scratch = Path(directory)
+        if scratch.lstat().st_uid != paths.owner_uid:
+            raise DeploymentError("temporary Stable staging has unexpected ownership")
+        lease = os.open(scratch / STAGING_LEASE, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX)
+            with os.fdopen(os.dup(lease), "wb") as stream:
+                stream.write(STAGING_SIGNATURE)
+            yield scratch
+        finally:
+            os.close(lease)
+
+
+def _staging_space_bytes(path: Path) -> int:
+    root = path.lstat()
+    with Path("/proc/self/mountinfo").open(encoding="utf-8", errors="surrogateescape") as stream:
+        for line in stream:
+            mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), line.split()[4])
+            if Path(mount).is_relative_to(path):
+                raise DeploymentError("temporary deployment tree crosses a mount point")
+    total = root.st_blocks * 512
+    count = 0
+    for directory, dirs, files in os.walk(path, followlinks=False):
+        for name in dirs + files:
+            info = (Path(directory) / name).lstat()
+            count += 1
+            if (info.st_dev != root.st_dev or info.st_uid != root.st_uid
+                    or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+                            or stat.S_ISLNK(info.st_mode))
+                    or count > MAX_SOURCE_ENTRIES * 2):
+                raise DeploymentError("temporary deployment tree exceeds its ownership boundary")
+            total += info.st_blocks * 512
+    return total
+
+
+def _cleanup_expired_staging(paths: Paths) -> dict:
+    result = {"reclaimed_bytes": 0, "failures": []}
+    cutoff = time.time() - STAGING_MAX_AGE
+    for path in sorted(STAGING_ROOT.glob(f"{STAGING_PREFIX}*")):
+        if re.fullmatch(r"fwrouter-main-[0-9a-z_]{8}", path.name) is None:
+            continue
+        lease_fd = None
+        try:
+            before = path.lstat()
+            if (not stat.S_ISDIR(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o700
+                    or before.st_uid != paths.owner_uid):
+                continue
+            lease = path / STAGING_LEASE
+            lease_info = lease.lstat()
+            if (not stat.S_ISREG(lease_info.st_mode) or stat.S_IMODE(lease_info.st_mode) != 0o600
+                    or lease_info.st_uid != paths.owner_uid or lease_info.st_nlink != 1
+                    or lease_info.st_mtime >= cutoff or lease_info.st_size != len(STAGING_SIGNATURE)):
+                continue
+            lease_fd = os.open(lease, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                fcntl.flock(lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            opened = os.fstat(lease_fd)
+            if ((opened.st_dev, opened.st_ino) != (lease_info.st_dev, lease_info.st_ino)
+                    or os.read(lease_fd, len(STAGING_SIGNATURE) + 1) != STAGING_SIGNATURE):
+                continue
+            size = _staging_space_bytes(path)
+            after = path.lstat()
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or not shutil.rmtree.avoids_symlink_attacks:
+                raise DeploymentError("temporary staging cannot be deleted with its ownership fence")
+            # Keep the stale lease available to the next invocation until
+            # all payload paths have been deleted. An interruption can leave
+            # an empty directory after unlinking the lease, but no data.
+            for child in path.iterdir():
+                if child == lease:
+                    continue
+                if stat.S_ISDIR(child.lstat().st_mode):
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            lease.unlink()
+            path.rmdir()
+            result["reclaimed_bytes"] += size
+        except FileNotFoundError:
+            # Legacy/unowned directories have no lease. A concurrent removal
+            # can also make this entry disappear before it is inspected.
+            continue
+        except (OSError, DeploymentError) as exc:
+            result["failures"].append({"digest": path.name, "reason": str(exc) if isinstance(exc, DeploymentError)
+                                       else type(exc).__name__})
+        finally:
+            if lease_fd is not None:
+                os.close(lease_fd)
+    return result
+
+
+NATIVE_CHECKS = (
+    "backend_manifest_sha256", "sqlite_schema_integrity_foreign_keys", "generation_owner_state",
+    "checkpoint_state", "xray_identity_bindings_config_runtime", "mihomo_config_rules_selectors_runtime",
+    "core_manifest_nft_ip_routing_runtime", "final_native_runtime_fence_recheck",
+    "generation_native_receipt_exact_match",
+)
+
+
+def _native_acceptance(paths: Paths, lifecycle, manifest: str, policy: dict) -> dict:
+    if not policy or paths.test_driver:
+        return {"status": "NOT_VERIFIED", "reason": "independent runtime image pins are unavailable"}
+    try:
+        _stable_service_state(paths, lifecycle)
+        python = lifecycle._verified_backend_interpreter()
+        result = _run([str(python), "-I", "-B", "-m", "fwrouter_api.cli", "native-proof", "--scope", "ui",
+                       "--expected-backend-manifest-sha256", manifest,
+                       "--expected-xray-image-digest", policy["xray_image"],
+                       "--expected-mihomo-image-digest", policy["mihomo_image"]], timeout=180, host_environment=True)
+    except DeploymentError as exc:
+        return {"status": "NOT_VERIFIED", "reason": str(exc)}
+    except (OSError, RuntimeError) as exc:
+        return {"status": "NOT_VERIFIED", "reason": f"native proof runner unavailable ({type(exc).__name__})"}
+    proof = _json_object(result.stdout)
+    source = {"kind": "backend_manifest_sha256", "sha256": manifest, "commit_sha": None}
+    if (result.returncode == 0 and proof.get("status") == "PASS" and proof.get("scope") == "ui"
+            and type(proof.get("proof_schema_version")) is int and proof["proof_schema_version"] == 1
+            and proof.get("source_identity") == source and proof.get("checks_executed") == list(NATIVE_CHECKS)
+            and _hex(proof.get("native_proof_sha256"), 64)
+            and all(isinstance(proof.get(name), dict)
+                    and proof[name].get("runtime_image_digest") == policy[f"{name}_image"]
+                    for name in ("xray", "mihomo"))):
+        return {"status": "PASS", "reason": None, "proof_sha256": proof["native_proof_sha256"], "scope": "ui"}
+    reason = proof.get("reason")
+    if not isinstance(reason, str) or len(reason) > 100 or not reason.replace("_", "").isalnum():
+        reason = "native_proof_result_unavailable_or_invalid"
+    return {"status": "FAIL" if proof.get("status") == "FAIL" else "NOT_VERIFIED", "reason": reason}
+
+
+def _http_ui(paths: Paths, policy: dict) -> bool:
+    expected = paths.target("opt/fwrouter-ui/index.html")
+    connection = http.client.HTTPConnection("127.0.0.1", policy["ui_port"], timeout=5)
+    try:
+        connection.request("GET", policy["ui_path"], headers={"Accept-Encoding": "identity"})
+        response = connection.getresponse()
+        if response.status != 200:
+            return False
+        raw = response.read(1024 * 1024 + 1)
+        return len(raw) <= 1024 * 1024 and hashlib.sha256(raw).hexdigest() == _digest(expected)
+    finally:
+        connection.close()
+
+
+def _dns_service_ready() -> bool:
+    result = _run(["/usr/bin/dig", "+time=2", "+tries=1", "+short", "@127.0.0.1", "localhost", "A"], timeout=5)
+    return result.returncode == 0 and "127.0.0.1" in result.stdout.splitlines()
+
+
+def _read_health(paths: Paths, lifecycle, policy: dict) -> dict:
+    def probe(action, detail: str) -> dict:
+        try:
+            return {"status": "PASS" if action() else "FAIL", "detail": detail}
+        except (OSError, ValueError, RuntimeError, http.client.HTTPException):
+            return {"status": "INCOMPLETE", "detail": f"{detail} unavailable"}
+
+    if paths.test_driver:
+        return {"API": probe(lambda: paths.api_healthy, "disposable fixture"),
+                "Runtime": probe(lambda: paths.runtime_healthy, "disposable fixture")}
+    ui = (probe(lambda: _http_ui(paths, policy), "loopback HTTP matches installed index.html") if policy
+          else {"status": "INCOMPLETE", "detail": "loopback UI availability probe is not configured"})
+    return {"API": probe(lifecycle._api_health, "local API and database readiness"),
+            "UI": ui,
+            "Xray": probe(_xray_unit_active, "systemd unit state"),
+            "Mihomo": probe(lambda: lifecycle._is_active(lifecycle.MIHOMO_UNIT), "systemd unit state"),
+            "DNS": probe(_dns_service_ready, "local DNS localhost A response"),
+            "Gateway": probe(lambda: lifecycle._is_active(lifecycle.GATEWAY_UNIT)
+                             and lifecycle._gateway_listener_ready(), "systemd unit and local listener")}
+
+
+def _report_lifecycle(result: dict, paths: Paths, lifecycle) -> None:
+    state_file = paths.state_dir / "pending.json"
+    checkpoint = lifecycle._read_checkpoint(state_file) if state_file.exists() else None
+    result["pending_units"] = checkpoint.get("pending_units", []) if checkpoint else []
+    complete = not checkpoint or checkpoint["status"] == "complete"
+    _stage(result, "Lifecycle", "PASS" if complete else "INCOMPLETE",
+           "no pending operations" if complete else "owner operation still pending")
+    if paths.test_driver:
+        return
+    timers = {}
+    for unit in lifecycle.PERSISTENT_TIMERS:
+        try:
+            command = _run(["/usr/bin/systemctl", "show", "--property=ActiveState,UnitFileState", unit],
+                           timeout=10, host_environment=True)
+            properties = dict(line.split("=", 1) for line in command.stdout.splitlines() if "=" in line)
+            active, enabled = properties.get("ActiveState"), properties.get("UnitFileState")
+            if command.returncode or active not in {"active", "inactive", "failed"} or not enabled:
+                raise DeploymentError("systemd timer state is unavailable")
+        except (DeploymentError, OSError):
+            active, enabled = "unknown", "unknown"
+        timers[unit] = {"active": active, "enabled": enabled}
+    result["timers"] = timers
+    unknown = any(state["active"] == "unknown" for state in timers.values())
+    failed = any(state["active"] == "failed" for state in timers.values())
+    _stage(result, "Timers", "FAIL" if failed else "INCOMPLETE" if unknown or result["pending_units"] else "PASS",
+           ", ".join(f"{name.removeprefix('fwrouter-').removesuffix('.timer')} {state['active']}/{state['enabled']}"
+                     for name, state in timers.items()))
+
+
+def _accepted_stable_pin(last: object) -> dict | None:
+    if (not isinstance(last, dict) or last.get("mode") != "STABLE"
+            or last.get("acceptance", {}).get("status") != "VERIFIED"
+            or last.get("native_proof", {}).get("status") != "PASS"
+            or not _valid_qualification(last.get("qualification"))
+            or last["qualification"]["source_sha"] != last.get("git_sha")
+            or last.get("source_content") != last.get("installed_content")):
+        return None
+    proof = last["native_proof"].get("evidence_refs", [])
+    if len(proof) != 1 or not _hex(proof[0], 64):
+        return None
+    return {"source_sha": last["git_sha"], "qualification": last["qualification"],
+            "installed_content": last["installed_content"],
+            "accepted_at": last["acceptance"]["verified_at"], "proof_sha256": proof[0]}
+
+
+def _remember_stable_admission(paths: Paths, lifecycle, *, recovering: bool, rollback: bool = False) -> None:
+    selection = paths.stable_source
+    with _configuration_component_lock(paths):
+        record = _identity_record_base(paths)
+        dev_admission = record.get("dev_admission")
+        operation = record.get("operation") or {}
+        last = record.get("last_verified_install") or {}
+        safe_dev_rollback = (rollback and isinstance(dev_admission, dict)
+                             and operation.get("status") == "VERIFIED_CONTENT"
+                             and last.get("mode") == "DEV"
+                             and last.get("git_sha") == dev_admission.get("git_sha")
+                             and selection.commit == (record.get("stable_current") or {}).get("source_sha"))
+        if dev_admission is not None and not safe_dev_rollback:
+            raise DeploymentIncomplete("A Development recovery admission is active; finish it before Stable admission.")
+        if safe_dev_rollback:
+            record.pop("dev_admission", None)
+        current = record.get("stable_admission")
+        if recovering:
+            if current != selection.qualification:
+                raise DeploymentError("Stable recovery admission changed before deployment")
+            return
+        if current is not None:
+            raise DeploymentError("another Stable operation was admitted; rerun --stable to resume it")
+        accepted = record.get("stable_current") or _accepted_stable_pin(record.get("last_verified_install"))
+        if rollback:
+            last = record.get("last_verified_install") or {}
+            target = (record.get("stable_current") if last.get("mode") == "DEV"
+                      else record.get("stable_previous"))
+            if accepted is None or target is None:
+                raise DeploymentIncomplete("No accepted Stable version is available for rollback.")
+            if target["qualification"]["source_sha"] != selection.commit:
+                raise DeploymentError("the selected rollback source differs from its durable accepted pin")
+            record["rollback_admission"] = target["qualification"]
+        elif not rollback and _current_main() != selection.commit:
+            raise DeploymentError("origin/main advanced before deployment admission; rerun --stable")
+        if not paths.test_driver:
+            lifecycle._validate_state_dir(paths.state_dir)
+        else:
+            paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        record["stable_admission"] = selection.qualification
+        if accepted is not None and not record.get("stable_current"):
+            record["stable_current"] = accepted
+        _write_identity(paths, record)
+
+
+def _pin_retired_ui_release(paths: Paths, ui, *, expected_admission: dict,
+                            development: bool = False) -> None:
+    target = paths.target("opt/fwrouter-ui")
+    releases = paths.target("opt/.fwrouter-ui-releases")
+    with _configuration_component_lock(paths):
+        active = ui._managed_release(target, releases, paths.owner_uid)
+        if active is None:
+            return
+        digest, _ = ui._walk_tree(active, owner_uid=paths.owner_uid, require_index=True)
+        info = active.lstat()
+        key = str(digest)
+        record = _identity_record_base(paths)
+        admission = "dev_admission" if development else "stable_admission"
+        if record.get(admission) != expected_admission:
+            raise DeploymentError("Deployment admission changed before UI retirement was pinned")
+        known_stable = any((record.get(name) or {}).get("installed_content", {}).get("ui_sha256") == key
+                           for name in ("stable_current", "stable_previous"))
+        last = record.get("last_verified_install") or {}
+        known_dev = (last.get("mode") == "DEV" and last.get("installed_content", {}).get("ui_sha256") == key)
+        if not (known_stable or known_dev):
+            return
+        retired = record.setdefault("retired_ui_releases", {})
+        prior = retired.get(key)
+        pin = [info.st_dev, info.st_ino]
+        if prior is not None and prior != pin:
+            raise DeploymentError("UI retirement pin conflicts with the existing release inode")
+        if prior != pin:
+            retired[key] = pin
+            _write_identity(paths, record)
+
+
+def _cleanup_retired_ui(paths: Paths, ui, result: dict) -> None:
+    with _configuration_component_lock(paths):
+        record = _identity_record_base(paths)
+        operation = record.get("operation") or {}
+        checkpoint = paths.state_dir / "pending.json"
+        checkpoint_pending = False
+        if checkpoint.exists():
+            try:
+                checkpoint_pending = json.loads(checkpoint.read_text(encoding="utf-8")).get("status") == "pending"
+            except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+                checkpoint_pending = True
+        if (record.get("stable_admission") or record.get("rollback_admission") or record.get("dev_admission")
+                or operation.get("status") in {"PENDING", "FAILED"}
+                or checkpoint_pending):
+            result.setdefault("storage", {}).setdefault("retained", []).append(
+                {"digest": "UI releases", "reason": "active deployment or lifecycle recovery reference"})
+            return
+        retired = record.get("retired_ui_releases", {})
+        if not retired:
+            return
+        prune = getattr(ui, "prune_retired_releases", None)
+        if not callable(prune):
+            result.setdefault("storage", {}).setdefault("retained", []).append(
+                {"resource": "UI releases", "reason": "selected accepted source predates the UI cleanup owner"})
+            return
+        protected = set()
+        for name in ("stable_current", "stable_previous"):
+            pin = record.get(name)
+            if pin:
+                protected.add(pin["installed_content"]["ui_sha256"])
+        try:
+            outcome = prune(paths.target("opt/fwrouter-ui"),
+                retired={key: tuple(value) for key, value in retired.items()},
+                protected=protected, owner_uid=paths.owner_uid)
+        except (OSError, RuntimeError, ValueError) as exc:
+            result.setdefault("storage", {}).setdefault("cleanup_failures", []).append(
+                {"resource": "UI releases", "reason": str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__})
+            return
+        for key in outcome["removed"]:
+            retired.pop(key, None)
+        if outcome["removed"]:
+            _write_identity(paths, record)
+    storage = result.setdefault("storage", {})
+    storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + outcome["reclaimed_bytes"]
+    storage.setdefault("retained", []).extend(
+        {"digest": key, "reason": reason} for key, reason in outcome["retained"].items())
+    storage.setdefault("cleanup_failures", []).extend(
+        {"digest": key, "reason": reason} for key, reason in outcome["failed"].items())
+
+
+def _refresh_storage_summary(paths: Paths, result: dict, lifecycle=None) -> None:
+    identity = _read_identity(paths)
+    storage = result.setdefault("storage", {})
+    storage["stable_current"] = (identity.get("stable_current") or {}).get("source_sha")
+    storage["stable_previous"] = (identity.get("stable_previous") or {}).get("source_sha")
+    storage["dev_current"] = identity.get("dev_current")
+    last = identity.get("last_verified_install") or {}
+    storage["stable_rollback"] = (storage["stable_current"] if last.get("mode") == "DEV"
+                                  else storage["stable_previous"])
+    storage.setdefault("cleanup_reclaimed_bytes", 0)
+    storage.setdefault("retained", [])
+    try:
+        managed = _tree_bytes(paths.target("opt/fwrouter-api")) + _tree_bytes(
+            paths.target("opt/.fwrouter-ui-releases"))
+    except (OSError, DeploymentError):
+        managed = 0
+        storage["managed_bytes_status"] = "NOT_VERIFIED"
+        result.setdefault("warnings", []).append("Release storage usage could not be measured safely.")
+    backup = identity.get("database_rollback")
+    if backup and _valid_managed_backup(backup, complete=True):
+        try:
+            managed += (_backup_directory(paths, backup) / backup["filename"]).stat().st_blocks * 512
+        except OSError:
+            result.setdefault("warnings", []).append("Pinned rollback backup size could not be measured safely.")
+    retired_backup = identity.get("database_rollback_retired")
+    if retired_backup and _valid_managed_backup(retired_backup, complete=True):
+        try:
+            managed += (_backup_directory(paths, retired_backup) / retired_backup["filename"]).stat().st_blocks * 512
+        except OSError:
+            result.setdefault("warnings", []).append("Retained rollback backup size could not be measured safely.")
+    baseline_backup = identity.get("dev_baseline_backup")
+    if baseline_backup is not None:
+        result["dev_baseline_database_backup"] = "INCOMPLETE"
+    if _valid_managed_backup(baseline_backup, complete=True):
+        result["dev_baseline_database_backup"] = "NOT_VERIFIED"
+        if lifecycle is not None and not paths.test_driver:
+            try:
+                _validate_managed_backup(paths, lifecycle, baseline_backup)
+                result["dev_baseline_database_backup"] = "VERIFIED"
+            except (OSError, DeploymentError):
+                result["dev_baseline_database_backup"] = "INCOMPLETE"
+                result.setdefault("warnings", []).append("Pinned DEV baseline database backup failed verification.")
+        try:
+            size = (_backup_directory(paths, baseline_backup) / baseline_backup["filename"]).stat().st_blocks * 512
+            storage["dev_baseline_backup_bytes"] = size
+            managed += size
+        except OSError:
+            storage["managed_bytes_status"] = "NOT_VERIFIED"
+            result.setdefault("warnings", []).append("DEV baseline backup size could not be measured safely.")
+    capsules = {item["snapshot_path"] for key in ("dev_current", "dev_admission", "dev_retired")
+                if (item := identity.get(key)) is not None}
+    capsule_bytes = 0
+    for anchor in capsules:
+        capsule = Path(anchor)
+        try:
+            info = capsule.lstat()
+            if (capsule.parent != _dev_source_directory(paths) or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != paths.owner_uid or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_nlink != 1):
+                raise DeploymentError("snapshot ownership is unknown")
+            capsule_bytes += info.st_blocks * 512
+        except (DeploymentError, OSError):
+            storage["managed_bytes_status"] = "NOT_VERIFIED"
+            result.setdefault("warnings", []).append("Pinned DEV snapshot size could not be measured safely.")
+    storage["dev_snapshot_bytes"] = capsule_bytes
+    storage["managed_bytes"] = managed + capsule_bytes
+    if backup:
+        if lifecycle is None:
+            result["rollback_database_backup"] = "NOT_VERIFIED"
+        else:
+            try:
+                _validate_managed_backup(paths, lifecycle, backup)
+                result["rollback_database_backup"] = "VERIFIED"
+            except (DeploymentError, OSError):
+                result["rollback_database_backup"] = "INCOMPLETE"
+                result.setdefault("warnings", []).append("Pinned rollback database backup failed verification.")
+    else:
+        result["rollback_database_backup"] = "NOT_REQUIRED"
+
+
+def _cleanup_retired_backup(paths: Paths, lifecycle, result: dict) -> None:
+    with _configuration_component_lock(paths):
+        record = _identity_record_base(paths)
+        retired = record.get("database_rollback_retired")
+        operation = record.get("operation") or {}
+        if (not retired or record.get("stable_admission") or record.get("rollback_admission")
+                or operation.get("status") in {"PENDING", "FAILED"}):
+            return
+        if retired == record.get("database_rollback"):
+            result.setdefault("storage", {}).setdefault("retained", []).append(
+                {"resource": "managed SQLite backup", "reason": "still referenced by rollback identity"})
+            return
+        try:
+            checkpoint = paths.state_dir / "pending.json"
+            if checkpoint.exists() and lifecycle._read_checkpoint(checkpoint)["status"] != "complete":
+                result.setdefault("storage", {}).setdefault("retained", []).append(
+                    {"resource": "managed SQLite backup", "reason": "lifecycle recovery is pending"})
+                return
+            policy_pin = _read_acceptance_policy(paths).get("recovery")
+            external = policy_pin.get("backup_path") if isinstance(policy_pin, dict) else None
+            retired_path = _backup_directory(paths, retired) / retired["filename"]
+            if isinstance(external, str):
+                external_path = Path(external)
+                if (external_path.resolve() == retired_path
+                        or (external_path.exists() and retired_path.exists()
+                            and external_path.samefile(retired_path))):
+                    result.setdefault("storage", {}).setdefault("retained", []).append(
+                        {"resource": "managed SQLite backup", "reason": "referenced by the configured recovery backup pin"})
+                    return
+            replacement = record.get("database_rollback")
+            _validate_managed_backup(paths, lifecycle, replacement)
+            reclaimed = _remove_obsolete_managed_backup(paths, retired)
+            record.pop("database_rollback_retired", None)
+            _write_identity(paths, record)
+            storage = result.setdefault("storage", {})
+            storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + reclaimed
+        except (OSError, RuntimeError, ValueError) as exc:
+            result.setdefault("storage", {}).setdefault("cleanup_failures", []).append(
+                {"resource": "managed SQLite backup", "reason": str(exc) if isinstance(exc, DeploymentError)
+                 else type(exc).__name__})
+
+
+def _managed_rollback_backup(paths: Paths, lifecycle, old_digest: str,
+                            expected_admission: dict, result: dict) -> dict:
+    with _configuration_component_lock(paths):
+        identity = _identity_record_base(paths)
+        if identity.get("stable_admission") != expected_admission:
+            raise DeploymentError("Stable admission changed before database rollback reservation")
+        current = identity.get("stable_current")
+        if (not current or not _hex(current.get("source_sha"), 40)
+                or current.get("installed_content", {}).get("backend_sha256") != old_digest):
+            raise DeploymentIncomplete("A managed rollback backup requires an exact accepted current Stable identity for the installed backend.")
+        existing = identity.get("database_rollback")
+        candidate = identity.get("database_rollback_candidate")
+        expected = {"source_sha": current["source_sha"], "backend_sha256": old_digest, "schema": 27}
+        if existing and all(existing.get(key) == value for key, value in expected.items()):
+            _validate_managed_backup(paths, lifecycle, existing)
+            result["backup"] = {"status": "REUSED", "detail": "exact accepted Stable schema-27 rollback snapshot verified"}
+            return existing
+        if identity.get("database_rollback_retired"):
+            raise DeploymentIncomplete("Resolve the retained superseded SQLite backup before creating another rollback snapshot.")
+        if candidate:
+            if any(candidate.get(key) != value for key, value in expected.items()):
+                raise DeploymentIncomplete("An unfinished database backup reservation belongs to a different Stable generation.")
+            reservation = {key: candidate[key] for key in ("id", "source_sha", "backend_sha256", "schema")}
+        else:
+            reservation = {"id": uuid.uuid4().hex, **expected}
+            identity["database_rollback_candidate"] = reservation
+            _write_identity(paths, identity)
+        prepared = (_prepare_managed_backup(paths, lifecycle, reservation)
+                    if not _valid_managed_backup(candidate, complete=True) else candidate)
+        _validate_managed_backup(paths, lifecycle, prepared)
+        if candidate != prepared:
+            identity["database_rollback_candidate"] = prepared
+            _write_identity(paths, identity)
+        result["backup"] = {"status": "CREATED", "detail": "verified schema-27 SQLite rollback snapshot for the accepted Stable generation"}
+        return prepared
+
+
+def _installed_version(result: dict, identity: dict) -> None:
+    last = identity.get("last_verified_install") or {}
+    result["installed_version"] = last.get("git_sha")
+    result["deployment_identity"] = identity
+
+
+def _record_stable_acceptance(paths: Paths, result: dict, commit: str, proof: dict, lifecycle=None) -> None:
+    last = result["deployment_identity"].get("last_verified_install")
+    if not last or last.get("mode") != "STABLE" or last.get("git_sha") != commit:
+        raise DeploymentError("content identity changed before acceptance publication")
+    with _configuration_component_lock(paths):
+        record = _read_identity(paths)
+        current = record.get("operation") or {}
+        rollback = bool(record.get("rollback_admission"))
+        if (record.get("last_verified_install") != last or (record.get("stable_admission") and not rollback)
+                or current.get("operation_id") != last["operation_id"]):
+            raise DeploymentError("deployment operation changed before acceptance publication")
+        acceptance = {"status": "VERIFIED", "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        native = {"status": "PASS", "scope": proof["scope"], "evidence_refs": [proof["proof_sha256"]]}
+        for row in (current, record["last_verified_install"]):
+            row.update(native_proof=native, acceptance=acceptance)
+        old_accepted = record.get("stable_current")
+        new_accepted = _accepted_stable_pin(record["last_verified_install"])
+        if new_accepted is None:
+            raise DeploymentError("accepted deployment identity could not be safely pinned")
+        if old_accepted is not None and old_accepted["source_sha"] != new_accepted["source_sha"]:
+            record["stable_previous"] = old_accepted
+        record["stable_current"] = new_accepted
+        candidate_backup = record.get("database_rollback_candidate")
+        dev_backup = record.get("dev_baseline_backup")
+        promote_dev_backup = (
+            candidate_backup is None and old_accepted is not None
+            and old_accepted["source_sha"] != new_accepted["source_sha"]
+            and _valid_managed_backup(dev_backup, complete=True)
+            and dev_backup["source_sha"] == old_accepted["source_sha"]
+            and dev_backup["backend_sha256"] == old_accepted["installed_content"]["backend_sha256"]
+        )
+        if promote_dev_backup:
+            candidate_backup = dev_backup
+        if candidate_backup and _valid_managed_backup(candidate_backup, complete=True):
+            if (old_accepted is None or candidate_backup["source_sha"] != old_accepted["source_sha"]
+                    or candidate_backup["backend_sha256"] != old_accepted["installed_content"]["backend_sha256"]):
+                raise DeploymentError("database rollback backup does not match the accepted Stable version being retained")
+            if lifecycle is None:
+                configured, _configured_sha = _read_config(paths.config, paths.owner_uid)
+                lifecycle, _lock, _ui = _source_modules(configured, paths)
+            _validate_managed_backup(paths, lifecycle, candidate_backup)
+            prior_backup = record.get("database_rollback")
+            if prior_backup and prior_backup != candidate_backup:
+                if record.get("database_rollback_retired"):
+                    raise DeploymentIncomplete("The existing retired SQLite backup still needs safe cleanup.")
+                record["database_rollback_retired"] = prior_backup
+            record["database_rollback"] = candidate_backup
+            record.pop("database_rollback_candidate", None)
+            if promote_dev_backup:
+                record.pop("dev_baseline_backup")
+        if isinstance(record.get("dev_current"), dict):
+            record["dev_retired"] = record["dev_current"]
+        record.pop("stable_admission", None)
+        record.pop("rollback_admission", None)
+        record.pop("dev_current", None)
+        _write_identity(paths, record)
+    _installed_version(result, record)
+
+
+def _stable_updater_args(paths: Paths, selection: StableSource, operation: dict) -> argparse.Namespace | None:
+    if paths.test_driver:
+        return None
+    wrapper = "host/sbin/fwrouter-deploy"
+    installed_wrapper = paths.target("usr/local/sbin/fwrouter-deploy")
+    if _read_stable_source_file(installed_wrapper, paths.owner_uid) != _git_blob_bytes(selection.root, selection.commit, wrapper):
+        raise DeploymentError("Installed updater wrapper differs from Main. Use the approved updater bootstrap for wrapper changes.")
+    module = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+    old_digest = hashlib.sha256(_read_stable_source_file(module, paths.owner_uid)).hexdigest()
+    candidate = _git_blob_bytes(selection.root, selection.commit, "installer/local_deploy.py")
+    pending = operation.get("kind") == "self_upgrade" and operation.get("status") == "PENDING"
+    if not pending and hashlib.sha256(candidate).hexdigest() == old_digest:
+        return None
+    evidence = selection.qualification
+    return argparse.Namespace(main_sha=selection.commit, confirm_main_sha=selection.commit,
+                              run_id=str(evidence["run_id"]), run_attempt=str(evidence["run_attempt"]),
+                              artifact_id=str(evidence["artifact_id"]), artifact_digest=evidence["artifact_digest"],
+                              expected_installed_module_sha256=operation["old_module_sha256"] if pending else old_digest)
+
+
+def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, progress,
+                   rollback: bool = False) -> None:
+    identity = _read_identity(paths)
+    dev_admission = identity.get("dev_admission")
+    dev_operation = identity.get("operation") or {}
+    dev_last = identity.get("last_verified_install") or {}
+    safe_dev_rollback = (rollback and isinstance(dev_admission, dict)
+                         and dev_operation.get("status") == "VERIFIED_CONTENT"
+                         and dev_last.get("mode") == "DEV"
+                         and dev_last.get("git_sha") == dev_admission.get("git_sha")
+                         and dev_operation.get("lifecycle_status") == "complete")
+    if dev_admission is not None and not safe_dev_rollback:
+        raise DeploymentIncomplete("A Development operation is pending; rerun --dev to resume its captured snapshot first.")
+    if identity.get("dev_retired") is not None:
+        _cleanup_development_snapshots(paths, result)
+        if result.get("storage", {}).get("cleanup_failures"):
+            raise DeploymentIncomplete("A prior DEV snapshot could not be safely retired; resolve cleanup before Stable deployment.")
+        identity = _read_identity(paths)
+    _installed_version(result, identity)
+    result["previous_version"] = result["installed_version"]
+    rollback_recovery = identity.get("rollback_admission")
+    if rollback_recovery:
+        rollback = True
+    recovery = identity.get("stable_admission")
+    last = identity.get("last_verified_install") or {}
+    rollback_pin = None
+    if rollback and not rollback_recovery and recovery is not None:
+        raise DeploymentIncomplete("A different Stable operation is already admitted; resume it before rollback.")
+    if rollback and recovery is None:
+        rollback_pin = (identity.get("stable_current") if last.get("mode") == "DEV"
+                        else identity.get("stable_previous"))
+        target = rollback_pin
+        if not target:
+            raise DeploymentIncomplete("No accepted Stable version is available as a rollback target.")
+        recovery = target["qualification"]
+    elif rollback and rollback_recovery:
+        rollback_pin = next((identity.get(name) for name in ("stable_current", "stable_previous")
+                             if (identity.get(name) or {}).get("qualification") == rollback_recovery), None)
+    operation = identity.get("operation") or {}
+    if operation.get("kind") == "self_upgrade" and operation.get("status") == "PENDING" and not recovery:
+        raise DeploymentIncomplete("Resume the existing D1 source transition before starting a Stable deployment.")
+    progress("Resolving qualified Stable source")
+    additional_sha = ((identity.get("stable_current") or {}).get("source_sha") if rollback else None)
+    source_context = (_temporary_main(paths, recovery) if additional_sha is None
+                      else _temporary_main(paths, recovery, additionally_fetch_sha=additional_sha))
+    with source_context as source:
+        selected = replace(paths, stable_source=source)
+        commit = source.commit
+        result["source_commit"] = commit
+        result["qualification"] = source.qualification
+        _stage(result, "Source", "PASS", f"main @ {commit[:12]}")
+        progress(f"Source main @ {commit[:12]}")
+        _stage(result, "CI", "PASS", "Release Acceptance verified" + (" before the interrupted operation" if recovery else ""))
+        if (operation.get("kind") != "self_upgrade" and operation.get("status") in {"PENDING", "FAILED"}
+                and operation.get("requested_source", {}).get("git_sha") != commit):
+            raise DeploymentIncomplete("Complete the existing lifecycle operation against its originally selected source.")
+        lifecycle, lock_module, ui = _source_modules(source.root, selected)
+        if rollback:
+            pinned_previous = rollback_pin or identity.get("stable_previous")
+            if not pinned_previous or pinned_previous.get("qualification") != source.qualification:
+                raise DeploymentIncomplete("Stable rollback source no longer matches the last accepted previous pin.")
+            reconstructed = _source_content_identity(source.root, lifecycle, ui, selected)
+            if reconstructed != pinned_previous["installed_content"]:
+                raise DeploymentIncomplete("The accepted rollback SHA no longer reconstructs the installed component content.")
+        status = check(selected, source.root, commit)
+        updater = None if rollback else _stable_updater_args(selected, source, operation)
+        facts = _facts(source.root, selected, lifecycle, ui)
+        policy = _read_acceptance_policy(paths)
+        result["components"] = {"unchanged": [], "updated": []}
+        if status == "UPDATER_SELF_UPGRADE_PENDING" and updater is None:
+            raise DeploymentIncomplete("Resume the existing D1 updater transition with its pinned inputs.")
+        changed = [name for name, same in zip(("Backend", "UI", "Host files"), facts[:3]) if not same]
+        if "Backend" in changed:
+            saved_retirement = operation.get("retire_paths") if operation.get("status") in {"PENDING", "FAILED"} else None
+            retirement = saved_retirement if saved_retirement is not None else _prepare_backend_retirements(paths, source.root, lifecycle)
+            selected = replace(selected, retire_paths=retirement)
+            paths = selected
+        timer_update = not paths.test_driver and lifecycle._traffic_timer_update_required(source.root)
+        if timer_update:
+            changed.append("Traffic timer")
+            if status == "NOOP":
+                status = "READY_TO_APPLY"
+        if status not in {"NOOP", "UNHEALTHY_CURRENT_SOURCE"} or updater is not None:
+            progress("Checking storage and deployment preflight")
+            _storage_preflight(selected, source.root, changed, result)
+            _stage(result, "Storage", "PASS", "temporary and installation space are sufficient")
+        else:
+            _stage(result, "Storage", "SKIP", "no publication is required")
+        old_digest = None
+        if status not in {"NOOP", "UNHEALTHY_CURRENT_SOURCE"} or updater is not None:
+            progress("Checking preflight and lifecycle recovery")
+            _strict_database_preflight(paths, lifecycle, source.root)
+            if not facts[0]:
+                _verify_dependency_compatibility(paths, source.root)
+                if rollback:
+                    installed_paths = {
+                        item["path"] for item in lifecycle._backend_manifest(paths.target("opt/fwrouter-api"))
+                    }
+                    rollback_paths = {item["path"] for item in lifecycle._backend_manifest(source.root / "backend")}
+                    obsolete = {
+                        line for line in (source.root / "installer/obsolete-backend-paths.txt").read_text().splitlines()
+                        if line and not line.startswith("#")
+                    }
+                    if last.get("mode") != "DEV" and installed_paths - rollback_paths - obsolete:
+                        raise DeploymentIncomplete(
+                            "The rollback installer cannot retire every newer backend file through its supported allowlist.")
+                checkpoint = (lifecycle._read_checkpoint(paths.state_dir / "pending.json")
+                              if (paths.state_dir / "pending.json").exists() else None)
+                new_digest = _source_content_identity(source.root, lifecycle, ui, selected)["backend_sha256"]
+                if (checkpoint and checkpoint["status"] == "pending"
+                        and checkpoint["backend_manifest_sha256"] == new_digest
+                        and checkpoint.get("source_transitions")):
+                    old_digest = checkpoint["source_transitions"][-1]["from_manifest_sha256"]
+                else:
+                    if _installed_source_reconstruction_required(paths):
+                        if not _known_installed_backend(paths, lifecycle._manifest_digest(
+                                lifecycle._backend_manifest(paths.target("opt/fwrouter-api")))):
+                            raise DeploymentIncomplete("Installed DEV backend has no durable recovery identity.")
+                    else:
+                        _find_source_commit(source.root, paths.target("opt/fwrouter-api"), lifecycle)
+                    old_digest = lifecycle._manifest_digest(lifecycle._backend_manifest(paths.target("opt/fwrouter-api")))
+            if not paths.test_driver and status != "FINALIZE_PENDING_IDENTITY":
+                checkpoint_path = paths.state_dir / "pending.json"
+                checkpoint = lifecycle._read_checkpoint(checkpoint_path) if checkpoint_path.exists() else {}
+                active = (checkpoint["active_units"] if checkpoint.get("status") == "pending" else
+                          {unit: lifecycle._is_active(unit) for unit in lifecycle.PERSISTENT_TIMERS})
+                lifecycle._preflight_timer_restore(source.root, active)
+            _stage(result, "Preflight", "PASS", "schema admission and recoverable lifecycle source")
+            _remember_stable_admission(selected, lifecycle, recovering=bool(identity.get("stable_admission")),
+                                       rollback=rollback)
+            if old_digest is not None:
+                external_recovery = policy.get("recovery")
+                if last.get("mode") == "DEV":
+                    _ensure_dev_baseline_backup(selected, lifecycle, policy, result, returning=True)
+                elif (paths.test_driver or (isinstance(external_recovery, dict)
+                        and external_recovery.get("installed_backend_sha256") == old_digest)):
+                    result["backup"] = _verify_backend_recovery(paths, lifecycle, policy, old_digest)
+                else:
+                    _managed_rollback_backup(paths, lifecycle, old_digest, source.qualification, result)
+            if "UI" in changed:
+                _pin_retired_ui_release(selected, ui, expected_admission=source.qualification)
+        if updater is not None:
+            _self_upgrade(selected, source.root, commit, updater)
+            _stage(result, "Updater", "PASS", "qualified updater module transition")
+            changed.append("Updater")
+            status = check(selected, source.root, commit)
+            if timer_update and status == "NOOP":
+                status = "READY_TO_APPLY"
+        deploying = status not in {"NOOP", "UNHEALTHY_CURRENT_SOURCE"}
+        publication_error = None
+        if deploying:
+            progress(f"Applying {commit[:12]} through the deployment lifecycle")
+            try:
+                outcome = apply(selected, source.root, commit, owner_driver=owner_driver, system_driver=system_driver)
+                result["install_status"] = outcome["status"]
+            except (DeploymentError, RuntimeError, OSError, ValueError) as exc:
+                publication_error = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+                result["warnings"].append("Inspect the owner checkpoint and rerun --stable to resume the admitted operation.")
+        elif status == "NOOP" and (last.get("mode") == "DEV"
+                                  or (rollback and last.get("git_sha") != commit)):
+            _remember_stable_admission(selected, lifecycle, recovering=bool(identity.get("stable_admission")),
+                                       rollback=rollback)
+            operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"fwrouter-stable:{commit}"))
+            _record_operation(selected, lock_module, source.root, commit, lifecycle, ui, operation_id,
+                              "complete", "VERIFIED_CONTENT", [], details={"kind": "stable_deploy"})
+        elif identity.get("stable_admission") or updater is not None:
+            with _configuration_component_lock(paths):
+                record = _identity_record_base(paths)
+                if record.get("stable_admission") != source.qualification:
+                    raise DeploymentError("Stable admission changed before NOOP finalization")
+                record.pop("stable_admission")
+                record.pop("rollback_admission", None)
+                _write_identity(paths, record)
+        else:
+            _stage(result, "Preflight", "SKIP", "no component publication needed")
+        published = _facts(source.root, selected, lifecycle, ui)
+        timer_updated = not timer_update or (publication_error is None
+                         and not lifecycle._traffic_timer_update_required(source.root))
+        matches = all(published[:3]) and timer_updated
+        result["components"]["updated"] = changed if (deploying or updater is not None) and matches else []
+        result["components"]["unchanged"] = [name for name in ("Backend", "UI", "Host files") if name not in changed]
+        if publication_error:
+            _stage(result, "Install", "FAIL", publication_error)
+        else:
+            _stage(result, "Install", "PASS" if deploying or updater is not None else "SKIP",
+                   ", ".join(changed) + " updated" if changed else "component files already match")
+        _stage(result, "Identity", "PASS" if matches else "FAIL", "installed content comparison against qualified source")
+        result["installed_content"] = "VERIFIED" if matches else "FAILED"
+        result.setdefault("backup", {"status": "NOT_CREATED", "detail": "no backend content change"})
+        _installed_version(result, _read_identity(paths))
+        _report_lifecycle(result, paths, lifecycle)
+        result["health"] = _read_health(paths, lifecycle, policy)
+        manifest = _source_content_identity(source.root, lifecycle, ui, selected)["backend_sha256"]
+        progress("Verifying Stable health and native acceptance")
+        proof = (_native_acceptance(paths, lifecycle, manifest, policy) if matches and not publication_error
+                 else {"status": "NOT_VERIFIED", "reason": "component publication or lifecycle is incomplete"})
+        result["native_proof"] = proof
+        _stage(result, "Native proof", {"PASS": "PASS", "FAIL": "FAIL", "NOT_VERIFIED": "INCOMPLETE"}[proof["status"]],
+               proof["reason"] or "fenced native proof verified")
+        states = {item["status"] for item in (*result["stages"].values(), *result["health"].values())}
+        if "FAIL" in states or status == "UNHEALTHY_CURRENT_SOURCE":
+            result["result"] = "FAILED"
+            result["warnings"].append("Resolve the failed health or verification checks before repeating deployment.")
+        elif "INCOMPLETE" in states:
+            result["result"] = "INCOMPLETE"
+            if proof["reason"]:
+                result["warnings"].append(f"Complete the owner-backed acceptance checks ({proof['reason']}).")
+        else:
+            result["result"] = "SUCCESS" if deploying or updater is not None else "NOOP"
+            last_now = (_read_identity(paths).get("last_verified_install") or {})
+            needs_promotion = (not deploying and not rollback and matches
+                and ((last_now.get("mode") == "STABLE" and last_now.get("git_sha") == commit
+                      and last_now.get("acceptance", {}).get("status") != "VERIFIED")
+                     or last_now.get("mode") == "DEV")
+                and (_read_identity(paths).get("operation") or {}).get("status") == "VERIFIED_CONTENT")
+            if deploying or rollback or needs_promotion:
+                _record_stable_acceptance(paths, result, commit, proof, lifecycle=lifecycle)
+            if result["result"] in {"SUCCESS", "NOOP"}:
+                _cleanup_retired_ui(paths, ui, result)
+                if not paths.test_driver:
+                    _cleanup_retired_backup(paths, lifecycle, result)
+                    _cleanup_dev_baseline_backup(paths, lifecycle, result)
+                if identity.get("dev_current") is not None:
+                    _cleanup_development_snapshots(paths, result)
+        result["status"] = result["result"]
+        result["content_noop"] = not deploying
+        result["acceptance"] = {"status": "VERIFIED" if result["result"] in {"SUCCESS", "NOOP"} else "NOT_VERIFIED"}
+        if not paths.test_driver and result["result"] in {"SUCCESS", "NOOP"}:
+            cleanup = _cleanup_expired_staging(paths)
+            storage = result.setdefault("storage", {})
+            storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + cleanup["reclaimed_bytes"]
+            storage.setdefault("cleanup_failures", []).extend(cleanup["failures"])
+        try:
+            result.setdefault("storage", {})["temporary_staging_bytes"] = _staging_space_bytes(source.root.parent)
+        except (OSError, DeploymentError) as exc:
+            result.setdefault("storage", {})["temporary_staging_status"] = "INCOMPLETE"
+            result.setdefault("warnings", []).append(f"Temporary staging usage could not be measured: {type(exc).__name__}.")
+        _refresh_storage_summary(paths, result, lifecycle=lifecycle)
+
+
+def _stable_check(paths: Paths, result: dict, identity: dict) -> tuple[str, int]:
+    _installed_version(result, identity)
+    last = identity.get("last_verified_install") or {}
+    operation = identity.get("operation") or {}
+    if operation.get("kind") == "self_upgrade" and operation.get("status") == "COMPLETE":
+        try:
+            verified = all(hashlib.sha256(_read_stable_source_file(paths.target(path), paths.owner_uid))
+                           .hexdigest() == operation[key] for path, key in (
+                               ("usr/local/libexec/fwrouter/local_deploy.py", "candidate_module_sha256"),
+                               ("usr/local/sbin/fwrouter-deploy", "wrapper_sha256")))
+        except (OSError, DeploymentError):
+            _stage(result, "Updater", "INCOMPLETE", "installed updater module or wrapper could not be read safely")
+        else:
+            _stage(result, "Updater", "PASS" if verified else "FAIL",
+                   "installed updater and wrapper match the completed transition" if verified
+                   else "installed updater or wrapper differs from the completed transition")
+    recovery = identity.get("stable_admission")
+    dev_recovery = identity.get("dev_admission")
+    configured = None
+    lifecycle = None
+    if paths.config.exists():
+        configured, _ = _read_config(paths.config, paths.owner_uid)
+        lifecycle, _lock, ui = _source_modules(configured, paths)
+    _refresh_storage_summary(paths, result, lifecycle=lifecycle)
+    if configured is not None:
+        _report_lifecycle(result, paths, lifecycle)
+        policy = _read_acceptance_policy(paths)
+        result["health"] = _read_health(paths, lifecycle, policy)
+        backup_status = result["rollback_database_backup"]
+        _stage(result, "Rollback database", "PASS" if backup_status == "VERIFIED" else
+               "INCOMPLETE" if backup_status in {"INCOMPLETE", "NOT_VERIFIED"} else "SKIP",
+               "verified pinned schema-27 backup" if backup_status == "VERIFIED" else
+               "pinned backup verification failed" if backup_status == "INCOMPLETE" else
+               "no database migration or compatibility change requires a backup")
+        if last:
+            installed = _installed_content_identity(configured, paths, lifecycle, ui)
+            matches = installed == last.get("installed_content")
+            _stage(result, "Identity", "PASS" if matches else "FAIL",
+                   "installed content matches the last verified install" if matches
+                   else "installed content differs from the last verified install")
+            proof = (_native_acceptance(paths, lifecycle, installed["backend_sha256"], policy) if matches
+                     else {"status": "NOT_VERIFIED", "reason": "content identity changed"})
+            result["native_proof"] = proof
+            _stage(result, "Native proof", {"PASS": "PASS", "FAIL": "FAIL", "NOT_VERIFIED": "INCOMPLETE"}[proof["status"]],
+                   proof["reason"] or "fenced native proof verified")
+    else:
+        _stage(result, "Lifecycle", "INCOMPLETE", "local lifecycle inspection source is unavailable")
+        _stage(result, "Health", "INCOMPLETE", "local health inspection source is unavailable")
+    if "Identity" not in result["stages"]:
+        _stage(result, "Identity", "INCOMPLETE",
+               "installed version is UNKNOWN" if not last else "last verified install recorded, current content unverified")
+    if recovery:
+        command = "--rollback" if identity.get("rollback_admission") else "--stable"
+        _stage(result, "Recovery", "INCOMPLETE", f"rerun {command} to resume {recovery['source_sha'][:12]}")
+    elif dev_recovery:
+        _stage(result, "Recovery", "INCOMPLETE",
+               f"rerun --dev to finish the captured snapshot from {dev_recovery['base_git_sha'][:12]}")
+    if result.get("dev_baseline_database_backup") == "INCOMPLETE":
+        _stage(result, "DEV rollback database", "INCOMPLETE", "accepted Stable database protection needs verification")
+    states = {row["status"] for row in (*result["stages"].values(), *result.get("health", {}).values())}
+    if "FAIL" in states:
+        return "FAILED", 1
+    if "INCOMPLETE" in states:
+        return "STABLE_RECOVERY_PENDING" if recovery else "DEV_RECOVERY_PENDING" if dev_recovery else "INCOMPLETE", 3
+    return "CHECKED", 0
+
+
+DEFAULT_DEV_SOURCE = Path("/srv/fwrouter")
+
+
 def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
          owner_driver: Callable[[object, str, Path, bool, Path, list[str]], subprocess.CompletedProcess] | None = None,
          system_driver: Callable[[list[str]], subprocess.CompletedProcess] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--stable", action="store_true", help="deploy latest qualified origin/main")
+    mode.add_argument("--rollback", action="store_true", help="restore the previously accepted Stable version")
+    mode.add_argument("--dev", action="store_true", help="deploy local development source")
+    parser.add_argument("--source", metavar="PATH", help="Development source checkout (default /srv/fwrouter)")
+    parser.add_argument("--acknowledge-stable-replacement", action="store_true",
+                        help="acknowledge a Development deployment that would replace Stable")
+    parser.add_argument("--json", action="store_true", help="emit structured JSON output")
+    parser.add_argument("--verbose", action="store_true", help="include detailed diagnostics")
     parser.add_argument("--check", action="store_true", help="inspect source and current state without mutation")
     parser.add_argument("--configure-source", metavar="PATH", help="select a root-controlled clean local Git checkout")
     parser.add_argument("--allow-timer-catchup", action="store_true",
@@ -1962,12 +4726,15 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     parser.add_argument("--expected-installed-module-sha256")
     parser.add_argument("--confirm-main-sha")
     args = parser.parse_args(argv)
+    if args.source and not args.dev:
+        parser.error("--source requires --dev")
+    if args.acknowledge_stable_replacement and not args.dev:
+        parser.error("--acknowledge-stable-replacement requires --dev")
+    if (args.stable or args.rollback or args.dev) and (args.configure_source or args.self_upgrade or args.allow_timer_catchup):
+        parser.error("deployment modes cannot be combined with legacy source, updater or timer options")
     test_driver = paths_override is not None
     if test_driver and (paths_override.target_root == Path("/") or not paths_override.test_driver):
         parser.error("test context must use an explicitly disposable target")
-    if os.geteuid() != 0 and not test_driver:
-        print("fwrouter-deploy: must run as root", file=sys.stderr)
-        return 1
     if args.self_upgrade and (args.check or args.configure_source or args.allow_timer_catchup):
         parser.error("--self-upgrade cannot be combined with --check, source configuration or timer catch-up")
     if not args.self_upgrade and any((args.main_sha, args.run_id, args.run_attempt, args.artifact_id,
@@ -1979,28 +4746,93 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     if args.configure_source and args.allow_timer_catchup:
         parser.error("source configuration cannot be combined with timer catch-up")
     paths = paths_override or Paths(config=CONFIG_PATH, owner_uid=0)
+    started = time.monotonic()
+    mode = "DEV" if args.dev else "STABLE" if args.stable or args.rollback else "LOCAL"
+    summary = {"mode": mode, "stages": {}, "warnings": []}
+    phase = "Source"
+    if not args.json and not args.check:
+        _emit_progress(f"FWRouter Deployment — {mode}")
+
+    def progress(message: str) -> None:
+        nonlocal phase
+        phase = {"Resolving": "CI", "Checking": "Preflight", "Applying": "Install",
+                 "Restoring": "Lifecycle", "Verifying": "Acceptance"}.get(
+            message.split()[0], phase)
+        if not args.json:
+            _emit_progress(message)
+
+    def emit(status: str, exit_code: int, **fields) -> int:
+        summary.update(status=status, duration_seconds=time.monotonic() - started, **fields)
+        if (args.dev or args.stable or args.rollback) and "installed_version" not in summary:
+            try:
+                _installed_version(summary, _read_identity(paths))
+            except (DeploymentError, OSError):
+                summary["warnings"].append("The installed identity could not be read safely.")
+        important = "FAIL" if exit_code == 1 else "INCOMPLETE" if exit_code in {3, 130} else None
+        if important:
+            for name, row in (*summary["stages"].items(), *summary.get("health", {}).items()):
+                if row["status"] == important:
+                    print(f"fwrouter-deploy: {name} · {row['detail']}", file=sys.stderr, flush=True)
+        for failure in (summary.get("storage") or {}).get("cleanup_failures", []):
+            name = failure.get("resource") or failure.get("digest", "resource")
+            print(f"fwrouter-deploy: cleanup {name} · {failure.get('reason', 'see verbose diagnostics')}",
+                  file=sys.stderr, flush=True)
+        _emit_result(summary, as_json=args.json, verbose=args.verbose, heading=args.check)
+        return exit_code
+
+    def interrupted(_signum, _frame) -> None:
+        raise KeyboardInterrupt
+
+    old_term = signal.signal(signal.SIGTERM, interrupted)
     try:
+        if os.geteuid() != 0 and not test_driver:
+            raise DeploymentError("Run this operation as root.")
+        if (args.dev or args.stable or args.rollback) and not args.check:
+            with _configuration_component_lock(paths, command=True):
+                if args.dev:
+                    _development_deploy(
+                        paths, summary, source_path=Path(args.source) if args.source else DEFAULT_DEV_SOURCE,
+                        acknowledge_stable_replacement=args.acknowledge_stable_replacement,
+                        owner_driver=owner_driver, system_driver=system_driver, progress=progress,
+                    )
+                else:
+                    _stable_deploy(paths, summary, owner_driver=owner_driver, system_driver=system_driver,
+                                   progress=progress, rollback=args.rollback)
+            return emit(summary["result"], {"SUCCESS": 0, "NOOP": 0, "FAILED": 1, "INCOMPLETE": 3}[summary["result"]])
+        if args.check:
+            identity = _read_identity(paths)
+            last = identity.get("last_verified_install") or {}
+            recovery = identity.get("stable_admission")
+            operation = identity.get("operation") or {}
+            upgraded = operation.get("kind") == "self_upgrade" and operation.get("status") == "COMPLETE"
+            if (args.dev or args.stable or args.rollback or recovery or identity.get("dev_admission")
+                    or last.get("mode") in {"STABLE", "DEV"} or upgraded):
+                status, code = _stable_check(paths, summary, identity)
+                if not (args.dev or args.stable or args.rollback):
+                    summary["mode"] = ("DEV" if identity.get("dev_admission") else
+                                       "STABLE" if recovery else last.get("mode", "UNKNOWN"))
+                return emit(status, code, result="INCOMPLETE" if code == 3 else status)
         if args.configure_source:
             source = Path(args.configure_source).resolve(strict=True)
             commit = _source_commit(source, paths.owner_uid)
             with _configuration_component_lock(paths):
                 commit = _source_commit(source, paths.owner_uid)
                 _write_config(paths.config, source, commit, paths.owner_uid)
-            print(json.dumps({"status": "SOURCE_SELECTED", "source_commit": commit}, sort_keys=True))
-            return 0
+            _stage(summary, "Source", "PASS", f"local @ {commit[:12]}")
+            return emit("SOURCE_SELECTED", 0, source_commit=commit)
         source, commit = _read_config(paths.config, paths.owner_uid)
         if args.self_upgrade:
             result = _self_upgrade(paths, source, commit, args)
-            print(json.dumps(result, sort_keys=True))
-            return 0
+            status = result.pop("status")
+            _stage(summary, "Updater", "PASS", status.replace("_", " ").lower())
+            return emit(status, 0, **result)
         if args.check:
             identity = _read_identity(paths)
             operation = identity.get("operation") if identity.get("status") != "UNKNOWN" else None
             if isinstance(operation, dict) and operation.get("kind") == "self_upgrade" \
                     and operation.get("status") == "PENDING":
-                print(json.dumps({"status": "UPDATER_SELF_UPGRADE_PENDING", "source_commit": commit,
-                                  "deployment_identity": identity}, sort_keys=True))
-                return 0
+                _stage(summary, "Updater", "INCOMPLETE", "rerun --self-upgrade with the original pinned transition")
+                return emit("UPDATER_SELF_UPGRADE_PENDING", 0, source_commit=commit, deployment_identity=identity)
         installed_module = Path(__file__).resolve()
         installed_wrapper = paths.target("usr/local/sbin/fwrouter-deploy")
         if not paths.test_driver:
@@ -2012,26 +4844,41 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
                 raise DeploymentError("installed deployment entrypoint differs from selected source")
         if args.check:
             status = check(paths, source, commit)
-            print(json.dumps({"status": status, "source_commit": commit,
-                              "deployment_identity": _read_identity(paths)}, sort_keys=True))
-            return 1 if status == "UNHEALTHY_CURRENT_SOURCE" else 0
+            _installed_version(summary, _read_identity(paths))
+            _stage(summary, "Source", "PASS", f"local @ {commit[:12]}")
+            lifecycle, _lock, _ui = _source_modules(source, paths)
+            _report_lifecycle(summary, paths, lifecycle)
+            _stage(summary, "Source state", "FAIL" if status == "UNHEALTHY_CURRENT_SOURCE" else
+                   "INCOMPLETE" if "PENDING" in status else "PASS", status.replace("_", " ").lower())
+            return emit(status, 1 if status == "UNHEALTHY_CURRENT_SOURCE" else 0, source_commit=commit)
         status = check(paths, source, commit)
         if status == "NOOP":
-            print(json.dumps({"status": "NOOP", "source_commit": commit,
-                              "deployment_identity": _read_identity(paths)}, sort_keys=True))
-            return 0
+            _installed_version(summary, _read_identity(paths))
+            _stage(summary, "Install", "SKIP", "component files already match")
+            _stage(summary, "Native proof", "INCOMPLETE", "legacy local mode has no native acceptance policy")
+            return emit("NOOP", 3, source_commit=commit, result="INCOMPLETE")
         if status == "UNHEALTHY_CURRENT_SOURCE":
             raise DeploymentError("installed source matches selection but runtime health is incomplete; resolve health before deployment")
         if status == "UPDATER_SELF_UPGRADE_PENDING":
             raise DeploymentError("pending updater self-upgrade must be resumed with its exact pinned transition")
         result = apply(paths, source, commit, allow_timer_catchup=args.allow_timer_catchup,
                        owner_driver=owner_driver, system_driver=system_driver)
-        result["deployment_identity"] = _read_identity(paths)
-        print(json.dumps(result, sort_keys=True))
-        return 0
+        _installed_version(summary, _read_identity(paths))
+        _stage(summary, "Install", "PASS", "legacy local deployment completed file publication")
+        _stage(summary, "Native proof", "INCOMPLETE", "legacy local mode has no native acceptance policy")
+        return emit(result.pop("status"), 3, **result, result="INCOMPLETE")
+    except DeploymentIncomplete as exc:
+        _stage(summary, phase, "INCOMPLETE", str(exc))
+        return emit("INCOMPLETE", 3, result="INCOMPLETE")
+    except KeyboardInterrupt:
+        _stage(summary, phase, "INCOMPLETE", "interrupted; rerun the same deployment mode to resume any admitted work")
+        return emit("INCOMPLETE", 130, result="INCOMPLETE")
     except (DeploymentError, OSError, ValueError, RuntimeError) as exc:
-        print(f"fwrouter-deploy: {exc}", file=sys.stderr)
-        return 1
+        message = str(exc) if isinstance(exc, (DeploymentError, RuntimeError)) else type(exc).__name__
+        _stage(summary, phase, "FAIL", message)
+        return emit("FAILED", 1, result="FAILED")
+    finally:
+        signal.signal(signal.SIGTERM, old_term)
 
 
 if __name__ == "__main__":
