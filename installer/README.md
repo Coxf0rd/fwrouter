@@ -38,6 +38,46 @@ sudo fwrouter-deploy --check
 
 `--stable` uses the fixed FWRouter GitHub origin for Main and the Actions API for the exact Main push, run attempt, jobs and sealed evidence. It requires working Git and `gh` access. The strict offline verifier runs against the exact temporary source after checking the downloaded archive's GitHub SHA-256. An unqualified current Main blocks deployment. Source and CI staging live in a private directory under `/tmp` and are cleaned up on exit. The durable admission record carries the exact previously qualified SHA and evidence identity for retry, so recovery can fetch that SHA and rebuild its source after the staging directory is gone. The original application and lifecycle owners retain custody of installed files and checkpoints. The updater uses the D1 module-only bootstrap when needed. A wrapper change requires the compatible installer procedure.
 
+#### First D2 bootstrap from an installed D1 updater
+
+The D1 executable supports a strictly qualified module-only `--self-upgrade`. It accepts only a configured clean, root-owned, standard Git checkout at the exact current `origin/main` commit and requires the matching successful Main run, attempt, evidence artifact ID and artifact digest. After the D2 PR is merged and Main Release Acceptance passes, create a full-history temporary checkout of that exact Main commit under `/tmp`. Do not update or remove existing checkouts. Do not use dirty `/srv/fwrouter` for bootstrap. Confirm the checkout is clean, root-owned, and independent of a linked worktree or alternate object store. Compare its wrapper with `/usr/local/sbin/fwrouter-deploy`. Keep this temporary checkout until the self-upgrade is COMPLETE. If interrupted while pending, preserve it and resume with the same metadata.
+
+Record the existing configured source path and commit from `/etc/fwrouter/deploy-source.json` and the old updater SHA-256 before changing the config. Substitute the successful **Main** Release Acceptance SHA, run, attempt and sealed evidence artifact metadata. The D1 CLI fetches and validates current-Main job inventory and the artifact before atomically replacing only the updater module.
+
+```bash
+FWROUTER_BOOTSTRAP_SOURCE=/tmp/fwrouter-d2-bootstrap
+FWROUTER_PRIOR_SOURCE='<source path recorded in deploy-source.json>'
+FWROUTER_MAIN_SHA='<40-character merged Main SHA>'
+FWROUTER_MAIN_RUN_ID='<successful Main run ID>'
+FWROUTER_MAIN_RUN_ATTEMPT='<successful attempt number>'
+FWROUTER_MAIN_ARTIFACT_ID='<sealed evidence artifact ID>'
+FWROUTER_MAIN_ARTIFACT_DIGEST='sha256:<artifact digest>'
+FWROUTER_D1_MODULE_SHA256="$(sha256sum /usr/local/libexec/fwrouter/local_deploy.py | cut -d ' ' -f 1)"
+
+sudo git clone https://github.com/Coxf0rd/fwrouter.git "$FWROUTER_BOOTSTRAP_SOURCE"
+sudo git -C "$FWROUTER_BOOTSTRAP_SOURCE" checkout --detach "$FWROUTER_MAIN_SHA"
+test "$(sudo git -C "$FWROUTER_BOOTSTRAP_SOURCE" rev-parse HEAD)" = "$FWROUTER_MAIN_SHA"
+test -z "$(sudo git -C "$FWROUTER_BOOTSTRAP_SOURCE" status --porcelain)"
+sudo cmp -s "$FWROUTER_BOOTSTRAP_SOURCE/host/sbin/fwrouter-deploy" /usr/local/sbin/fwrouter-deploy
+sudo /usr/local/sbin/fwrouter-deploy --configure-source "$FWROUTER_BOOTSTRAP_SOURCE"
+sudo /usr/local/sbin/fwrouter-deploy --self-upgrade \
+  --main-sha "$FWROUTER_MAIN_SHA" \
+  --confirm-main-sha "$FWROUTER_MAIN_SHA" \
+  --run-id "$FWROUTER_MAIN_RUN_ID" \
+  --run-attempt "$FWROUTER_MAIN_RUN_ATTEMPT" \
+  --artifact-id "$FWROUTER_MAIN_ARTIFACT_ID" \
+  --artifact-digest "$FWROUTER_MAIN_ARTIFACT_DIGEST" \
+  --expected-installed-module-sha256 "$FWROUTER_D1_MODULE_SHA256"
+sudo /usr/local/sbin/fwrouter-deploy --configure-source "$FWROUTER_PRIOR_SOURCE"
+sudo /usr/local/sbin/fwrouter-deploy --stable --check --json
+test "$FWROUTER_BOOTSTRAP_SOURCE" = /tmp/fwrouter-d2-bootstrap
+sudo rm -rf -- /tmp/fwrouter-d2-bootstrap
+```
+
+The existing `/usr/local/sbin/fwrouter-deploy` wrapper remains in place. Once the new updater reports COMPLETE, restore the source path saved before bootstrap, then run read-only `sudo fwrouter-deploy --stable --check --json`. This explicit check verifies the installed app while its legacy app identity remains `UNKNOWN`; it does not fetch or qualify future Main. After the check, remove only the bootstrap checkout created for this operation. A pending self-upgrade keeps that checkout available for exact-source recovery.
+
+Deployment itself launches no tests or CI. For post-merge verification, inspect `sudo fwrouter-deploy --stable --check --json`. A subsequent `sudo fwrouter-deploy --stable` requires separate live-deployment authorization. To deploy Development, use `sudo fwrouter-deploy --dev`; add `--acknowledge-stable-replacement` when the installed identity is Stable. DEV requires `/srv/fwrouter` to contain a lifecycle owner with the D2 timer restoration contract. If the checkout is behind or dirty in ways that make that contract unavailable, D2 stops at preflight. Preserve its existing changes when preparing compatible source.
+
 `--dev` uses `/srv/fwrouter` or the checkout selected by `--source`. It captures the working contents of tracked and nonignored untracked deployable files, verifies that the source stayed consistent during capture, and reports the base Git SHA, dirty state and content digest. DEV uses the same installation, services and database as Stable. Use `--acknowledge-stable-replacement` when replacing Stable or an installation with unknown provenance. Subsequent DEV deployments can use the same command without the acknowledgement. DEV uses the local snapshot and bypasses GitHub qualification. The deployment CLI runs no test suites.
 
 DEV admission requires compatible installer and lifecycle owners and the same strict SQLite schema and recovery protections as Stable. The admitted snapshot remains available in private deployment state while an operation is pending or DEV is installed. Recovery uses that snapshot even if the original checkout has changed or disappeared. The deployment owner retires superseded snapshots once their operation and installed-side references have been cleared. DEV leaves the accepted Stable pins available for a qualified return.

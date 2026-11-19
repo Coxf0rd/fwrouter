@@ -527,7 +527,7 @@ def self_upgrade_fixture(tmp_path: Path, request, monkeypatch):
     return deploy, paths, source, sha, module_path, wrapper_path, args, api_calls
 
 
-def test_self_upgrade_requires_actual_main_pins_and_replaces_only_module(self_upgrade_fixture) -> None:
+def test_self_upgrade_requires_actual_main_pins_and_replaces_only_module(self_upgrade_fixture, capsys) -> None:
     deploy, paths, source, sha, module_path, wrapper_path, args, api_calls = self_upgrade_fixture
     old_wrapper = wrapper_path.read_bytes()
     result = deploy._self_upgrade(paths, source, sha, args)
@@ -541,6 +541,16 @@ def test_self_upgrade_requires_actual_main_pins_and_replaces_only_module(self_up
     assert identity["operation"]["source_sha"] == sha
     assert identity["operation"]["acceptance"]["status"] == "NOT_VERIFIED"
     assert api_calls["main"] == 2
+    config_before_check = paths.config.read_bytes()
+    identity_path = paths.state_dir / "deployment-identity.json"
+    identity_before_check = identity_path.read_bytes()
+    healthy_paths = deploy.replace(paths, api_healthy=True, runtime_healthy=True)
+    assert deploy.main(["--check", "--json"], paths_override=healthy_paths) == 3
+    check = json.loads(capsys.readouterr().out)
+    assert check["stages"]["Updater"]["status"] == "PASS"
+    assert check["stages"]["Identity"]["status"] == "INCOMPLETE"
+    assert paths.config.read_bytes() == config_before_check
+    assert identity_path.read_bytes() == identity_before_check
 
 
 def test_app_identity_and_updater_provenance_survive_both_transition_directions(
@@ -1561,7 +1571,15 @@ def test_rollback_without_previous_pin_fails_without_remote_resolution(
     assert (identity_path.read_bytes() if identity_path.exists() else None) == before
 
 
-def test_human_progress_is_flushed_to_stdout_before_deployment_finishes(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("mode", "expected_source"),
+    [
+        ("--stable", "Resolving qualified Stable source"),
+        ("--dev", "Capturing immutable DEV source snapshot"),
+    ],
+)
+def test_human_progress_is_flushed_to_stdout_before_deployment_finishes(
+        tmp_path, mode: str, expected_source: str) -> None:
     (tmp_path / "opt").mkdir()
     driver = r"""
 import importlib.util
@@ -1573,29 +1591,43 @@ deploy = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = deploy
 spec.loader.exec_module(deploy)
 root = Path(sys.argv[2])
+mode = sys.argv[3]
 paths = deploy.Paths(target_root=root, config=root / "config", state_dir=root / "state", test_driver=True)
 
-def staged_fixture(_paths, report, *, progress, **_kwargs):
-    progress("Resolving primary source")
+def wait_after_progress(report, progress, source):
+    progress(source)
+    if mode == "--dev":
+        progress("Source /srv/fwrouter @ abcdef0 (dirty)")
     if sys.stdin.readline() != "continue\n":
         raise RuntimeError("fixture did not receive continuation")
     deploy._stage(report, "Source", "PASS", "fixture source verified")
     report["result"] = "NOOP"
 
-deploy._stable_deploy = staged_fixture
-raise SystemExit(deploy.main(["--stable"], paths_override=paths))
+def stable_fixture(_paths, report, *, progress, **_kwargs):
+    wait_after_progress(report, progress, "Resolving qualified Stable source")
+
+def development_fixture(_paths, report, *, progress, **_kwargs):
+    wait_after_progress(report, progress, "Capturing immutable DEV source snapshot")
+
+deploy._stable_deploy = stable_fixture
+deploy._development_deploy = development_fixture
+raise SystemExit(deploy.main([mode], paths_override=paths))
 """
     env = os.environ.copy()
     env.pop("PYTHONUNBUFFERED", None)
     proc = subprocess.Popen(
-        [sys.executable, "-B", "-c", driver, str(MODULE), str(tmp_path)],
+        [sys.executable, "-B", "-c", driver, str(MODULE), str(tmp_path), mode],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
     )
     assert proc.stdin is not None and proc.stdout is not None
     output = bytearray()
     try:
         deadline = time.monotonic() + 8
-        while b"Resolving primary source" not in output and time.monotonic() < deadline:
+        expected = expected_source.encode()
+        milestones = [expected]
+        if mode == "--dev":
+            milestones.append(b"Source /srv/fwrouter @ abcdef0 (dirty)")
+        while not all(milestone in output for milestone in milestones) and time.monotonic() < deadline:
             ready, _, _ = select.select([proc.stdout], [], [], max(0, deadline - time.monotonic()))
             if not ready:
                 break
@@ -1603,7 +1635,7 @@ raise SystemExit(deploy.main(["--stable"], paths_override=paths))
             if not chunk:
                 break
             output.extend(chunk)
-        assert b"Resolving primary source" in output
+        assert all(milestone in output for milestone in milestones)
         assert b"Result:" not in output
         assert proc.poll() is None
         with (tmp_path / "opt/.fwrouter-deploy-command.lock").open("rb") as transaction:
@@ -1614,7 +1646,7 @@ raise SystemExit(deploy.main(["--stable"], paths_override=paths))
         text = output.decode()
         assert proc.returncode == 0, diagnostics.decode()
         assert text.count("FWRouter Deployment") == 1
-        assert text.index("Resolving primary source") < text.index("Result: NOOP")
+        assert text.index(expected_source) < text.index("Result: NOOP")
         assert not diagnostics
     finally:
         if proc.poll() is None:

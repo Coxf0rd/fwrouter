@@ -2191,8 +2191,6 @@ def _dev_snapshot_capture(source: Path, paths: Paths) -> dict:
                 fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, "wb") as output:
                     output.write(data)
-                    output.flush()
-                    os.fsync(output.fileno())
                 os.chmod(target, 0o755 if git_identity.startswith(b"100755 ") else 0o644)
                 os.chown(target, paths.owner_uid, -1)
             captured_digest = digest.hexdigest()
@@ -2333,8 +2331,6 @@ def _materialize_development_snapshot(paths: Paths, metadata: dict):
                     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                     with os.fdopen(fd, "wb") as output:
                         shutil.copyfileobj(stream, output, 1024 * 1024)
-                        output.flush()
-                        os.fsync(output.fileno())
                     os.chmod(target, member.mode & 0o755)
         except (OSError, tarfile.TarError) as exc:
             raise DeploymentError("Development recovery snapshot could not be materialized") from exc
@@ -2344,16 +2340,8 @@ def _materialize_development_snapshot(paths: Paths, metadata: dict):
             raise DeploymentError("Development snapshot file count differs from its captured identity")
         for path in files:
             rel = path.relative_to(source).as_posix().encode("utf-8", "strict")
-            data_hash = hashlib.sha256()
-            git_hash = hashlib.sha1(usedforsecurity=False)
-            size = 0
-            with path.open("rb") as stream:
-                for block in iter(lambda: stream.read(65536), b""):
-                    size += len(block)
-                    data_hash.update(block)
-                    git_hash.update(block)
-            git_identity = (b"100755 " if path.stat().st_mode & stat.S_IXUSR else b"100644 ") + git_hash.hexdigest().encode()
-            digest.update(git_identity[:6] + b" " + data_hash.hexdigest().encode() + b" " + rel + b"\0")
+            mode = b"100755" if path.stat().st_mode & stat.S_IXUSR else b"100644"
+            digest.update(mode + b" " + _digest(path).encode("ascii") + b" " + rel + b"\0")
         if digest.hexdigest() != metadata.get("content_sha256"):
             raise DeploymentError("Development snapshot content digest does not match its captured identity")
         _initialize_development_git(source, paths.owner_uid, metadata)
@@ -2362,14 +2350,14 @@ def _materialize_development_snapshot(paths: Paths, metadata: dict):
 
 
 def _initialize_development_git(source: Path, owner_uid: int, metadata: dict) -> None:
-    def git(args: list[str], *, env: dict[str, str] | None = None) -> str:
+    def git(args: list[str], *, env: dict[str, str] | None = None, input_text: str | None = None) -> str:
         process_env = _git_environment()
         if env:
             process_env.update(env)
         try:
             result = subprocess.run(["/usr/bin/git", "-C", str(source), *args], check=False,
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                    timeout=60, env=process_env, text=True)
+                                    timeout=60, env=process_env, encoding="utf-8", input=input_text)
         except (OSError, subprocess.SubprocessError) as exc:
             raise DeploymentError("could not create an immutable Git identity for the Development snapshot") from exc
         if result.returncode:
@@ -2378,11 +2366,17 @@ def _initialize_development_git(source: Path, owner_uid: int, metadata: dict) ->
 
     git(["init", "--quiet", "--template="])
     files = sorted(path for path in source.rglob("*") if path.is_file() and ".git" not in path.parts)
-    for path in files:
-        rel = path.relative_to(source).as_posix()
-        oid = git(["hash-object", "-w", "--no-filters", rel])
-        mode = "100755" if path.stat().st_mode & stat.S_IXUSR else "100644"
-        git(["update-index", "--add", "--cacheinfo", f"{mode},{oid},{rel}"])
+    index_rows = []
+    for start in range(0, len(files), 64):
+        batch = files[start:start + 64]
+        names = [path.relative_to(source).as_posix() for path in batch]
+        oids = git(["hash-object", "-w", "--no-filters", "--", *names]).splitlines()
+        if len(oids) != len(names) or any(not _hex(oid, 40) for oid in oids):
+            raise DeploymentError("Development snapshot Git object inventory is incomplete")
+        for path, name, oid in zip(batch, names, oids, strict=True):
+            mode = "100755" if path.stat().st_mode & stat.S_IXUSR else "100644"
+            index_rows.append(f"{mode} {oid}\t{name}\0")
+    git(["update-index", "-z", "--index-info"], input_text="".join(index_rows))
     tree = git(["write-tree"])
     env = {"GIT_AUTHOR_NAME": "FWRouter Development Snapshot", "GIT_AUTHOR_EMAIL": "fwrouter@localhost",
            "GIT_COMMITTER_NAME": "FWRouter Development Snapshot", "GIT_COMMITTER_EMAIL": "fwrouter@localhost",
@@ -4638,6 +4632,19 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
 def _stable_check(paths: Paths, result: dict, identity: dict) -> tuple[str, int]:
     _installed_version(result, identity)
     last = identity.get("last_verified_install") or {}
+    operation = identity.get("operation") or {}
+    if operation.get("kind") == "self_upgrade" and operation.get("status") == "COMPLETE":
+        try:
+            verified = all(hashlib.sha256(_read_stable_source_file(paths.target(path), paths.owner_uid))
+                           .hexdigest() == operation[key] for path, key in (
+                               ("usr/local/libexec/fwrouter/local_deploy.py", "candidate_module_sha256"),
+                               ("usr/local/sbin/fwrouter-deploy", "wrapper_sha256")))
+        except (OSError, DeploymentError):
+            _stage(result, "Updater", "INCOMPLETE", "installed updater module or wrapper could not be read safely")
+        else:
+            _stage(result, "Updater", "PASS" if verified else "FAIL",
+                   "installed updater and wrapper match the completed transition" if verified
+                   else "installed updater or wrapper differs from the completed transition")
     recovery = identity.get("stable_admission")
     dev_recovery = identity.get("dev_admission")
     configured = None
@@ -4796,8 +4803,10 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
             identity = _read_identity(paths)
             last = identity.get("last_verified_install") or {}
             recovery = identity.get("stable_admission")
+            operation = identity.get("operation") or {}
+            upgraded = operation.get("kind") == "self_upgrade" and operation.get("status") == "COMPLETE"
             if (args.dev or args.stable or args.rollback or recovery or identity.get("dev_admission")
-                    or last.get("mode") in {"STABLE", "DEV"}):
+                    or last.get("mode") in {"STABLE", "DEV"} or upgraded):
                 status, code = _stable_check(paths, summary, identity)
                 if not (args.dev or args.stable or args.rollback):
                     summary["mode"] = ("DEV" if identity.get("dev_admission") else
