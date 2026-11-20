@@ -236,3 +236,11 @@ Main-qualified updater digest. It may run DEV and the existing qualified
 application rollback for DEV. Use that same retained updater for interrupted
 DEV or its rollback. Historical recovery pins recorded by the local updater
 need an updater that understands their format.
+
+For the exact D1 release `96b6f7b12576`, the lifecycle owner can repair
+the mode of its four stock timer fragments without changing their contents
+or running systemd commands. From a trusted checkout containing the repair,
+run `sudo /usr/bin/python3 -I -B installer/controlled_backend_lifecycle.py normalize-legacy-timers`.
+The owner checks all four recorded D1 blobs and refuses a pending lifecycle
+operation. A retry after interruption leaves already repaired fragments
+alone.

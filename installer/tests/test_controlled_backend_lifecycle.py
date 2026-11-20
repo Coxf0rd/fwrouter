@@ -1385,3 +1385,74 @@ def test_real_cache_reader_rejects_path_replacement_during_read(real_cache_reade
     monkeypatch.setattr(lifecycle.os, 'read', replace_during_read)
     with pytest.raises(lifecycle.LifecycleError, match='changed while hashing'):
         lifecycle._mihomo_cache_state()
+
+
+@pytest.fixture
+def legacy_timer_modes(tmp_path, monkeypatch):
+    import hashlib
+
+    monkeypatch.setattr(lifecycle, "TIMER_UNIT_DIR", tmp_path)
+    monkeypatch.setattr(lifecycle, "TIMER_UNIT_OWNER_UID", os.getuid())
+    monkeypatch.setattr(lifecycle, "TIMER_UNIT_OWNER_GID", os.getgid())
+    monkeypatch.setattr(lifecycle, "_systemctl", lambda *_: pytest.fail("unexpected systemd operation"),
+                        raising=False)
+    hashes = {}
+    files = []
+    for name in lifecycle.PERSISTENT_TIMERS:
+        path = tmp_path / name
+        data = name.encode()
+        path.write_bytes(data)
+        path.chmod(0o664)
+        files.append(path)
+        hashes[name] = hashlib.sha256(data).hexdigest()
+    monkeypatch.setattr(lifecycle, "LEGACY_TIMER_SHA256", hashes)
+    return files
+
+
+def test_normalize_legacy_timers_preserves_bytes_and_inode(legacy_timer_modes):
+    identity = [(path.stat().st_ino, path.stat().st_mtime_ns) for path in legacy_timer_modes]
+    result = lifecycle._normalize_legacy_timer_modes()
+    assert result["normalized_timers"] == list(lifecycle.PERSISTENT_TIMERS)
+    assert lifecycle._normalize_legacy_timer_modes()["normalized_timers"] == []
+    for path, expected in zip(legacy_timer_modes, identity):
+        assert (path.stat().st_ino, path.stat().st_mtime_ns) == expected
+        assert path.read_bytes() == path.name.encode()
+        assert path.stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize("bad", ["content", "symlink", "mode", "owner", "missing", "acl"])
+def test_normalize_legacy_timers_rejects_bad_last_file_before_any_change(legacy_timer_modes, monkeypatch, bad):
+    last = legacy_timer_modes[-1]
+    if bad == "content":
+        last.write_bytes(b"unknown")
+    elif bad == "mode":
+        last.chmod(0o666)
+    elif bad == "symlink":
+        last.unlink()
+        last.symlink_to(legacy_timer_modes[0])
+    elif bad == "missing":
+        last.rename(last.with_suffix(".unexpected"))
+    elif bad == "acl":
+        inode = last.stat().st_ino
+        monkeypatch.setattr(lifecycle.os, "listxattr", lambda fd: (
+            ["system.posix_acl_access"] if os.fstat(fd).st_ino == inode else []))
+    else:
+        monkeypatch.setattr(lifecycle, "TIMER_UNIT_OWNER_UID", os.getuid() + 1)
+    with pytest.raises(lifecycle.LifecycleError):
+        lifecycle._normalize_legacy_timer_modes()
+    assert all(path.stat().st_mode & 0o777 == 0o664 for path in legacy_timer_modes[:-1])
+
+
+def test_normalize_legacy_timers_resumes_after_partial_failure(legacy_timer_modes, monkeypatch):
+    chmod = os.fchmod
+    calls = []
+    def interrupt(fd, mode):
+        calls.append(mode)
+        if len(calls) == 2:
+            raise OSError(5, "injected failure")
+        chmod(fd, mode)
+    with monkeypatch.context() as patch:
+        patch.setattr(lifecycle.os, "fchmod", interrupt)
+        with pytest.raises(lifecycle.LifecycleError, match="injected failure"):
+            lifecycle._normalize_legacy_timer_modes()
+    assert lifecycle._normalize_legacy_timer_modes()["normalized_timers"] == list(lifecycle.PERSISTENT_TIMERS[1:])

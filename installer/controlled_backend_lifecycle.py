@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import fcntl
 import hashlib
 import http.client
@@ -49,6 +50,14 @@ MIHOMO_UNIT_FILE = Path("/etc/systemd/system/fwrouter-mihomo.service")
 MIHOMO_UNIT_SHA256 = "9467c8b563cdfba9be8b30f6974e8f2ec6c157ebbe4c8f2abab17b7881fed8a2"
 TIMER_UNIT_DIR = Path("/etc/systemd/system")
 LEGACY_TRAFFIC_TIMER_SHA256 = "5c1e6145a9cdcf2efa1cc22381d0dcaf8c0b4f90c14f881baf4beebb8ec51897"
+# Exact timer blobs from the qualified D1 release 96b6f7b12576.
+LEGACY_TIMER_SHA256 = {
+    "fwrouter-jobs-retention-dry-run.timer": "63e30fe29e5f1ae883739823db9dc03b1634068a65d490775e9713c45ee30191",
+    "fwrouter-maintenance.timer": "f59db36c947fe30c33df3133466ec9a98c9c48e0de7c170b235d441ca0e0eee5",
+    "fwrouter-subscription-refresh.timer": "1fbcaefd3fc67824fd655ca0c822bdff1a8a131493bc0965a289c09e52c6f36b",
+    "fwrouter-traffic-collect.timer": LEGACY_TRAFFIC_TIMER_SHA256,
+}
+
 DOCKER_INSPECT_FORMAT = (
     '{{.Id}}|{{.Image}}|{{.Config.Image}}|{{.State.Running}}|'
     '{{.HostConfig.RestartPolicy.Name}}|{{.HostConfig.NetworkMode}}|'
@@ -1124,6 +1133,7 @@ def _timer_properties(unit: str) -> dict[str, str]:
 
 
 TIMER_UNIT_OWNER_UID = 0
+TIMER_UNIT_OWNER_GID = 0
 
 
 def _atomic_timer_replace(path: Path, new_bytes: bytes, expected_old_sha256: str) -> None:
@@ -1186,6 +1196,57 @@ def _atomic_timer_replace(path: Path, new_bytes: bytes, expected_old_sha256: str
                 pass
     except OSError as exc:
         raise LifecycleError("cannot safely update the traffic timer unit") from exc
+
+
+def _normalize_legacy_timer_modes() -> dict[str, Any]:
+    """Normalize only exact D1 timer content without changing systemd state."""
+    changed = []
+    try:
+        with ExitStack() as stack:
+            directory = os.open(TIMER_UNIT_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, directory)
+            parent = os.fstat(directory)
+            if parent.st_uid != TIMER_UNIT_OWNER_UID or parent.st_mode & 0o022:
+                raise LifecycleError("installed timer directory is not owner-controlled")
+
+            def identity(info: os.stat_result) -> tuple[int, ...]:
+                return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                        info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+            def inspect(unit: str, fd: int) -> os.stat_result:
+                info = os.fstat(fd)
+                named = os.stat(unit, dir_fd=directory, follow_symlinks=False)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != TIMER_UNIT_OWNER_UID
+                        or info.st_gid != TIMER_UNIT_OWNER_GID or info.st_nlink != 1
+                        or stat.S_IMODE(info.st_mode) not in {0o644, 0o664}
+                        or identity(named) != identity(info)):
+                    raise LifecycleError(f"legacy timer {unit} has unsafe owner, mode, type or links")
+                if "system.posix_acl_access" in os.listxattr(fd):
+                    raise LifecycleError(f"legacy timer {unit} has an unexpected access ACL")
+                data = os.pread(fd, 65537, 0)
+                if (len(data) > 65536 or hashlib.sha256(data).hexdigest() != LEGACY_TIMER_SHA256[unit]
+                        or identity(os.fstat(fd)) != identity(info)):
+                    raise LifecycleError(f"legacy timer {unit} differs from the exact D1 content")
+                return info
+
+            candidates = {}
+            for unit in PERSISTENT_TIMERS:
+                fd = os.open(unit, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOATIME, dir_fd=directory)
+                stack.callback(os.close, fd)
+                candidates[unit] = (fd, inspect(unit, fd))
+            for unit, (fd, before) in candidates.items():
+                if identity(inspect(unit, fd)) != identity(before):
+                    raise LifecycleError(f"legacy timer {unit} changed before normalization")
+                if stat.S_IMODE(before.st_mode) == 0o644:
+                    continue
+                os.fchmod(fd, 0o644)
+                os.fsync(fd)
+                if stat.S_IMODE(inspect(unit, fd).st_mode) != 0o644:
+                    raise LifecycleError(f"legacy timer {unit} did not retain mode 0644")
+                changed.append(unit)
+    except OSError as exc:
+        raise LifecycleError(f"cannot safely normalize legacy timer modes: {exc.strerror}") from exc
+    return {"status": "complete", "normalized_timers": changed}
 
 
 def _read_trusted_timer(path: Path) -> bytes:
@@ -1652,7 +1713,7 @@ def _resume(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
 def run_command(argv: list[str] | None = None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("stop", "resume", "transfer", "rebuild-db",
-                                             "quiesce-mihomo", "release-mihomo"))
+                                             "quiesce-mihomo", "release-mihomo", "normalize-legacy-timers"))
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--expected-operation-id")
     parser.add_argument("--expected-current-manifest-sha256")
@@ -1702,9 +1763,16 @@ def run_command(argv: list[str] | None = None) -> dict[str, Any]:
                                              args.expected_current_manifest_sha256,
                                              args.expected_new_manifest_sha256)):
         raise LifecycleError("expected source transition arguments apply only to transfer")
+    if args.command == "normalize-legacy-timers" and args.state_dir != DEFAULT_STATE_DIR:
+        raise LifecycleError("legacy timer normalization requires the canonical lifecycle state directory")
     state_dir = _validate_state_dir(args.state_dir)
     lock_fd = _locked(state_dir)
     try:
+        if args.command == "normalize-legacy-timers":
+            checkpoint = state_dir / "pending.json"
+            if os.path.lexists(checkpoint) and _read_checkpoint(checkpoint)["status"] != "complete":
+                raise LifecycleError("complete the pending lifecycle operation before normalizing timers")
+            return _normalize_legacy_timer_modes()
         if args.command == "stop":
             return _stop(state_dir)
         if args.command == "quiesce-mihomo":
