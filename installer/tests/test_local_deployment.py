@@ -2017,6 +2017,70 @@ def test_byte_identical_dev_returns_to_stable_without_publication(
     assert calls == before
 
 
+def test_dev_rejects_legacy_lifecycle_without_modifying_source(deployment_fixture, tmp_path) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    owner = source / "installer/controlled_backend_lifecycle.py"
+    old_owner = owner.read_text(encoding="utf-8").replace("_preflight_timer_restore", "_legacy_timer_preflight")
+    old_owner = old_owner.replace("--restore-timers", "--legacy-restore-timers")
+    owner.write_text(old_owner, encoding="utf-8")
+    before = owner.read_bytes()
+
+    with pytest.raises(deploy.DeploymentIncomplete, match="Pinned Stable lifecycle owner"):
+        deploy._require_development_lifecycle_contract(source, SimpleNamespace())
+
+    assert owner.read_bytes() == before
+    assert not paths.state_dir.exists()
+
+
+def test_qualified_stable_lifecycle_capsule_is_exact_and_bound_to_installed_updater(
+        deployment_fixture, monkeypatch, tmp_path) -> None:
+    deploy, paths, _, _, *_ = deployment_fixture
+    source = pristine_checkout(tmp_path / "qualified-owner-source")
+    source_sha = command(["/usr/bin/git", "-C", str(source), "rev-parse", "HEAD"]).stdout.strip()
+    qualification = _qualification(source_sha)
+    paths = deploy.replace(paths, test_driver=False)
+    paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    paths.state_dir.chmod(0o700)
+    updater = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+    updater.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    shutil.copyfile(MODULE, updater)
+    updater.chmod(0o644)
+    updater_sha = deploy._digest(updater)
+
+    synced = []
+    sync_directory = deploy._sync_lifecycle_owner_directory
+
+    def track_sync(directory):
+        synced.append(directory)
+        sync_directory(directory)
+
+    monkeypatch.setattr(deploy, "_sync_lifecycle_owner_directory", track_sync)
+    pin = deploy._publish_lifecycle_owner_capsule(
+        paths, source, source_sha, qualification, updater_sha)
+    stage = synced[3]
+    owner_root = paths.state_dir / deploy.LIFECYCLE_OWNER_ROOT
+    assert synced == [stage / "host/systemd", stage / "host", stage / "installer", stage,
+                      owner_root, paths.state_dir]
+    assert stage.parent == owner_root and not stage.exists()
+    synced.clear()
+    assert deploy._publish_lifecycle_owner_capsule(paths, source, source_sha, qualification, updater_sha) == pin
+    assert synced == [owner_root, paths.state_dir]
+    record = {"stable_current": {"source_sha": source_sha, "qualification": qualification},
+              "lifecycle_owners": {source_sha: pin},
+              "components": {"updater": {"installed_sha256": updater_sha,
+                                           "qualification_status": "VERIFIED_MAIN_CI"}}}
+    monkeypatch.setattr(deploy, "_read_identity", lambda _paths: record)
+    loaded, directory = deploy._read_lifecycle_owner_capsule(paths, source_sha)
+    assert loaded == pin
+    assert deploy._digest(directory / "installer/controlled_backend_lifecycle.py") == pin["lifecycle_sha256"]
+    assert set((directory / "host/systemd").iterdir()) == {
+        directory / "host/systemd" / name for name in pin["timer_sha256"]}
+
+    (directory / "host/systemd/fwrouter-maintenance.timer").write_text("tampered\n")
+    with pytest.raises(deploy.DeploymentError, match="exact digest pin"):
+        deploy._read_lifecycle_owner_capsule(paths, source_sha)
+
+
 def test_dev_admission_rechecks_installed_mode_and_snapshot_under_component_lock(
         deployment_fixture, monkeypatch) -> None:
     deploy, paths, *_ = deployment_fixture
@@ -2033,3 +2097,330 @@ def test_dev_admission_rechecks_installed_mode_and_snapshot_under_component_lock
     with pytest.raises(FileNotFoundError):
         deploy._remember_development_admission(paths, missing, stable, True)
     assert "dev_admission" not in record
+
+
+@pytest.mark.parametrize("candidate_profile", [
+    "legacy_migrated_schema27_manual_ping_additive",
+    "legacy_migrated_schema27_from_7",
+])
+def test_legacy_database_admission_requires_both_owner_readbacks(
+        deployment_fixture, monkeypatch, candidate_profile) -> None:
+    deploy, paths, source, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    owner = SimpleNamespace(_verified_backend_interpreter=lambda: Path(sys.executable))
+    profile = deploy.DEPLOYMENT_LEGACY_SCHEMA27
+    calls = []
+    monkeypatch.setattr(deploy, "_stable_service_state", lambda *_: None)
+
+    def run(argv, **kwargs):
+        assert kwargs["host_environment"]
+        calls.append(argv)
+        if deploy._READ_INSTALLED_SCHEMA27 in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "ok": True, "compatibility_profile": profile}), "")
+        if "preflight" in argv:
+            assert argv[-1] == profile
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "ok": True, "status": "already_current", "current_schema": 27,
+                "target_schema": 27, "database_changed": False, "compatibility_profile": candidate_profile,
+                "integrity": "ok", "foreign_key_violations": 0}), "")
+        return subprocess.CompletedProcess(argv, 1, json.dumps({
+            "ok": False, "error_code": "DATABASE_SCHEMA_PREFLIGHT_FAILED"}), "")
+
+    monkeypatch.setattr(deploy, "_run", run)
+    if candidate_profile == profile:
+        assert deploy._strict_database_preflight(paths, owner, source) == profile
+    else:
+        with pytest.raises(deploy.DeploymentError, match=r"Database preflight \(selected\)"):
+            deploy._strict_database_preflight(paths, owner, source)
+    assert len(calls) == 4
+
+
+def test_runtime_image_consistency_does_not_require_external_approval(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    xray, mihomo = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    policy = {"xray_image": xray, "mihomo_image": mihomo}
+    configured = {"xray": xray, "mihomo": mihomo}
+    observed = configured.copy()
+    monkeypatch.setattr(deploy, "_observed_runtime_image_ids", lambda _: observed)
+    monkeypatch.setattr(deploy, "_configured_runtime_image_ids", lambda _: configured)
+    assert deploy._require_acceptance_policy(paths, {}) == policy
+    observed["mihomo"] = "UNKNOWN"
+    with pytest.raises(deploy.DeploymentIncomplete, match="Cannot establish configured and running"):
+        deploy._require_acceptance_policy(paths, {})
+    observed["mihomo"] = "sha256:" + "c" * 64
+    with pytest.raises(deploy.DeploymentError, match="differ from their configured identities: mihomo"):
+        deploy._require_acceptance_policy(paths, {})
+    observed["mihomo"] = xray
+    with pytest.raises(deploy.DeploymentError, match="configured identities: mihomo"):
+        deploy._require_acceptance_policy(paths, policy)
+    observed["mihomo"] = mihomo
+    assert deploy._require_acceptance_policy(paths, policy) == policy
+
+
+def test_configured_runtime_image_resolution_is_local_and_never_pulls(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    refs = {"xray": "teddysun/xray:test@sha256:" + "1" * 64,
+            "mihomo": "metacubex/mihomo:test"}
+    for component, ref in refs.items():
+        compose = paths.target(f"opt/fwrouter-{component}/docker-compose.yml")
+        compose.parent.mkdir(parents=True, exist_ok=True)
+        compose.write_text(f"services:\n  app:\n    image: {ref}\n", encoding="utf-8")
+    original_is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file", lambda path: True if path == Path("/usr/bin/docker") else original_is_file(path))
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        assert "pull" not in argv
+        ref = argv[-1]
+        image = "sha256:" + ("2" if "xray" in ref else "3") * 64
+        return subprocess.CompletedProcess(argv, 0, image + "\n", "")
+
+    monkeypatch.setattr(deploy, "_run", run)
+    assert deploy._configured_runtime_image_ids(paths) == {
+        "xray": "sha256:" + "2" * 64, "mihomo": "sha256:" + "3" * 64}
+    assert all(call[call.index("image") + 1] == "inspect" for call in calls)
+
+
+def test_native_acceptance_runs_without_external_policy_but_keeps_ui_incomplete(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    xray, mihomo = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    monkeypatch.setattr(deploy, "_configured_runtime_image_ids", lambda _: {"xray": xray, "mihomo": mihomo})
+    monkeypatch.setattr(deploy, "_observed_runtime_image_ids", lambda _: {"xray": xray, "mihomo": mihomo})
+    monkeypatch.setattr(deploy, "_stable_service_state", lambda *_: None)
+    lifecycle = SimpleNamespace(_verified_backend_interpreter=lambda: Path(sys.executable))
+    proof = {"status": "PASS", "scope": "ui", "proof_schema_version": 1,
+             "source_identity": {"kind": "backend_manifest_sha256", "sha256": "c" * 64, "commit_sha": None},
+             "checks_executed": list(deploy.NATIVE_CHECKS), "native_proof_sha256": "d" * 64,
+             "xray": {"runtime_image_digest": xray}, "mihomo": {"runtime_image_digest": mihomo}}
+    monkeypatch.setattr(deploy, "_run", lambda argv, **_: subprocess.CompletedProcess(argv, 0,
+        json.dumps(proof), ""))
+    result = deploy._native_acceptance(paths, lifecycle, "c" * 64, {})
+    assert result["status"] == "PASS"
+    monkeypatch.setattr(deploy, "_xray_unit_active", lambda: True)
+    monkeypatch.setattr(deploy, "_dns_service_ready", lambda: True)
+    health = deploy._read_health(paths, SimpleNamespace(_api_health=lambda: True,
+        _is_active=lambda _unit: True, MIHOMO_UNIT="mihomo", GATEWAY_UNIT="gateway",
+        _gateway_listener_ready=lambda: True), {})
+    assert health["UI"]["status"] == "INCOMPLETE"
+
+
+def test_acceptance_policy_initialization_is_trusted_atomic_and_idempotent(
+        deployment_fixture, tmp_path, capsys) -> None:
+    deploy, paths, *_ = deployment_fixture
+    target_dir = paths.target("etc/fwrouter")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    policy = {"schema": "fwrouter-deploy-acceptance/v1",
+              "xray_image": "sha256:" + "a" * 64,
+              "mihomo_image": "sha256:" + "b" * 64,
+              "ui_port": 5055, "ui_path": "/"}
+    approval = tmp_path / "runtime-owner-policy.json"
+    approval.write_text(json.dumps(policy) + "\n", encoding="utf-8")
+    approval.chmod(0o600)
+
+    assert deploy.main(["--initialize-acceptance-policy", str(approval)], paths_override=paths) == 0
+    output = capsys.readouterr().out
+    assert "ACCEPTANCE POLICY" in output
+    assert "[PASS] Native policy" in output
+    installed = paths.target("etc/fwrouter/deploy-acceptance.json")
+    assert stat.S_IMODE(installed.stat().st_mode) == 0o600
+    assert installed.stat().st_nlink == 1
+    assert deploy._read_acceptance_policy(paths) == policy
+
+    assert deploy.main(["--initialize-acceptance-policy", str(approval), "--json"],
+                       paths_override=paths) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "NOOP" and result["policy_status"] == "NOOP"
+    assert not list(target_dir.glob(".deploy-acceptance.*.tmp"))
+
+    changed = {**policy, "xray_image": "sha256:" + "c" * 64}
+    approval.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+    approval.chmod(0o600)
+    assert deploy.main(["--initialize-acceptance-policy", str(approval), "--json"],
+                       paths_override=paths) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "FAILED"
+    assert deploy._read_acceptance_policy(paths) == policy
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"schema":"fwrouter-deploy-acceptance/v1","schema":"fwrouter-deploy-acceptance/v1"}',
+    b'{"schema":"fwrouter-deploy-acceptance/v1"}\n{"schema":"fwrouter-deploy-acceptance/v1"}',
+])
+def test_acceptance_policy_rejects_duplicate_keys_and_multiple_json_objects(
+        deployment_fixture, tmp_path, raw) -> None:
+    deploy, paths, *_ = deployment_fixture
+    (paths.target("etc/fwrouter")).mkdir(parents=True, exist_ok=True)
+    approval = tmp_path / "invalid-policy.json"
+    approval.write_bytes(raw)
+    approval.chmod(0o600)
+    with pytest.raises(deploy.DeploymentError, match="one strict JSON object"):
+        deploy._initialize_acceptance_policy(paths, approval)
+    assert not paths.target("etc/fwrouter/deploy-acceptance.json").exists()
+
+
+def test_acceptance_policy_refuses_symlink_input_and_dangling_installed_symlink(
+        deployment_fixture, tmp_path) -> None:
+    deploy, paths, *_ = deployment_fixture
+    directory = paths.target("etc/fwrouter")
+    directory.mkdir(parents=True, exist_ok=True)
+    approved = tmp_path / "approved.json"
+    approved.write_text("{}\n", encoding="utf-8")
+    approved.chmod(0o600)
+    linked_input = tmp_path / "linked.json"
+    linked_input.symlink_to(approved)
+    with pytest.raises(deploy.DeploymentError, match="owner-only mode-0600 regular file"):
+        deploy._initialize_acceptance_policy(paths, linked_input)
+    installed = directory / "deploy-acceptance.json"
+    installed.symlink_to(directory / "missing-target")
+    with pytest.raises(deploy.DeploymentError, match="regular file"):
+        deploy._read_acceptance_policy(paths)
+
+
+def test_runtime_policy_requires_running_images_and_reports_known_mismatch_first(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    real_is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file", lambda path: True if path == Path("/usr/bin/docker") else real_is_file(path))
+    answers = iter(("false sha256:" + "a" * 64, "true sha256:" + "b" * 64))
+    monkeypatch.setattr(deploy, "_run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, next(answers), ""))
+    images = deploy._observed_runtime_image_ids(paths)
+    assert images == {"xray": "UNKNOWN", "mihomo": "sha256:" + "b" * 64}
+    monkeypatch.setattr(deploy, "_observed_runtime_image_ids", lambda _paths: images)
+    monkeypatch.setattr(deploy, "_configured_runtime_image_ids", lambda _paths: {
+        "xray": "sha256:" + "c" * 64, "mihomo": "sha256:" + "b" * 64})
+    policy = {"xray_image": "sha256:" + "c" * 64, "mihomo_image": "sha256:" + "b" * 64}
+    status, detail = deploy._native_policy_evidence(paths, policy)
+    assert status == "INCOMPLETE"  # stopped identity is unavailable; it is not inferred from an image tag
+
+    monkeypatch.setattr(deploy, "_observed_runtime_image_ids", lambda _paths: {
+        "xray": "sha256:" + "d" * 64, "mihomo": "UNKNOWN"})
+    monkeypatch.setattr(deploy, "_configured_runtime_image_ids", lambda _paths: {
+        "xray": "sha256:" + "c" * 64, "mihomo": "sha256:" + "b" * 64})
+    status, detail = deploy._native_policy_evidence(paths, policy)
+    assert status == "FAIL" and "xray" in detail
+
+
+def test_legacy_recovery_checks_resources_without_claiming_historical_proof(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, source, *_ = deployment_fixture
+    sha, head = "a" * 40, "b" * 40
+    selection = deploy.StableSource(source, _qualification(head))
+    content = {"backend_sha256": "c" * 64, "ui_sha256": "d" * 64, "host_pair_sha256": "e" * 64}
+    last = {"mode": "UNKNOWN", "git_sha": sha, "installed_content": content, "source_content": content}
+    paths = deploy.replace(paths, test_driver=False)
+    calls = []
+
+    def qualify(_source, requested, _scratch, _owner, *, historical_head):
+        assert requested == sha and historical_head == head
+        calls.append("CI")
+        return _qualification(requested)
+
+    def database(*args, legacy_rollback=False):
+        assert legacy_rollback
+        calls.append("database")
+        return "canonical"
+
+    monkeypatch.setattr(deploy, "_installed_content_identity", lambda *_: content)
+    monkeypatch.setattr(deploy, "_source_content_identity", lambda *_: content)
+    monkeypatch.setattr(deploy, "_run", lambda argv, **_: subprocess.CompletedProcess(argv, 0, "", ""))
+    monkeypatch.setattr(deploy, "_stable_qualification", qualify)
+    monkeypatch.setattr(deploy, "_strict_database_preflight", database)
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *args: pytest.fail("historical proof requested"))
+    with pytest.raises(deploy.DeploymentIncomplete, match="exact legacy install identity"):
+        deploy._discover_stable_baseline(paths, selection, {}, None, None)
+    pin = deploy._discover_stable_baseline(paths, selection, {"last_verified_install": last}, None, None)
+    assert pin == {"source_sha": sha, "installed_content": content, "qualification": _qualification(sha),
+                   "lifecycle_owner_sha": head, "provenance": "UNKNOWN", "native_acceptance": "NOT_VERIFIED"}
+    assert calls == ["CI", "database"]
+    assert last["mode"] == "UNKNOWN"
+
+    monkeypatch.setattr(deploy, "_source_content_identity", lambda *_: {})
+    with pytest.raises(deploy.DeploymentIncomplete, match="does not reproduce"):
+        deploy._discover_stable_baseline(paths, selection, {"last_verified_install": last}, None, None)
+
+
+def test_legacy_rollback_can_use_its_verified_historical_schema_inspector(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, source, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False,
+                           stable_source=deploy.StableSource(source, _qualification("a" * 40)))
+    owner = SimpleNamespace(_verified_backend_interpreter=lambda: Path(sys.executable))
+    profile = deploy.DEPLOYMENT_LEGACY_SCHEMA27
+    monkeypatch.setattr(deploy, "_stable_service_state", lambda *_: None)
+    fallback = []
+
+    def run(argv, **_kwargs):
+        code = argv[4] if "-c" in argv else ""
+        if code.endswith(deploy._READ_INSTALLED_SCHEMA27):
+            if code != deploy._READ_INSTALLED_SCHEMA27:
+                assert argv[5] == str(source / "backend")
+                fallback.append(True)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "ok": True, "compatibility_profile": profile}), "")
+        if "preflight" in argv:
+            return subprocess.CompletedProcess(argv, 2, "", "")
+        return subprocess.CompletedProcess(argv, 1, json.dumps({
+            "ok": False, "error_code": "DATABASE_SCHEMA_PREFLIGHT_FAILED"}), "")
+
+    monkeypatch.setattr(deploy, "_run", run)
+    with pytest.raises(deploy.DeploymentError, match=r"Database preflight \(selected\)"):
+        deploy._strict_database_preflight(paths, owner, source)
+    assert not fallback
+    assert deploy._strict_database_preflight(paths, owner, source, legacy_rollback=True) == profile
+    assert fallback == [True]
+
+
+def test_documented_ui_probe_works_without_acceptance_policy(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    config = paths.target("etc/nginx/conf.d/fwrouter-ui.conf")
+    config.parent.mkdir(parents=True)
+    config.write_text("server {\n listen 5500 default_server;\n listen [::]:5500;\n root /opt/fwrouter-ui;\n}\n")
+    calls = []
+    monkeypatch.setattr(deploy, "_http_ui", lambda _, policy: calls.append(policy) or True)
+    monkeypatch.setattr(deploy, "_dns_service_ready", lambda: True)
+    monkeypatch.setattr(deploy, "_xray_unit_active", lambda: True)
+    lifecycle = SimpleNamespace(_api_health=lambda: True, _gateway_listener_ready=lambda: True,
+                                _is_active=lambda _: True, MIHOMO_UNIT="mihomo", GATEWAY_UNIT="gateway")
+    assert deploy._read_health(paths, lifecycle, {})["UI"]["status"] == "PASS"
+    assert calls == [{"ui_port": 5500, "ui_path": "/"}]
+    config.chmod(0o666)
+    assert deploy._read_health(paths, lifecycle, {})["UI"]["status"] == "INCOMPLETE"
+    assert len(calls) == 1
+
+
+def test_dev_check_reports_requested_source_without_writing(deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, source, *_ = deployment_fixture
+    sha = "b" * 40
+    monkeypatch.setattr(deploy, "_development_source", lambda path: {"git_sha": sha, "path": str(path)})
+    monkeypatch.setattr(deploy, "_stable_check", lambda *_: ("INCOMPLETE", 3))
+    monkeypatch.setattr(deploy, "_write_identity", lambda *_: pytest.fail("DEV check wrote identity"))
+    monkeypatch.setattr(deploy, "_dev_snapshot_capture", lambda *_: pytest.fail("DEV check snapped source"))
+    assert deploy.main(["--dev", "--check", "--json", "--source", str(source)], paths_override=paths) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["source_commit"] == sha and result["stages"]["Source"]["status"] == "PASS"
+
+
+def test_runtime_image_config_from_group_writable_directory_requires_exact_historical_blob(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, source, *_ = deployment_fixture
+    path = paths.target("opt/fwrouter-xray/docker-compose.yml")
+    path.parent.mkdir()
+    path.write_text("services:\n  xray:\n    image: example/xray:fixture\n")
+    path.chmod(0o644)
+    path.parent.chmod(0o775)
+    monkeypatch.setattr(deploy, "_read_config", lambda *_: (source, "a" * 40))
+    monkeypatch.setattr(deploy, "_git_blob_bytes", lambda *_: b"unrelated Compose bytes")
+    with pytest.raises(deploy.DeploymentError, match="group-writable|recorded source"):
+        deploy._read_installed_runtime_config(
+            paths, "opt/fwrouter-xray/docker-compose.yml", limit=4096,
+            historical_blob="runtimes/xray/docker-compose.yml",
+        )

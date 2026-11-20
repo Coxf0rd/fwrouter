@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import fcntl
@@ -441,16 +442,320 @@ def _write_config(path: Path, source: Path, commit: str, owner_uid: int) -> None
                 pass
 
 
-def _source_modules(source: Path, paths: Paths) -> tuple[object, object, object]:
-    installer = source / "installer"
+def _source_modules(source: Path, paths: Paths, *, engine_source: Path | None = None
+                   ) -> tuple[object, object, object]:
+    engine = engine_source or source
+    installer = engine / "installer"
     lifecycle = _load_module(installer / "controlled_backend_lifecycle.py", "fwrouter_local_deploy_lifecycle")
     lifecycle.SOURCE_BACKEND = source / "backend"
     lifecycle.TARGET_BACKEND = paths.target("opt/fwrouter-api")
     lifecycle.DEFAULT_STATE_DIR = paths.state_dir
-    lock = _load_module(installer / "component_install_lock.py", "fwrouter_deploy_component_lock")
-    ui = _load_module(installer / "ui_publication.py", "fwrouter_local_deploy_ui")
+    lock = _load_module(engine / "installer/component_install_lock.py", "fwrouter_deploy_component_lock")
+    ui = _load_module(source / "installer/ui_publication.py", "fwrouter_local_deploy_ui")
     ui.component_install_lock = lock
     return lifecycle, lock, ui
+
+
+LIFECYCLE_OWNER_ROOT = "lifecycle-owners"
+
+
+def _lifecycle_owner_dir(paths: Paths, source_sha: str) -> Path:
+    return paths.state_dir / LIFECYCLE_OWNER_ROOT / source_sha
+
+
+def _sync_lifecycle_owner_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _publish_lifecycle_owner_capsule(paths: Paths, source: Path, source_sha: str,
+                                    qualification: dict, updater_sha256: str) -> dict:
+    """Persist the exact qualified Stable lifecycle and lock as DEV recovery evidence."""
+    if paths.test_driver:
+        return {}
+    if (not _valid_qualification(qualification) or qualification.get("source_sha") != source_sha
+            or _source_commit(source, paths.owner_uid) != source_sha or not _hex(updater_sha256, 64)):
+        raise DeploymentIncomplete("Qualified Stable lifecycle owner cannot be pinned to the accepted source.")
+    updater = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+    info = updater.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != paths.owner_uid
+            or stat.S_IMODE(info.st_mode) != 0o644 or info.st_nlink != 1
+            or _digest(updater) != updater_sha256):
+        raise DeploymentIncomplete("Installed deployer changed before lifecycle owner pinning.")
+    blobs = {}
+    relatives = ["installer/controlled_backend_lifecycle.py", "installer/component_install_lock.py"]
+    timer_names = ("fwrouter-jobs-retention-dry-run.timer", "fwrouter-maintenance.timer",
+                   "fwrouter-subscription-refresh.timer", "fwrouter-traffic-collect.timer")
+    relatives.extend(f"host/systemd/{name}" for name in timer_names)
+    for relative in relatives:
+        payload = _git_blob_bytes(source, source_sha, relative)
+        if _read_stable_source_file(source / relative, paths.owner_uid) != payload:
+            raise DeploymentError("qualified lifecycle owner helper differs from its exact Stable Git blob")
+        blobs[relative] = payload
+    lifecycle_blob = blobs["installer/controlled_backend_lifecycle.py"]
+    if (b"--restore-timers" not in lifecycle_blob
+            or b"_preflight_timer_restore" not in lifecycle_blob):
+        raise DeploymentIncomplete("Accepted Stable source has no D2 timer-restoration owner contract.")
+    pin = {"qualification": qualification, "updater_sha256": updater_sha256,
+           "lifecycle_sha256": hashlib.sha256(lifecycle_blob).hexdigest(),
+           "lock_sha256": hashlib.sha256(blobs["installer/component_install_lock.py"]).hexdigest(),
+           "timer_sha256": {name: hashlib.sha256(blobs[f"host/systemd/{name}"]).hexdigest()
+                            for name in timer_names}}
+    owner_root = paths.state_dir / LIFECYCLE_OWNER_ROOT
+    owner_root.mkdir(mode=0o700, exist_ok=True)
+    root_info = owner_root.lstat()
+    if (not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode)
+            or root_info.st_uid != paths.owner_uid or stat.S_IMODE(root_info.st_mode) != 0o700):
+        raise DeploymentError("lifecycle owner capsule directory is not private and owner-controlled")
+    target = _lifecycle_owner_dir(paths, source_sha)
+    if target.exists():
+        # A retry may find a rename that preceded the parent directory sync.
+        _verify_lifecycle_owner_files(paths, source_sha, pin)
+        _sync_lifecycle_owner_directory(owner_root)
+        _sync_lifecycle_owner_directory(paths.state_dir)
+        return pin
+    staging = Path(tempfile.mkdtemp(prefix=".owner-", dir=owner_root))
+    try:
+        os.chown(staging, paths.owner_uid, -1)
+        os.chmod(staging, 0o700)
+        for relative, payload in blobs.items():
+            path = staging / relative
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            parent = path.parent
+            while parent != staging:
+                os.chown(parent, paths.owner_uid, -1)
+                os.chmod(parent, 0o700)
+                parent = parent.parent
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            os.fchown(fd, paths.owner_uid, -1)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+        for relative in ("host/systemd", "host", "installer", "."):
+            _sync_lifecycle_owner_directory(staging / relative)
+        os.rename(staging, target)
+        _sync_lifecycle_owner_directory(owner_root)
+        _sync_lifecycle_owner_directory(paths.state_dir)
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+    _verify_lifecycle_owner_files(paths, source_sha, pin)
+    return pin
+
+
+def _verify_lifecycle_owner_files(paths: Paths, source_sha: str, pin: dict) -> Path:
+    root = paths.state_dir / LIFECYCLE_OWNER_ROOT
+    directory = _lifecycle_owner_dir(paths, source_sha)
+    root_info, dir_info = root.lstat(), directory.lstat()
+    if (not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != paths.owner_uid
+            or stat.S_IMODE(root_info.st_mode) != 0o700 or not stat.S_ISDIR(dir_info.st_mode)
+            or dir_info.st_uid != paths.owner_uid or stat.S_IMODE(dir_info.st_mode) != 0o700
+            or dir_info.st_dev != root_info.st_dev):
+        raise DeploymentError("lifecycle owner capsule has unsafe directory ownership")
+    expected = {"installer/controlled_backend_lifecycle.py": pin["lifecycle_sha256"],
+                "installer/component_install_lock.py": pin["lock_sha256"]}
+    expected.update({f"host/systemd/{name}": digest for name, digest in pin["timer_sha256"].items()})
+    actual_files, actual_dirs = set(), set()
+    for path in directory.rglob("*"):
+        relative = path.relative_to(directory).as_posix()
+        if path.is_symlink():
+            raise DeploymentError("lifecycle owner capsule contains a symlink")
+        (actual_dirs if path.is_dir() else actual_files).add(relative)
+    if (actual_files != set(expected)
+            or actual_dirs != {"installer", "host", "host/systemd"}):
+        raise DeploymentError("lifecycle owner capsule contains unknown or missing files")
+    for relative in actual_dirs:
+        path = directory / relative
+        info = path.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != paths.owner_uid
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise DeploymentError("lifecycle owner capsule subdirectory is not private")
+    for relative, digest in expected.items():
+        path = directory / relative
+        item = path.lstat()
+        if (not stat.S_ISREG(item.st_mode) or item.st_uid != paths.owner_uid
+                or stat.S_IMODE(item.st_mode) != 0o600 or item.st_nlink != 1
+                or _digest(path) != digest):
+            raise DeploymentError("lifecycle owner capsule content failed its exact digest pin")
+    return directory
+
+
+def _cleanup_lifecycle_owner_capsules(paths: Paths, result: dict) -> None:
+    """Remove only verified capsules no longer referenced by either Stable pin."""
+    if paths.test_driver:
+        return
+    storage = result.setdefault("storage", {})
+    try:
+        with _configuration_component_lock(paths):
+            record = _read_identity(paths)
+            operation = record.get("operation") or {}
+            checkpoint = paths.state_dir / "pending.json"
+            checkpoint_pending = False
+            if os.path.lexists(checkpoint):
+                try:
+                    checkpoint_state = _json_object(checkpoint.read_text(encoding="utf-8")).get("status")
+                    checkpoint_pending = checkpoint_state != "complete"
+                except (OSError, UnicodeError, DeploymentError):
+                    checkpoint_pending = True
+            if (record.get("stable_admission") or record.get("rollback_admission")
+                    or record.get("dev_admission") or operation.get("status") in {"PENDING", "FAILED"}
+                    or checkpoint_pending):
+                storage.setdefault("retained", []).append(
+                    {"resource": "Lifecycle owner capsules", "reason": "active deployment or recovery reference"})
+                return
+            keep = {row.get("lifecycle_owner_sha", row["source_sha"]) for row in
+                    (record.get("stable_current"), record.get("stable_previous")) if row}
+            owners = record.get("lifecycle_owners", {})
+            reclaimed, changed, failures = 0, False, []
+            for sha, pin in list(owners.items()):
+                if sha in keep:
+                    continue
+                directory = _lifecycle_owner_dir(paths, sha)
+                try:
+                    _verify_lifecycle_owner_files(paths, sha, pin)
+                    reclaimed += _tree_bytes(directory)
+                    shutil.rmtree(directory)
+                except FileNotFoundError:
+                    pass
+                except (OSError, DeploymentError) as exc:
+                    failures.append({"resource": f"Lifecycle owner {sha[:12]}",
+                                     "reason": str(exc) if isinstance(exc, DeploymentError)
+                                     else type(exc).__name__})
+                    continue
+                del owners[sha]
+                changed = True
+            if changed:
+                owner_root = paths.state_dir / LIFECYCLE_OWNER_ROOT
+                if owner_root.exists():
+                    _sync_lifecycle_owner_directory(owner_root)
+                _write_identity(paths, record)
+                storage["cleanup_reclaimed_bytes"] = storage.get("cleanup_reclaimed_bytes", 0) + reclaimed
+            storage.setdefault("cleanup_failures", []).extend(failures)
+            if failures:
+                storage.setdefault("retained", []).extend(
+                    {"resource": row["resource"], "reason": "ownership or digest verification failed"}
+                    for row in failures)
+    except (OSError, DeploymentError) as exc:
+        storage.setdefault("cleanup_failures", []).append(
+            {"resource": "Lifecycle owner capsules",
+             "reason": str(exc) if isinstance(exc, DeploymentError) else type(exc).__name__})
+
+
+def _read_lifecycle_owner_capsule(paths: Paths, source_sha: str, *, pin: dict | None = None,
+                                 verify_installed_updater: bool = True) -> tuple[dict, Path]:
+    identity = _read_identity(paths)
+    owners = identity.get("lifecycle_owners") or {}
+    pin = pin or owners.get(source_sha)
+    stable_match = any(
+        row.get("lifecycle_owner_sha", row["source_sha"]) == source_sha
+        and ("lifecycle_owner_sha" in row or row["qualification"] == (pin or {}).get("qualification"))
+        for row in (identity.get("stable_current"), identity.get("stable_previous")) if row
+    )
+    if (not isinstance(pin, dict) or not stable_match
+            or pin.get("qualification", {}).get("source_sha") != source_sha):
+        raise DeploymentIncomplete("A verified lifecycle owner capsule for the current Stable rollback pin is unavailable.")
+    updater = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+    try:
+        info = updater.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != paths.owner_uid
+                or stat.S_IMODE(info.st_mode) != 0o644 or info.st_nlink != 1
+                or verify_installed_updater and _digest(updater) != pin["updater_sha256"]):
+            raise DeploymentError("installed updater differs from the capsule's pinned engine digest")
+        directory = _verify_lifecycle_owner_files(paths, source_sha, pin)
+        updater_record = identity.get("components", {}).get("updater") or {}
+        if (verify_installed_updater and updater_record.get("installed_sha256") != pin["updater_sha256"]
+                or updater_record.get("qualification_status") != "VERIFIED_MAIN_CI"):
+            raise DeploymentError("deployment identity does not verify the installed D2 updater owner")
+        return pin, directory
+    except FileNotFoundError as exc:
+        raise DeploymentIncomplete("Pinned Stable lifecycle owner capsule is missing; DEV recovery is unavailable.") from exc
+
+
+def _materialize_pinned_owner(paths: Paths, source: Path, scratch: Path, *,
+                              timer_source: Path | None = None) -> Path:
+    identity = _read_identity(paths)
+    owners = identity.get("lifecycle_owners") or {}
+    source_sha = next((sha for row in (identity.get("stable_current"), identity.get("stable_previous"))
+                       if row and (sha := row.get("lifecycle_owner_sha", row["source_sha"])) in owners), None)
+    if not _hex(source_sha, 40):
+        raise DeploymentIncomplete("No accepted Stable lifecycle owner is available for this operation.")
+    _, capsule = _read_lifecycle_owner_capsule(paths, source_sha)
+    owner_source = scratch / "lifecycle-owner-source"
+    (owner_source / "installer").mkdir(mode=0o700, parents=True)
+    (owner_source / "backend").mkdir(mode=0o700)
+    for name in ("controlled_backend_lifecycle.py", "component_install_lock.py"):
+        shutil.copyfile(capsule / "installer" / name, owner_source / "installer" / name)
+        os.chmod(owner_source / "installer" / name, 0o600)
+    timer_dir = owner_source / "host/systemd"
+    timer_dir.mkdir(mode=0o700, parents=True)
+    for name in ("fwrouter-jobs-retention-dry-run.timer", "fwrouter-maintenance.timer",
+                 "fwrouter-subscription-refresh.timer", "fwrouter-traffic-collect.timer"):
+        timer_path = ((timer_source / "host/systemd" / name) if timer_source is not None
+                      else (capsule / "host/systemd" / name))
+        if timer_source is not None:
+            expected = _git_blob_bytes(timer_source, _source_commit(timer_source, paths.owner_uid),
+                                       f"host/systemd/{name}")
+            if _read_stable_source_file(timer_path, paths.owner_uid) != expected:
+                raise DeploymentError("qualified rollback timer source differs from its exact Git object")
+        shutil.copyfile(timer_path, timer_dir / name)
+        os.chmod(timer_dir / name, 0o600)
+    backend = source / "backend"
+    entries = []
+    total_bytes = 0
+    inode_count = 0
+    for directory, dirs, files in os.walk(backend, followlinks=False):
+        current = Path(directory)
+        inode_count += 1
+        for name in dirs:
+            if (current / name).is_symlink():
+                raise DeploymentError("captured DEV backend contains a symlink directory")
+        for name in files:
+            child = current / name
+            info = child.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise DeploymentError("captured DEV backend contains an unsupported file")
+            total_bytes += info.st_size
+            inode_count += 1
+            entries.append((child, current.relative_to(backend), name, info.st_mode))
+    _require_staging_space(scratch, total_bytes, inode_count)
+    for directory, dirs, files in os.walk(backend, followlinks=False):
+        current = Path(directory)
+        relative = current.relative_to(backend)
+        target_dir = owner_source / "backend" / relative
+        for name in dirs:
+            (target_dir / name).mkdir(mode=0o700)
+    for child, relative, name, mode in entries:
+        target = owner_source / "backend" / relative / name
+        shutil.copyfile(child, target)
+        os.chmod(target, stat.S_IMODE(mode))
+    return owner_source
+
+
+def _require_development_lifecycle_contract(source: Path, lifecycle) -> None:
+    """Require the separately pinned Stable owner contract before service work."""
+    owner = source / "installer/controlled_backend_lifecycle.py"
+    try:
+        owner_text = owner.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise DeploymentIncomplete(
+            "Pinned Stable lifecycle owner has no readable D2 timer contract; repair Stable owner evidence before DEV.") from exc
+    if (not callable(getattr(lifecycle, "_preflight_timer_restore", None))
+            or "--restore-timers" not in owner_text):
+        raise DeploymentIncomplete(
+            "Pinned Stable lifecycle owner predates D2 automatic timer restoration; repair Stable owner evidence before DEV.")
+
+
+def _has_d2_lifecycle_contract(source: Path) -> bool:
+    try:
+        content = (source / "installer/controlled_backend_lifecycle.py").read_bytes()
+    except OSError:
+        return False
+    return b"--restore-timers" in content and b"_preflight_timer_restore" in content
 
 
 def _git_blob_oid(path: Path) -> str:
@@ -650,7 +955,14 @@ def _materialize_recoverable_old_source(paths: Paths, selected_source: Path, lif
             _check_trusted_tree(candidate, paths.owner_uid)
             _validate_source_tree(candidate, paths.owner_uid)
             commit = _find_source_commit(candidate, installed, lifecycle)
-            return _materialize_old_source(candidate, commit, destination)
+            recovered = _materialize_old_source(candidate, commit, destination)
+            # Backend bytes come from the exact reconstructed Git object, while
+            # lifecycle authority remains the separately pinned qualified owner.
+            trusted_owner = selected_source / "installer/controlled_backend_lifecycle.py"
+            target_owner = recovered / "installer/controlled_backend_lifecycle.py"
+            shutil.copyfile(trusted_owner, target_owner)
+            os.chmod(target_owner, 0o600)
+            return recovered
         except (DeploymentError, OSError):
             continue
     raise DeploymentIncomplete("The installed OLD backend is UNKNOWN and no trusted local source reconstructs it.")
@@ -715,7 +1027,7 @@ def _read_identity(paths: Paths) -> dict:
         raise DeploymentError("deployment identity record is malformed") from exc
     required_keys = {"schema", "last_verified_install", "operation", "components"}
     if (not isinstance(value, dict) or value.get("schema") != "fwrouter-deployment-identity/v1"
-            or set(value) - {"stable_admission", "stable_current", "stable_previous", "dev_current", "dev_admission", "dev_retired", "dev_baseline_backup", "rollback_admission",
+            or set(value) - {"stable_admission", "stable_current", "stable_previous", "dev_current", "dev_admission", "dev_retired", "dev_baseline_backup", "rollback_admission", "lifecycle_owners",
                              "database_rollback", "database_rollback_candidate", "database_rollback_retired",
                              "retired_ui_releases"} != required_keys
             or ("stable_admission" in value and not _valid_qualification(value["stable_admission"]))):
@@ -883,13 +1195,44 @@ def _read_identity(paths: Paths) -> dict:
         previous = value.get(pin_name)
         if previous is None:
             continue
-        if (not isinstance(previous, dict) or set(previous) != {"source_sha", "qualification", "installed_content",
-                "accepted_at", "proof_sha256"} or not _hex(previous["source_sha"], 40)
+        common = {"source_sha", "qualification", "installed_content"}
+        if (not isinstance(previous, dict) or not common <= set(previous)
+                or not _hex(previous["source_sha"], 40)
                 or not _valid_qualification(previous["qualification"])
                 or previous["qualification"]["source_sha"] != previous["source_sha"]
-                or not validate_content(previous["installed_content"])
-                or not isinstance(previous["accepted_at"], str) or not _hex(previous["proof_sha256"], 64)):
-            raise DeploymentError("Stable accepted version pin is malformed")
+                or not validate_content(previous["installed_content"])):
+            raise DeploymentError("Stable rollback pin is malformed")
+        fields = set(previous) - common
+        owner_sha = previous.get("lifecycle_owner_sha")
+        if "lifecycle_owner_sha" in fields:
+            if not _hex(owner_sha, 40):
+                raise DeploymentError("Stable rollback lifecycle owner is malformed")
+            fields.remove("lifecycle_owner_sha")
+        historical = (fields == {"provenance", "native_acceptance"} and owner_sha is not None
+                      and previous["provenance"] == "UNKNOWN"
+                      and previous["native_acceptance"] == "NOT_VERIFIED")
+        accepted = (fields == {"accepted_at", "proof_sha256"}
+                    and isinstance(previous["accepted_at"], str) and _hex(previous["proof_sha256"], 64))
+        if not historical and not accepted:
+            raise DeploymentError("Stable rollback pin verification is malformed")
+    lifecycle_owners = value.get("lifecycle_owners", {})
+    if (not isinstance(lifecycle_owners, dict) or len(lifecycle_owners) > 4
+            or any(not _hex(sha, 40) or not isinstance(pin, dict)
+                   or set(pin) != {"qualification", "updater_sha256", "lifecycle_sha256", "lock_sha256", "timer_sha256"}
+                   or not _valid_qualification(pin.get("qualification"))
+                   or pin["qualification"].get("source_sha") != sha
+                   or any(not valid_digest(pin.get(key)) for key in
+                          ("updater_sha256", "lifecycle_sha256", "lock_sha256"))
+                   or not isinstance(pin.get("timer_sha256"), dict)
+                   or set(pin["timer_sha256"]) != {"fwrouter-jobs-retention-dry-run.timer",
+                        "fwrouter-maintenance.timer", "fwrouter-subscription-refresh.timer",
+                        "fwrouter-traffic-collect.timer"}
+                   or any(not valid_digest(digest) for digest in pin["timer_sha256"].values())
+                   for sha, pin in lifecycle_owners.items())):
+        raise DeploymentError("pinned lifecycle owner inventory is malformed")
+    for row in (value.get("stable_current"), value.get("stable_previous")):
+        if row and "lifecycle_owner_sha" in row and row["lifecycle_owner_sha"] not in lifecycle_owners:
+            raise DeploymentError("pinned Stable rollback lifecycle owner is missing")
     dev_pin = value.get("dev_current")
     if dev_pin is not None and (not isinstance(dev_pin, dict) or not dev_provenance(dev_pin)):
         raise DeploymentError("Development source pin is malformed")
@@ -1186,9 +1529,11 @@ def _observed_runtime_image_ids(paths: Paths) -> dict:
     observed = {}
     for component in ("xray", "mihomo"):
         try:
-            raw = _bounded_process(["/usr/bin/docker", "inspect", "--format", "{{.Image}}",
-                                    f"fwrouter-{component}"], limit=256, timeout=10)
-            value = (raw or b"").decode("ascii").strip()
+            result = _run(["/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+                           "inspect", "--format", "{{.State.Running}} {{.Image}}", f"fwrouter-{component}"],
+                          timeout=10, host_environment=True)
+            fields = result.stdout.strip().split()
+            value = fields[1] if result.returncode == 0 and len(fields) == 2 and fields[0] == "true" else ""
         except (DeploymentError, UnicodeError):
             value = ""
         observed[component] = (value if value.startswith("sha256:") and len(value) == 71
@@ -1462,6 +1807,9 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
         result["previous_version"] = last.get("git_sha")
         progress("Acknowledged: DEV will replace the active Stable runtime; the qualified Stable rollback pin is retained")
 
+    policy = _require_acceptance_policy(paths)
+    _stage(result, "Runtime images", "SKIP" if paths.test_driver else "PASS",
+           "disposable target" if paths.test_driver else "running image identities match local configuration")
     if pending_dev is not None:
         metadata = dict(pending_dev["requested_source"])
         metadata["retire_paths"] = operation.get("retire_paths", [])
@@ -1484,14 +1832,21 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
     else:
         progress("Captured immutable Development snapshot")
 
-    with _materialize_development_snapshot(paths, metadata) as (source, commit):
+    with _materialize_development_snapshot(paths, metadata) as (source, commit, scratch):
         retire_paths = metadata.pop("retire_paths", None)
         dev_source = {**metadata, "git_sha": commit, "mode": "DEV",
                       "qualification_status": "NOT_VERIFIED"}
+        if not paths.test_driver and replacing_stable and current_mode == "UNKNOWN" and not identity.get("stable_current"):
+            progress("Checking the installed Stable recovery baseline")
+            _adopt_legacy_dev_baseline(paths, source, identity, result)
+            identity = _read_identity(paths)
+        engine_source = (source if paths.test_driver
+                         else _materialize_pinned_owner(paths, source, scratch))
         if retire_paths is None:
             provisional = replace(paths, development_source=dev_source)
             retire_paths = _prepare_backend_retirements(provisional, source,
-                                                         _source_modules(source, provisional)[0])
+                (_source_modules(source, provisional) if engine_source == source
+                 else _source_modules(source, provisional, engine_source=engine_source))[0])
         if (not isinstance(retire_paths, list) or len(retire_paths) > MAX_TREE_ENTRIES
                 or any(not isinstance(row, dict) or set(row) != {"path", "sha256", "size"}
                        or not isinstance(row.get("path"), str) or not _hex(row.get("sha256"), 64)
@@ -1499,12 +1854,9 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
                        for row in retire_paths)):
             raise DeploymentError("Development recovery retirement plan is malformed")
         selected = replace(paths, development_source=dev_source, retire_paths=retire_paths)
-        lifecycle, lock_module, ui = _source_modules(source, selected)
-        if not callable(getattr(lifecycle, "_preflight_timer_restore", None)):
-            raise DeploymentIncomplete("Selected lifecycle owner lacks D2 automatic timer restoration; update the Development source first.")
-        owner_source_text = (source / "installer/controlled_backend_lifecycle.py").read_text(encoding="utf-8")
-        if "--restore-timers" not in owner_source_text:
-            raise DeploymentIncomplete("Selected lifecycle owner cannot safely restore prior active timers; update the Development source first.")
+        lifecycle, lock_module, ui = (_source_modules(source, selected) if engine_source == source
+                                      else _source_modules(source, selected, engine_source=engine_source))
+        _require_development_lifecycle_contract(engine_source, lifecycle)
         result["source_commit"] = metadata["base_git_sha"]
         result["source"] = {key: metadata[key] for key in
                              ("path", "base_git_sha", "dirty", "content_sha256", "file_count")}
@@ -1515,7 +1867,8 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
                + (" (dirty)" if metadata["dirty"] else "") + "; immutable snapshot verified")
         _stage(result, "CI", "SKIP", "CI qualification is not required for DEV")
 
-        status = check(selected, source, commit)
+        status = (check(selected, source, commit) if engine_source == source
+                  else check(selected, source, commit, engine_source=engine_source))
         facts = _facts(source, selected, lifecycle, ui)
         changed = [name for name, same in zip(("Backend", "UI", "Host files"), facts[:3]) if not same]
         result["components"] = {"updated": [], "unchanged": [name for name in
@@ -1543,7 +1896,7 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
                     lifecycle._backend_manifest(paths.target("opt/fwrouter-api")))
                 if not _known_installed_backend(paths, installed_digest):
                     with _managed_staging_workspace(paths) as recovery_scratch:
-                        _materialize_recoverable_old_source(paths, source, lifecycle,
+                        _materialize_recoverable_old_source(paths, engine_source, lifecycle,
                                                             recovery_scratch / "old-source")
             _remember_development_admission(selected, admitted_source, last,
                                             acknowledge_stable_replacement)
@@ -1560,7 +1913,9 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
             result.pop("_dev_unadmitted_snapshot", None)
             progress(f"Applying DEV snapshot from base {metadata['base_git_sha'][:12]} through shared lifecycle")
             try:
-                outcome = apply(selected, source, commit, owner_driver=owner_driver, system_driver=system_driver)
+                outcome = apply(selected, source, commit, owner_driver=owner_driver,
+                                system_driver=system_driver,
+                                **({} if engine_source == source else {"engine_source": engine_source}))
                 result["install_status"] = outcome["status"]
                 result["pending_units"] = outcome.get("pending_units", [])
                 result["components"]["updated"] = changed
@@ -1596,7 +1951,6 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
         _report_lifecycle(result, paths, lifecycle)
         if paths.test_driver and "Timers" not in result["stages"]:
             _stage(result, "Timers", "INCOMPLETE", "systemd timer state is intentionally not observed in a disposable fixture")
-        policy = _read_acceptance_policy(paths)
         progress("Verifying DEV health and native runtime acceptance")
         result["health"] = _read_health(paths, lifecycle, policy)
         proof = (_native_acceptance(paths, lifecycle, installed["backend_sha256"], policy)
@@ -1943,7 +2297,8 @@ def _current_main() -> str:
     return sha
 
 
-def _stable_qualification(source: Path, sha: str, scratch: Path, owner_uid: int) -> dict:
+def _stable_qualification(source: Path, sha: str, scratch: Path, owner_uid: int, *,
+                          historical_head: str | None = None) -> dict:
     runs = _api_rows(_gh_api(
         f"{MAIN_REPO}/actions/workflows/test-gates.yml/runs?branch=main&event=push&head_sha={sha}&per_page=100"),
         "workflow_runs")
@@ -1981,7 +2336,7 @@ def _stable_qualification(source: Path, sha: str, scratch: Path, owner_uid: int)
         raise DeploymentError("Release Acceptance artifact metadata does not match the exact Main run")
     _verify_candidate_tree(source, sha, owner_uid)
     _verify_main_bundle(source, scratch, artifact, qualification)
-    if (_current_main() != sha or not _main_run_matches(_gh_api(run_endpoint), sha, run_id, attempt)
+    if (_current_main() != (historical_head or sha) or not _main_run_matches(_gh_api(run_endpoint), sha, run_id, attempt)
             or not _successful_main_jobs(_gh_api(jobs_endpoint))
             or not _main_artifact_matches(_gh_api(artifact_endpoint), qualification)):
         raise DeploymentError("Main or Release Acceptance changed during source qualification; rerun --stable")
@@ -2346,7 +2701,7 @@ def _materialize_development_snapshot(paths: Paths, metadata: dict):
             raise DeploymentError("Development snapshot content digest does not match its captured identity")
         _initialize_development_git(source, paths.owner_uid, metadata)
         commit = _source_commit(source, paths.owner_uid)
-        yield source, commit
+        yield source, commit, scratch
 
 
 def _initialize_development_git(source: Path, owner_uid: int, metadata: dict) -> None:
@@ -2891,13 +3246,14 @@ def _facts(source: Path, paths: Paths, lifecycle, ui) -> tuple[bool, bool, bool,
     return backend_same, ui_same, host_same, healthy
 
 
-def check(paths: Paths, source: Path, commit: str) -> str:
+def check(paths: Paths, source: Path, commit: str, *, engine_source: Path | None = None) -> str:
     identity = _read_identity(paths)
     operation = identity.get("operation") if identity.get("status") != "UNKNOWN" else None
     if isinstance(operation, dict) and operation.get("kind") == "self_upgrade" \
             and operation.get("status") == "PENDING":
         return "UPDATER_SELF_UPGRADE_PENDING"
-    lifecycle, _lock, ui = _source_modules(source, paths)
+    lifecycle, _lock, ui = (_source_modules(source, paths) if engine_source is None
+                            else _source_modules(source, paths, engine_source=engine_source))
     backend_same, ui_same, host_same, healthy = _facts(source, paths, lifecycle, ui)
     checkpoint = None
     checkpoint_path = paths.state_dir / "pending.json"
@@ -2934,14 +3290,17 @@ def check(paths: Paths, source: Path, commit: str) -> str:
 
 def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool = False,
           owner_driver: Callable[[object, str, Path, bool, Path, list[str]], subprocess.CompletedProcess] | None = None,
-          system_driver: Callable[[list[str]], subprocess.CompletedProcess] | None = None) -> dict:
+          system_driver: Callable[[list[str]], subprocess.CompletedProcess] | None = None,
+          engine_source: Path | None = None) -> dict:
     _assert_requested_source(paths, source, commit)
     initial_identity = _read_identity(paths)
     initial_operation = initial_identity.get("operation") if initial_identity.get("status") != "UNKNOWN" else None
     if (isinstance(initial_operation, dict) and initial_operation.get("kind") == "self_upgrade"
             and initial_operation.get("status") == "PENDING"):
         raise DeploymentError("pending updater self-upgrade must be resumed with the exact pinned transition")
-    lifecycle, lock_module, ui = _source_modules(source, paths)
+    lifecycle, lock_module, ui = (_source_modules(source, paths) if engine_source is None
+                                  else _source_modules(source, paths, engine_source=engine_source))
+    owner_source = engine_source or source
     state_file = paths.state_dir / "pending.json"
     selected_manifest = lifecycle._backend_manifest(source / "backend")
     selected_digest = lifecycle._manifest_digest(selected_manifest)
@@ -3113,7 +3472,7 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
         before_resume = lifecycle._read_checkpoint(state_file)
         if before_resume["operation_id"] != expected_operation_id:
             raise DeploymentError("lifecycle operation changed before resume; refusing to claim another operation")
-        resumed = owner_call("resume", source)
+        resumed = owner_call("resume", owner_source)
         if resumed.returncode != 0:
             raise DeploymentError("controlled lifecycle resume or API readiness gate failed")
         try:
@@ -3166,7 +3525,7 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
     if (pending is not None and pending["status"] == "pending"
             and pending["backend_manifest_sha256"] == selected_digest
             and installed_digest == selected_digest and not resume_only):
-        pending = owner_transition("stop", source, [], pending, pending["operation_id"],
+        pending = owner_transition("stop", owner_source, [], pending, pending["operation_id"],
                                    "lifecycle_stop_recovery", checkpoint_after_stop)
 
     if needs_transfer and pending is not None and pending["status"] == "pending":
@@ -3180,7 +3539,7 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
         else:
             old_commit = _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
         with _managed_staging_workspace(paths) as temp:
-            old_root = (_materialize_recoverable_old_source(paths, source, lifecycle, temp / "source")
+            old_root = (_materialize_recoverable_old_source(paths, owner_source, lifecycle, temp / "source")
                         if _installed_source_reconstruction_required(paths) else
                         _materialize_old_source(source, old_commit, temp / "source"))
             pending = owner_transition("stop", old_root, [], pending, pending["operation_id"],
@@ -3188,14 +3547,14 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
         transfer_args = ["--expected-operation-id", pending["operation_id"],
                          "--expected-current-manifest-sha256", installed_digest,
                          "--expected-new-manifest-sha256", selected_digest]
-        pending = owner_transition("transfer", source, transfer_args, pending,
+        pending = owner_transition("transfer", owner_source, transfer_args, pending,
                                     pending["operation_id"], "lifecycle_source_transfer",
                                     lambda result: checkpoint_after_transfer(pending, result))
 
     if pending is None or pending["status"] == "complete":
         if installed_digest == selected_digest:
             before_stop = lifecycle._read_checkpoint(state_file) if state_file.exists() else None
-            stopped_pending = owner_transition("stop", source, [], before_stop, None,
+            stopped_pending = owner_transition("stop", owner_source, [], before_stop, None,
                                                "lifecycle_stop", checkpoint_after_stop)
         else:
             if _installed_source_reconstruction_required(paths):
@@ -3203,7 +3562,7 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
             else:
                 old_commit = _find_source_commit(source, paths.target("opt/fwrouter-api"), lifecycle)
             with _managed_staging_workspace(paths) as temp:
-                old_root = (_materialize_recoverable_old_source(paths, source, lifecycle, temp / "source")
+                old_root = (_materialize_recoverable_old_source(paths, owner_source, lifecycle, temp / "source")
                             if _installed_source_reconstruction_required(paths) else
                             _materialize_old_source(source, old_commit, temp / "source"))
                 before_stop = lifecycle._read_checkpoint(state_file) if state_file.exists() else None
@@ -3215,7 +3574,7 @@ def apply(paths: Paths, source: Path, commit: str, *, allow_timer_catchup: bool 
                 transfer_args = ["--expected-operation-id", pending["operation_id"],
                                  "--expected-current-manifest-sha256", installed_digest,
                                  "--expected-new-manifest-sha256", selected_digest]
-                pending = owner_transition("transfer", source, transfer_args, pending,
+                pending = owner_transition("transfer", owner_source, transfer_args, pending,
                                             pending["operation_id"], "lifecycle_source_transfer",
                                             lambda result: checkpoint_after_transfer(pending, result))
         if installed_digest == selected_digest:
@@ -3391,29 +3750,87 @@ def _stable_service_state(paths: Paths, lifecycle) -> None:
         raise DeploymentError("API environment could not be inspected safely.") from exc
 
 
-def _strict_database_preflight(paths: Paths, lifecycle, source: Path) -> None:
+DEPLOYMENT_LEGACY_SCHEMA27 = "legacy_migrated_schema27_manual_ping_additive"
+
+_READ_INSTALLED_SCHEMA27 = """
+import json, sqlite3, sys
+from pathlib import Path
+from fwrouter_api.core.config import get_settings
+from fwrouter_api.cli import _validate_database_path
+from fwrouter_api.db.schema_state import inspect_database_schema
+p = Path(sys.argv[1])
+if get_settings().paths.db_path != p:
+    raise SystemExit(1)
+_validate_database_path(p)
+with sqlite3.connect(p.as_uri() + "?mode=ro", uri=True, timeout=5) as db:
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA query_only=ON")
+    db.execute("BEGIN")
+    schema = inspect_database_schema(db, allow_legacy_schema27_profiles=True)
+    if (not schema["ok"] or str(schema["actual_schema_version"]) != "27"
+            or schema.get("compatibility_profile") != sys.argv[2]
+            or [row[0] for row in db.execute("PRAGMA integrity_check")] != ["ok"]
+            or db.execute("PRAGMA foreign_key_check").fetchone() is not None):
+        raise SystemExit(1)
+print(json.dumps({"ok": True, "compatibility_profile": sys.argv[2]}))
+"""
+
+
+def _strict_database_preflight(paths: Paths, lifecycle, source: Path, *, legacy_rollback: bool = False) -> str:
     if paths.test_driver:
-        return
+        return "fixture"
     _stable_service_state(paths, lifecycle)
-    python = lifecycle._verified_backend_interpreter()
+    python = str(lifecycle._verified_backend_interpreter())
+    database = str(paths.target("var/lib/fwrouter-v2/fwrouter.db"))
     expected = {"ok": True, "status": "already_current", "current_schema": 27,
                 "target_schema": 27, "database_changed": False}
-    command = ["database", "upgrade", "--expected-schema", "27"]
+    canonical = ["database", "upgrade", "--expected-schema", "27"]
     source_cli = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
                   "from fwrouter_api.core.config import get_settings; "
                   "sys.exit(1) if get_settings().paths.db_path != Path(sys.argv[2]) else None; "
                   "from fwrouter_api.cli import main; raise SystemExit(main(sys.argv[3:]))")
-    for label, entrypoint in (("installed", ["-m", "fwrouter_api.cli"]),
-                              ("selected", ["-c", source_cli, str(source / "backend"),
-                                            str(paths.target("var/lib/fwrouter-v2/fwrouter.db"))])):
-        result = _run([str(python), "-I", "-B", *entrypoint, *command], timeout=120, host_environment=True)
+    base = [python, "-I", "-B"]
+    installed = [*base, "-m", "fwrouter_api.cli"]
+    candidate = [*base, "-c", source_cli, str(source / "backend"), database]
+    legacy = False
+    for label, entry in (("installed", installed), ("selected", candidate)):
+        result = _run([*entry, *canonical], timeout=120, host_environment=True)
         payload = _json_object(result.stdout)
-        if result.returncode != 0 or payload != expected or payload.get("database_changed") is not False:
-            reason = payload.get("error_code")
-            if (not isinstance(reason, str) or not reason.startswith("DATABASE_")
-                    or len(reason) > 100 or not reason.replace("_", "").isalnum()):
-                reason = "DATABASE_SCHEMA_PREFLIGHT_UNVERIFIED"
-            raise DeploymentError(f"Database preflight ({label}) {reason}. Resolve strict schema admission before deployment.")
+        if not result.returncode and payload == expected and not legacy:
+            continue
+        if label == "installed" and payload == {"ok": False, "error_code": "DATABASE_SCHEMA_PREFLIGHT_FAILED"}:
+            # D1 has the exact profile inspector but predates the explicit
+            # compatibility command. Keep this independent installed-side test.
+            readback = _run([*base, "-c", _READ_INSTALLED_SCHEMA27, database, DEPLOYMENT_LEGACY_SCHEMA27],
+                            timeout=120, host_environment=True)
+            legacy = not readback.returncode and _json_object(readback.stdout) == {
+                "ok": True, "compatibility_profile": DEPLOYMENT_LEGACY_SCHEMA27}
+            if legacy:
+                continue
+        if label == "selected" and legacy:
+            compatibility = _run([*entry, "database", "preflight", "--expected-schema", "27",
+                                  "--compatibility-profile", DEPLOYMENT_LEGACY_SCHEMA27],
+                                 timeout=120, host_environment=True)
+            if not compatibility.returncode and _json_object(compatibility.stdout) == {
+                    **expected, "compatibility_profile": DEPLOYMENT_LEGACY_SCHEMA27,
+                    "integrity": "ok", "foreign_key_violations": 0}:
+                continue
+            # A pinned historical rollback can predate the CLI subcommand.
+            # Keep both exact read-only checks and use its own legacy inspector.
+            if legacy_rollback and paths.stable_source is not None and compatibility.returncode == 2:
+                historical_reader = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                                     + _READ_INSTALLED_SCHEMA27)
+                historical = _run([*base, "-c", historical_reader, str(source / "backend"),
+                                   database, DEPLOYMENT_LEGACY_SCHEMA27], timeout=120, host_environment=True)
+                if not historical.returncode and _json_object(historical.stdout) == {
+                        "ok": True, "compatibility_profile": DEPLOYMENT_LEGACY_SCHEMA27}:
+                    continue
+        reason = payload.get("error_code")
+        if (not isinstance(reason, str) or not reason.startswith("DATABASE_")
+                or len(reason) > 100 or not reason.replace("_", "").isalnum()):
+            reason = "DATABASE_SCHEMA_PREFLIGHT_UNVERIFIED"
+        raise DeploymentError(f"Database preflight ({label}) {reason}. The schema or compatibility profile could not be verified.")
+    return DEPLOYMENT_LEGACY_SCHEMA27 if legacy else "canonical"
 
 
 def _verify_dependency_compatibility(paths: Paths, source: Path) -> None:
@@ -3435,15 +3852,43 @@ def _verify_dependency_compatibility(paths: Paths, source: Path) -> None:
 def _read_acceptance_policy(paths: Paths) -> dict:
     path = paths.target("etc/fwrouter/deploy-acceptance.json")
     try:
-        if not path.exists():
-            return {}
-        _check_trusted_tree(path.parent, paths.owner_uid)
         info = path.lstat()
-        if stat.S_IMODE(info.st_mode) != 0o600:
-            raise DeploymentError("deployment acceptance policy must use mode 0600")
-        data = _json_object(_read_stable_source_file(path, paths.owner_uid, limit=4096).decode("utf-8"))
-    except (OSError, ValueError) as exc:
+    except FileNotFoundError:
+        return {}
+    try:
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise DeploymentError("deployment acceptance policy must be a regular file")
+        _check_trusted_tree(path.parent, paths.owner_uid)
+        if stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != paths.owner_uid or info.st_nlink != 1:
+            raise DeploymentError("deployment acceptance policy must be owner-only, standalone and mode 0600")
+        data = _strict_policy_json(_read_stable_source_file(path, paths.owner_uid, limit=4096))
+    except (OSError, ValueError, UnicodeError) as exc:
         raise DeploymentError("deployment acceptance policy cannot be read safely") from exc
+    return _validate_acceptance_policy(data)
+
+
+def _strict_policy_json(payload: bytes) -> dict:
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object,
+                           parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("nonstandard constant")))
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise DeploymentError("acceptance policy must be one strict JSON object without duplicate keys") from exc
+    if not isinstance(value, dict):
+        raise DeploymentError("acceptance policy must be one strict JSON object")
+    return value
+
+
+def _validate_acceptance_policy(data: dict) -> dict:
+    if not data:
+        raise DeploymentError("deployment acceptance policy is empty or malformed JSON")
     if data.get("schema") != "fwrouter-deploy-acceptance/v1" or set(data) - {"recovery"} != {
             "schema", "xray_image", "mihomo_image", "ui_port", "ui_path"}:
         raise DeploymentError("deployment acceptance policy is malformed")
@@ -3455,7 +3900,198 @@ def _read_acceptance_policy(paths: Paths) -> dict:
             or data["ui_path"].startswith("//") or len(data["ui_path"]) > 256
             or not all(32 < ord(char) < 127 for char in data["ui_path"])):
         raise DeploymentError("deployment acceptance policy has an invalid loopback UI endpoint")
+    recovery = data.get("recovery")
+    if "recovery" in data and (
+            not isinstance(recovery, dict)
+            or set(recovery) != {"backup_path", "backup_sha256", "installed_backend_sha256"}
+            or not isinstance(recovery.get("backup_path"), str)
+            or not Path(recovery["backup_path"]).is_absolute()
+            or ".." in Path(recovery["backup_path"]).parts
+            or not _hex(recovery.get("backup_sha256"), 64)
+            or not _hex(recovery.get("installed_backend_sha256"), 64)):
+        raise DeploymentError("deployment acceptance policy has an invalid recovery backup pin")
     return data
+
+
+def _initialize_acceptance_policy(paths: Paths, source: Path) -> str:
+    """Install an independently approved policy without deriving or replacing approval."""
+    try:
+        _check_trusted_tree(source.parent, paths.owner_uid)
+        info = source.lstat()
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != paths.owner_uid or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 4096):
+            raise DeploymentError("approved policy input must be an owner-only mode-0600 regular file")
+        payload = _read_stable_source_file(source, paths.owner_uid, limit=4096)
+        after = source.lstat()
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(after, name) != getattr(info, name) for name in stable_fields):
+            raise DeploymentError("approved policy input changed during validation")
+        policy = _strict_policy_json(payload)
+        _validate_acceptance_policy(policy)
+    except (OSError, UnicodeError) as exc:
+        raise DeploymentError("approved policy input cannot be read safely") from exc
+
+    destination = paths.target("etc/fwrouter/deploy-acceptance.json")
+    parent = destination.parent
+    _check_trusted_tree(parent, paths.owner_uid)
+    canonical = (json.dumps(policy, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(canonical) > 4096:
+        raise DeploymentError("validated acceptance policy exceeds the supported size limit")
+
+    def sync_policy_directory() -> None:
+        descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    try:
+        existing_info = destination.lstat()
+    except FileNotFoundError:
+        existing_info = None
+    if existing_info is not None:
+        existing = _read_acceptance_policy(paths)
+        if existing == policy:
+            sync_policy_directory()
+            return "NOOP"
+        raise DeploymentError("a different acceptance policy is already installed; only the runtime owner may rotate it")
+
+    directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temp_name = f".deploy-acceptance.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(canonical)
+            stream.flush()
+            os.fsync(stream.fileno())
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise DeploymentError("atomic no-replace policy publication is unavailable on this host")
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        if renameat2(directory_fd, os.fsencode(temp_name), directory_fd,
+                     os.fsencode(destination.name), 1) != 0:  # RENAME_NOREPLACE
+            error = ctypes.get_errno()
+            if error == 17:  # EEXIST
+                existing = _read_acceptance_policy(paths)
+                if existing == policy:
+                    os.unlink(temp_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                    return "NOOP"
+                raise DeploymentError("a different acceptance policy is already installed; only the runtime owner may rotate it")
+            raise OSError(error, os.strerror(error))
+        os.fsync(directory_fd)
+    except BaseException:
+        try:
+            os.unlink(temp_name, dir_fd=directory_fd)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(directory_fd)
+    installed = _read_acceptance_policy(paths)
+    if installed != policy or stat.S_IMODE(destination.stat().st_mode) != 0o600:
+        raise DeploymentError("installed acceptance policy failed post-publication verification")
+    return "INSTALLED"
+
+
+def _runtime_image_evidence(paths: Paths, policy: dict) -> tuple[str, str, dict]:
+    if paths.test_driver:
+        return "SKIP", "disposable target has no native runtime", policy
+    images = _observed_runtime_image_ids(paths)
+    configured = _configured_runtime_image_ids(paths)
+    mismatch = [name for name in ("xray", "mihomo")
+                if images.get(name) not in (None, "UNKNOWN")
+                and any(expected not in (None, "UNKNOWN") and images[name] != expected
+                        for expected in (configured.get(name), policy.get(f"{name}_image")))]
+    if mismatch:
+        return "FAIL", "Running runtime images differ from their configured identities: " + ", ".join(mismatch), policy
+    unavailable = [name for name in ("xray", "mihomo")
+                   if images.get(name) in (None, "UNKNOWN") or configured.get(name) in (None, "UNKNOWN")]
+    if unavailable:
+        return "INCOMPLETE", ("Cannot establish configured and running image identity for "
+                              + ", ".join(unavailable) + ". Verify the installed Compose image and container."), policy
+    return ("PASS", "Running Xray and Mihomo match their installed Compose references.",
+            {**policy, "xray_image": configured["xray"], "mihomo_image": configured["mihomo"]})
+
+
+def _native_policy_evidence(paths: Paths, policy: dict) -> tuple[str, str]:
+    status, detail, _ = _runtime_image_evidence(paths, policy)
+    return status, detail
+
+
+def _require_acceptance_policy(paths: Paths, policy: dict | None = None) -> dict:
+    status, detail, expectations = _runtime_image_evidence(
+        paths, _read_acceptance_policy(paths) if policy is None else policy)
+    if status == "INCOMPLETE":
+        raise DeploymentIncomplete(detail)
+    if status == "FAIL":
+        raise DeploymentError(detail)
+    return expectations
+
+
+def _read_installed_runtime_config(paths: Paths, relative: str, *, limit: int,
+                                   historical_blob: str | None = None) -> bytes:
+    path = paths.target(relative)
+    observed = []
+    verify_historical_bytes = False
+    for item in (*reversed(path.parents), path):
+        if item == paths.target_root or not item.is_relative_to(paths.target_root):
+            continue
+        info = item.lstat()
+        if (info.st_uid != paths.owner_uid or info.st_mode & stat.S_IWOTH
+                or (item != path and not stat.S_ISDIR(info.st_mode))):
+            raise DeploymentError("installed runtime configuration path is not owner-controlled")
+        if info.st_mode & stat.S_IWGRP:
+            if historical_blob is None or info.st_uid != 0 or info.st_gid != 0:
+                raise DeploymentError("installed runtime configuration path is group-writable")
+            verify_historical_bytes = True
+        observed.append((item, info))
+    payload = _read_stable_source_file(path, paths.owner_uid, limit=limit)
+    if verify_historical_bytes:
+        # Older installations shipped group-writable Compose paths. Their
+        # bytes can only establish expectations if independently reconstructed
+        # from the exact configured, trusted release checkout.
+        source, sha = _read_config(paths.config, paths.owner_uid)
+        if payload != _git_blob_bytes(source, sha, historical_blob):
+            raise DeploymentError("group-writable Compose bytes differ from the recorded source")
+    for item, info in observed:
+        after = item.lstat()
+        fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_ctime_ns")
+        if any(getattr(info, key) != getattr(after, key) for key in fields):
+            raise DeploymentError("installed runtime configuration path changed during inspection")
+    return payload
+
+
+def _configured_runtime_image_ids(paths: Paths) -> dict:
+    """Resolve configured image references only from installed Compose and local Docker metadata."""
+    if paths.test_driver or not Path("/usr/bin/docker").is_file():
+        return {"xray": "UNKNOWN", "mihomo": "UNKNOWN"}
+    result = {}
+    for component in ("xray", "mihomo"):
+        try:
+            payload = _read_installed_runtime_config(
+                paths, f"opt/fwrouter-{component}/docker-compose.yml", limit=256 * 1024,
+                historical_blob=f"runtimes/{component}/docker-compose.yml").decode("utf-8")
+            refs = re.findall(r"^\s{4}image:\s*([^\s#]+)\s*(?:#.*)?$", payload, flags=re.MULTILINE)
+            if len(refs) != 1:
+                result[component] = "UNKNOWN"
+                continue
+            ref = refs[0]
+            if not ref or ref in {"latest", ""} or any(ch.isspace() for ch in ref):
+                result[component] = "UNKNOWN"
+                continue
+            inspected = _run(["/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "image", "inspect",
+                              "--format", "{{.Id}}", ref], timeout=10, host_environment=True)
+            image_id = inspected.stdout.strip()
+            result[component] = (image_id if inspected.returncode == 0 and image_id.startswith("sha256:")
+                                 and _hex(image_id[7:], 64) else "UNKNOWN")
+        except (DeploymentError, OSError, UnicodeError):
+            result[component] = "UNKNOWN"
+    return result
 
 
 def _verify_backend_recovery(paths: Paths, lifecycle, policy: dict, old_manifest: str) -> dict:
@@ -3482,10 +4118,10 @@ def _verify_backend_recovery(paths: Paths, lifecycle, policy: dict, old_manifest
         script = (
             "import sys; from pathlib import Path; "
             "from fwrouter_api.services.database_admin import _validate_database_file, _hash_regular_file; "
-            "p = Path(sys.argv[1]); _validate_database_file(p, allow_legacy_schema27_profiles=False); "
-            "raise SystemExit(0 if _hash_regular_file(p) == sys.argv[2] else 1)"
+            "p = Path(sys.argv[1]); schema = _validate_database_file(p, allow_legacy_schema27_profiles=True); "
+            "raise SystemExit(0 if schema.get('compatibility_profile') in (None, sys.argv[3]) and _hash_regular_file(p) == sys.argv[2] else 1)"
         )
-        verified = _run([str(python), "-I", "-B", "-c", script, str(path), recovery["backup_sha256"]],
+        verified = _run([str(python), "-I", "-B", "-c", script, str(path), recovery["backup_sha256"], DEPLOYMENT_LEGACY_SCHEMA27],
                         timeout=180, host_environment=True)
         after = path.lstat()
         fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
@@ -3557,7 +4193,9 @@ from pathlib import Path
 from fwrouter_api.services.database_admin import _validate_database_file
 from fwrouter_api.services.database_backup import _logical_digest
 path = Path(sys.argv[1])
-schema = _validate_database_file(path, allow_legacy_schema27_profiles=False)
+schema = _validate_database_file(path, allow_legacy_schema27_profiles=True)
+if schema.get("compatibility_profile") not in (None, sys.argv[2]):
+    raise SystemExit(1)
 with sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True) as connection:
     connection.execute("PRAGMA query_only=ON")
     print(json.dumps({"schema": int(schema["actual_schema_version"]), "snapshot_sha256": _logical_digest(connection)}))
@@ -3569,7 +4207,7 @@ def _validate_managed_backup(paths: Paths, lifecycle, pin: dict) -> None:
         raise DeploymentError("managed rollback backup pin is malformed")
     path = _backup_directory(paths, pin) / pin["filename"]
     before = _protected_backup_file(paths, path)
-    result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path))
+    result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path), DEPLOYMENT_LEGACY_SCHEMA27)
     if (result != {"schema": 27, "snapshot_sha256": pin["snapshot_sha256"]}
             or _backup_file_digest(path, before) != pin["sha256"]):
         raise DeploymentError("managed rollback backup does not match its schema and digest pin")
@@ -3634,7 +4272,7 @@ def _prepare_managed_backup(paths: Paths, lifecycle, reservation: dict) -> dict:
         before = _protected_backup_file(paths, path)
         # This reservation was durable before creation. The SQLite owner
         # exposes only a complete atomic publication under the final name.
-        result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path))
+        result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path), DEPLOYMENT_LEGACY_SCHEMA27)
         pin = {**reservation, "filename": path.name, "sha256": _backup_file_digest(path, before),
                "snapshot_sha256": result.get("snapshot_sha256")}
         if result.get("schema") != 27 or not _valid_managed_backup(pin, complete=True):
@@ -3905,9 +4543,12 @@ NATIVE_CHECKS = (
 
 
 def _native_acceptance(paths: Paths, lifecycle, manifest: str, policy: dict) -> dict:
-    if not policy or paths.test_driver:
-        return {"status": "NOT_VERIFIED", "reason": "independent runtime image pins are unavailable"}
+    if paths.test_driver:
+        return {"status": "NOT_VERIFIED", "reason": "native proof is unavailable for a disposable target"}
     try:
+        image_status, image_detail, policy = _runtime_image_evidence(paths, policy)
+        if image_status != "PASS":
+            return {"status": "FAIL" if image_status == "FAIL" else "NOT_VERIFIED", "reason": image_detail}
         _stable_service_state(paths, lifecycle)
         python = lifecycle._verified_backend_interpreter()
         result = _run([str(python), "-I", "-B", "-m", "fwrouter_api.cli", "native-proof", "--scope", "ui",
@@ -3934,7 +4575,32 @@ def _native_acceptance(paths: Paths, lifecycle, manifest: str, policy: dict) -> 
     return {"status": "FAIL" if proof.get("status") == "FAIL" else "NOT_VERIFIED", "reason": reason}
 
 
+def _ui_probe_policy(paths: Paths, policy: dict) -> dict:
+    if "ui_port" in policy or "ui_path" in policy:
+        return policy
+    # Recognize the documented single-server FWRouter Nginx layout. The
+    # loopback response still has to match the exact installed index bytes.
+    try:
+        data = _read_installed_runtime_config(
+            paths, "etc/nginx/conf.d/fwrouter-ui.conf", limit=64 * 1024).decode("utf-8")
+    except (OSError, UnicodeError, DeploymentError):
+        return policy
+    data = re.sub(r"(?m)#.*$", "", data)
+    listeners = re.findall(r"(?m)^[ 	]*listen[ 	]+([^;]+);", data)
+    roots = re.findall(r"(?m)^[ 	]*root[ 	]+([^;]+);", data)
+    if (len(re.findall(r"(?m)^[ 	]*server[ 	]*\{", data)) != 1
+            or roots != ["/opt/fwrouter-ui"] or not listeners):
+        return policy
+    allowed = re.compile(r"(?:127\.0\.0\.1:|\[::\]:)?5500(?:[ 	]+default_server)?")
+    if not all(allowed.fullmatch(value.strip()) for value in listeners):
+        return policy
+    return {**policy, "ui_port": 5500, "ui_path": "/"}
+
+
 def _http_ui(paths: Paths, policy: dict) -> bool:
+    if (not isinstance(policy, dict) or not _positive_id(policy.get("ui_port"))
+            or not isinstance(policy.get("ui_path"), str)):
+        raise DeploymentIncomplete("UI endpoint is not configured by a trusted deployment policy")
     expected = paths.target("opt/fwrouter-ui/index.html")
     connection = http.client.HTTPConnection("127.0.0.1", policy["ui_port"], timeout=5)
     try:
@@ -3963,7 +4629,9 @@ def _read_health(paths: Paths, lifecycle, policy: dict) -> dict:
     if paths.test_driver:
         return {"API": probe(lambda: paths.api_healthy, "disposable fixture"),
                 "Runtime": probe(lambda: paths.runtime_healthy, "disposable fixture")}
-    ui = (probe(lambda: _http_ui(paths, policy), "loopback HTTP matches installed index.html") if policy
+    policy = _ui_probe_policy(paths, policy)
+    ui = (probe(lambda: _http_ui(paths, policy), "loopback HTTP matches installed index.html")
+          if isinstance(policy, dict) and _positive_id(policy.get("ui_port")) and isinstance(policy.get("ui_path"), str)
           else {"status": "INCOMPLETE", "detail": "loopback UI availability probe is not configured"})
     return {"API": probe(lifecycle._api_health, "local API and database readiness"),
             "UI": ui,
@@ -4019,7 +4687,89 @@ def _accepted_stable_pin(last: object) -> dict | None:
             "accepted_at": last["acceptance"]["verified_at"], "proof_sha256": proof[0]}
 
 
-def _remember_stable_admission(paths: Paths, lifecycle, *, recovering: bool, rollback: bool = False) -> None:
+def _discover_stable_baseline(paths: Paths, selection: StableSource, identity: dict,
+                              lifecycle, ui) -> dict:
+    """Verify historical rollback resources without asserting prior runtime acceptance."""
+    last = identity.get("last_verified_install") or {}
+    sha = last.get("git_sha")
+    if (last.get("mode") != "UNKNOWN" or not _hex(sha, 40)
+            or last.get("installed_content") != last.get("source_content")):
+        raise DeploymentIncomplete("No accepted Stable baseline or exact legacy install identity is available.")
+    installed = _installed_content_identity(selection.root, paths, lifecycle, ui)
+    if installed != last.get("installed_content"):
+        raise DeploymentIncomplete("Installed components differ from the recorded legacy recovery candidate.")
+    ancestry = _run(["/usr/bin/git", "-C", str(selection.root), "merge-base", "--is-ancestor",
+                     sha, selection.commit], timeout=30)
+    if ancestry.returncode:
+        raise DeploymentIncomplete("The legacy recovery candidate is outside the qualified Main history.")
+    with _managed_staging_workspace(paths) as scratch:
+        source = scratch / "baseline"
+        clone = _run(["/usr/bin/git", "clone", "--quiet", "--no-hardlinks", "--no-checkout",
+                      str(selection.root), str(source)], timeout=180)
+        if clone.returncode:
+            raise DeploymentIncomplete("Could not reconstruct the exact legacy recovery source locally.")
+        checkout = _run(["/usr/bin/git", "-C", str(source), "checkout", "--quiet", "--detach", sha], timeout=90)
+        if checkout.returncode:
+            raise DeploymentIncomplete("Legacy recovery source cannot be checked out by its recorded identity.")
+        qualification = _stable_qualification(source, sha, scratch, paths.owner_uid,
+                                               historical_head=selection.commit)
+        if _source_content_identity(source, lifecycle, ui, paths) != installed:
+            raise DeploymentIncomplete("Qualified historical source does not reproduce the installed components.")
+        try:
+            _strict_database_preflight(replace(paths, stable_source=selection), lifecycle, source, legacy_rollback=True)
+        except DeploymentError as exc:
+            raise DeploymentIncomplete("Historical SQLite rollback compatibility could not be verified.") from exc
+    return {"source_sha": sha, "qualification": qualification, "installed_content": installed,
+            "provenance": "UNKNOWN", "native_acceptance": "NOT_VERIFIED",
+            "lifecycle_owner_sha": selection.commit}
+
+
+def _pin_legacy_lifecycle_owner(paths: Paths, record: dict, selection: StableSource) -> None:
+    updater = record.get("components", {}).get("updater") or {}
+    updater_sha = _digest(paths.target("usr/local/libexec/fwrouter/local_deploy.py"))
+    if (updater.get("qualification_status") != "VERIFIED_MAIN_CI"
+            or updater.get("installed_sha256") != updater_sha):
+        raise DeploymentIncomplete("A qualified installed D2 updater is required to pin legacy rollback resources.")
+    owner = _publish_lifecycle_owner_capsule(paths, selection.root, selection.commit,
+                                            selection.qualification, updater_sha)
+    record.setdefault("lifecycle_owners", {})[selection.commit] = owner
+
+
+def _adopt_legacy_dev_baseline(paths: Paths, source: Path, identity: dict, result: dict) -> None:
+    updater = identity.get("components", {}).get("updater") or {}
+    # Reuse the completed module-only bootstrap's exact Main evidence when still current.
+    qualification = {key: updater.get(key) for key in
+                     ("source_sha", "run_id", "run_attempt", "artifact_id", "artifact_digest")}
+    for key in ("run_id", "run_attempt", "artifact_id"):
+        if isinstance(qualification[key], str) and qualification[key].isascii() and qualification[key].isdecimal():
+            qualification[key] = int(qualification[key])
+    reuse = (_valid_qualification(qualification)
+             and updater.get("qualification_status") == "VERIFIED_MAIN_CI"
+             and updater.get("installed_sha256") == _digest(paths.target("usr/local/libexec/fwrouter/local_deploy.py"))
+             and qualification["source_sha"] == _current_main())
+    with _temporary_main(paths, qualification if reuse else None) as selection:
+        lifecycle, _, ui = _source_modules(source, paths, engine_source=selection.root)
+        _require_development_lifecycle_contract(selection.root, lifecycle)
+        _strict_database_preflight(paths, lifecycle, source)
+        _verify_dependency_compatibility(paths, source)
+        facts = _facts(source, paths, lifecycle, ui)
+        changes = [name for name, same in zip(("Backend", "UI", "Host files"), facts[:3]) if not same]
+        _storage_preflight(paths, source, changes, result)
+        baseline = _discover_stable_baseline(paths, selection, identity, lifecycle, ui)
+        with _configuration_component_lock(paths):
+            record = _read_identity(paths)
+            if (record != identity
+                    or _installed_content_identity(source, paths, lifecycle, ui) != baseline["installed_content"]):
+                raise DeploymentIncomplete("Installed recovery identity changed before legacy adoption.")
+            lifecycle._validate_state_dir(paths.state_dir)
+            _pin_legacy_lifecycle_owner(paths, record, selection)
+            record["stable_current"] = baseline
+            _write_identity(paths, record)
+    _stage(result, "Stable recovery", "PASS", "historical source and D2 lifecycle verified; historical acceptance NOT_VERIFIED")
+
+
+def _remember_stable_admission(paths: Paths, lifecycle, *, recovering: bool, rollback: bool = False,
+                               baseline: dict | None = None, ui=None) -> None:
     selection = paths.stable_source
     with _configuration_component_lock(paths):
         record = _identity_record_base(paths)
@@ -4043,6 +4793,14 @@ def _remember_stable_admission(paths: Paths, lifecycle, *, recovering: bool, rol
         if current is not None:
             raise DeploymentError("another Stable operation was admitted; rerun --stable to resume it")
         accepted = record.get("stable_current") or _accepted_stable_pin(record.get("last_verified_install"))
+        if baseline is not None:
+            if (accepted is not None or baseline["source_sha"] != last.get("git_sha")
+                    or _installed_content_identity(selection.root, paths, lifecycle, ui)
+                    != baseline["installed_content"]):
+                raise DeploymentIncomplete("The legacy recovery source changed before admission.")
+            if not paths.test_driver:
+                _pin_legacy_lifecycle_owner(paths, record, selection)
+            accepted = baseline
         if rollback:
             last = record.get("last_verified_install") or {}
             target = (record.get("stable_current") if last.get("mode") == "DEV"
@@ -4163,6 +4921,16 @@ def _refresh_storage_summary(paths: Paths, result: dict, lifecycle=None) -> None
         managed = 0
         storage["managed_bytes_status"] = "NOT_VERIFIED"
         result.setdefault("warnings", []).append("Release storage usage could not be measured safely.")
+    owner_bytes = 0
+    for sha, pin in (identity.get("lifecycle_owners") or {}).items():
+        try:
+            owner_dir = _verify_lifecycle_owner_files(paths, sha, pin)
+            owner_bytes += _tree_bytes(owner_dir)
+        except (OSError, DeploymentError):
+            storage["managed_bytes_status"] = "NOT_VERIFIED"
+            result.setdefault("warnings", []).append("Pinned lifecycle owner storage could not be verified.")
+    storage["lifecycle_owner_bytes"] = owner_bytes
+    managed += owner_bytes
     backup = identity.get("database_rollback")
     if backup and _valid_managed_backup(backup, complete=True):
         try:
@@ -4310,7 +5078,8 @@ def _installed_version(result: dict, identity: dict) -> None:
     result["deployment_identity"] = identity
 
 
-def _record_stable_acceptance(paths: Paths, result: dict, commit: str, proof: dict, lifecycle=None) -> None:
+def _record_stable_acceptance(paths: Paths, result: dict, commit: str, proof: dict, lifecycle=None,
+                              owner_source: Path | None = None) -> None:
     last = result["deployment_identity"].get("last_verified_install")
     if not last or last.get("mode") != "STABLE" or last.get("git_sha") != commit:
         raise DeploymentError("content identity changed before acceptance publication")
@@ -4332,6 +5101,33 @@ def _record_stable_acceptance(paths: Paths, result: dict, commit: str, proof: di
         if old_accepted is not None and old_accepted["source_sha"] != new_accepted["source_sha"]:
             record["stable_previous"] = old_accepted
         record["stable_current"] = new_accepted
+        if not paths.test_driver:
+            if owner_source is None:
+                raise DeploymentIncomplete("Qualified Stable source is unavailable to pin the DEV lifecycle owner.")
+            updater_path = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+            updater_digest = _digest(updater_path)
+            owners = record.setdefault("lifecycle_owners", {})
+            if _has_d2_lifecycle_contract(owner_source):
+                updater_record = record.get("components", {}).get("updater") or {}
+                if (updater_record.get("qualification_status") != "VERIFIED_MAIN_CI"
+                        or updater_record.get("installed_sha256") != updater_digest):
+                    raise DeploymentIncomplete(
+                        "Installed deployment module lacks its verified updater identity; cannot pin a Stable lifecycle owner.")
+                owner_pin = _publish_lifecycle_owner_capsule(
+                    paths, owner_source, commit, new_accepted["qualification"], updater_digest)
+                owners[commit] = owner_pin
+            elif rollback and owners:
+                previous_pin = next((row for row in (record.get("stable_previous"), old_accepted)
+                                     if row and row.get("source_sha") == commit and row.get("lifecycle_owner_sha")), None)
+                if previous_pin:
+                    new_accepted["lifecycle_owner_sha"] = previous_pin["lifecycle_owner_sha"]
+                result.setdefault("warnings", []).append(
+                    "Rollback source predates the D2 lifecycle owner; the retained qualified D2 Stable capsule remains the DEV recovery owner.")
+            else:
+                raise DeploymentIncomplete("Accepted Stable source has no D2 lifecycle owner and no retained qualified owner capsule exists.")
+            if len(owners) > 4:
+                raise DeploymentError("lifecycle owner retention exceeds the two accepted Stable releases")
+            record["lifecycle_owners"] = owners
         candidate_backup = record.get("database_rollback_candidate")
         dev_backup = record.get("dev_baseline_backup")
         promote_dev_backup = (
@@ -4366,6 +5162,8 @@ def _record_stable_acceptance(paths: Paths, result: dict, commit: str, proof: di
         record.pop("rollback_admission", None)
         record.pop("dev_current", None)
         _write_identity(paths, record)
+    _cleanup_lifecycle_owner_capsules(paths, result)
+    record = _read_identity(paths)
     _installed_version(result, record)
 
 
@@ -4445,7 +5243,11 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
         if (operation.get("kind") != "self_upgrade" and operation.get("status") in {"PENDING", "FAILED"}
                 and operation.get("requested_source", {}).get("git_sha") != commit):
             raise DeploymentIncomplete("Complete the existing lifecycle operation against its originally selected source.")
-        lifecycle, lock_module, ui = _source_modules(source.root, selected)
+        engine_source = source.root
+        if rollback and not paths.test_driver and not _has_d2_lifecycle_contract(source.root):
+            engine_source = _materialize_pinned_owner(selected, source.root, source.root.parent)
+        lifecycle, lock_module, ui = (_source_modules(source.root, selected) if engine_source == source.root
+                                      else _source_modules(source.root, selected, engine_source=engine_source))
         if rollback:
             pinned_previous = rollback_pin or identity.get("stable_previous")
             if not pinned_previous or pinned_previous.get("qualification") != source.qualification:
@@ -4453,7 +5255,8 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
             reconstructed = _source_content_identity(source.root, lifecycle, ui, selected)
             if reconstructed != pinned_previous["installed_content"]:
                 raise DeploymentIncomplete("The accepted rollback SHA no longer reconstructs the installed component content.")
-        status = check(selected, source.root, commit)
+        status = (check(selected, source.root, commit) if engine_source == source.root
+                  else check(selected, source.root, commit, engine_source=engine_source))
         updater = None if rollback else _stable_updater_args(selected, source, operation)
         facts = _facts(source.root, selected, lifecycle, ui)
         policy = _read_acceptance_policy(paths)
@@ -4466,7 +5269,7 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
             retirement = saved_retirement if saved_retirement is not None else _prepare_backend_retirements(paths, source.root, lifecycle)
             selected = replace(selected, retire_paths=retirement)
             paths = selected
-        timer_update = not paths.test_driver and lifecycle._traffic_timer_update_required(source.root)
+        timer_update = not paths.test_driver and lifecycle._traffic_timer_update_required(engine_source)
         if timer_update:
             changed.append("Traffic timer")
             if status == "NOOP":
@@ -4480,7 +5283,9 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
         old_digest = None
         if status not in {"NOOP", "UNHEALTHY_CURRENT_SOURCE"} or updater is not None:
             progress("Checking preflight and lifecycle recovery")
-            _strict_database_preflight(paths, lifecycle, source.root)
+            schema_profile = _strict_database_preflight(selected, lifecycle, source.root, legacy_rollback=rollback)
+            _stage(result, "Database", "SKIP" if paths.test_driver else "PASS",
+                   "disposable target" if paths.test_driver else f"schema 27 verified ({schema_profile})")
             if not facts[0]:
                 _verify_dependency_compatibility(paths, source.root)
                 if rollback:
@@ -4515,10 +5320,18 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
                 checkpoint = lifecycle._read_checkpoint(checkpoint_path) if checkpoint_path.exists() else {}
                 active = (checkpoint["active_units"] if checkpoint.get("status") == "pending" else
                           {unit: lifecycle._is_active(unit) for unit in lifecycle.PERSISTENT_TIMERS})
-                lifecycle._preflight_timer_restore(source.root, active)
+                lifecycle._preflight_timer_restore(engine_source, active)
+            policy = _require_acceptance_policy(paths, policy)
+            _stage(result, "Runtime images", "SKIP" if paths.test_driver else "PASS",
+                   "disposable target" if paths.test_driver else "running image identities match local configuration")
+            baseline = None
+            if (not paths.test_driver and not recovery and not rollback and not identity.get("stable_current")
+                    and not _accepted_stable_pin(last) and not all(facts[:3])):
+                progress("Checking the installed Stable recovery baseline")
+                baseline = _discover_stable_baseline(selected, source, identity, lifecycle, ui)
             _stage(result, "Preflight", "PASS", "schema admission and recoverable lifecycle source")
             _remember_stable_admission(selected, lifecycle, recovering=bool(identity.get("stable_admission")),
-                                       rollback=rollback)
+                                       rollback=rollback, baseline=baseline, ui=ui)
             if old_digest is not None:
                 external_recovery = policy.get("recovery")
                 if last.get("mode") == "DEV":
@@ -4534,7 +5347,8 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
             _self_upgrade(selected, source.root, commit, updater)
             _stage(result, "Updater", "PASS", "qualified updater module transition")
             changed.append("Updater")
-            status = check(selected, source.root, commit)
+            status = (check(selected, source.root, commit) if engine_source == source.root
+                      else check(selected, source.root, commit, engine_source=engine_source))
             if timer_update and status == "NOOP":
                 status = "READY_TO_APPLY"
         deploying = status not in {"NOOP", "UNHEALTHY_CURRENT_SOURCE"}
@@ -4542,7 +5356,9 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
         if deploying:
             progress(f"Applying {commit[:12]} through the deployment lifecycle")
             try:
-                outcome = apply(selected, source.root, commit, owner_driver=owner_driver, system_driver=system_driver)
+                outcome = apply(selected, source.root, commit, owner_driver=owner_driver,
+                                system_driver=system_driver,
+                                **({} if engine_source == source.root else {"engine_source": engine_source}))
                 result["install_status"] = outcome["status"]
             except (DeploymentError, RuntimeError, OSError, ValueError) as exc:
                 publication_error = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
@@ -4566,7 +5382,7 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
             _stage(result, "Preflight", "SKIP", "no component publication needed")
         published = _facts(source.root, selected, lifecycle, ui)
         timer_updated = not timer_update or (publication_error is None
-                         and not lifecycle._traffic_timer_update_required(source.root))
+                         and not lifecycle._traffic_timer_update_required(engine_source))
         matches = all(published[:3]) and timer_updated
         result["components"]["updated"] = changed if (deploying or updater is not None) and matches else []
         result["components"]["unchanged"] = [name for name in ("Backend", "UI", "Host files") if name not in changed]
@@ -4605,7 +5421,8 @@ def _stable_deploy(paths: Paths, result: dict, *, owner_driver, system_driver, p
                      or last_now.get("mode") == "DEV")
                 and (_read_identity(paths).get("operation") or {}).get("status") == "VERIFIED_CONTENT")
             if deploying or rollback or needs_promotion:
-                _record_stable_acceptance(paths, result, commit, proof, lifecycle=lifecycle)
+                _record_stable_acceptance(paths, result, commit, proof, lifecycle=lifecycle,
+                                          owner_source=source.root)
             if result["result"] in {"SUCCESS", "NOOP"}:
                 _cleanup_retired_ui(paths, ui, result)
                 if not paths.test_driver:
@@ -4653,9 +5470,21 @@ def _stable_check(paths: Paths, result: dict, identity: dict) -> tuple[str, int]
         configured, _ = _read_config(paths.config, paths.owner_uid)
         lifecycle, _lock, ui = _source_modules(configured, paths)
     _refresh_storage_summary(paths, result, lifecycle=lifecycle)
+    policy = _read_acceptance_policy(paths)
+    policy_status, policy_detail, policy = _runtime_image_evidence(paths, policy)
+    _stage(result, "Runtime images", policy_status, policy_detail)
+    if result.get("mode") == "DEV" and not paths.test_driver and last.get("mode") != "DEV":
+        try:
+            if not identity.get("stable_current"):
+                raise DeploymentIncomplete("A real deployment must first verify and record the installed Stable recovery baseline.")
+            stable = identity["stable_current"]
+            _read_lifecycle_owner_capsule(paths, stable.get("lifecycle_owner_sha", stable["source_sha"]))
+        except (DeploymentError, OSError) as exc:
+            _stage(result, "Stable recovery", "INCOMPLETE", str(exc))
+        else:
+            _stage(result, "Stable recovery", "PASS", "rollback source and lifecycle owner pins recorded")
     if configured is not None:
         _report_lifecycle(result, paths, lifecycle)
-        policy = _read_acceptance_policy(paths)
         result["health"] = _read_health(paths, lifecycle, policy)
         backup_status = result["rollback_database_backup"]
         _stage(result, "Rollback database", "PASS" if backup_status == "VERIFIED" else
@@ -4714,6 +5543,8 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     parser.add_argument("--verbose", action="store_true", help="include detailed diagnostics")
     parser.add_argument("--check", action="store_true", help="inspect source and current state without mutation")
     parser.add_argument("--configure-source", metavar="PATH", help="select a root-controlled clean local Git checkout")
+    parser.add_argument("--initialize-acceptance-policy", metavar="PATH",
+                        help="install an independently approved owner-only acceptance policy")
     parser.add_argument("--allow-timer-catchup", action="store_true",
                         help="explicitly allow the lifecycle owner to reactivate previously active timers")
     parser.add_argument("--self-upgrade", action="store_true",
@@ -4726,6 +5557,8 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     parser.add_argument("--expected-installed-module-sha256")
     parser.add_argument("--confirm-main-sha")
     args = parser.parse_args(argv)
+    if args.initialize_acceptance_policy is not None and not args.initialize_acceptance_policy:
+        parser.error("--initialize-acceptance-policy requires a non-empty approved file path")
     if args.source and not args.dev:
         parser.error("--source requires --dev")
     if args.acknowledge_stable_replacement and not args.dev:
@@ -4745,9 +5578,17 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
         parser.error("--check cannot be combined with source configuration or timer catch-up")
     if args.configure_source and args.allow_timer_catchup:
         parser.error("source configuration cannot be combined with timer catch-up")
+    if args.initialize_acceptance_policy is not None and any((args.stable, args.rollback, args.dev, args.source,
+                                                   args.acknowledge_stable_replacement, args.check,
+                                                   args.configure_source, args.allow_timer_catchup,
+                                                   args.self_upgrade, args.main_sha, args.run_id,
+                                                   args.run_attempt, args.artifact_id, args.artifact_digest,
+                                                   args.expected_installed_module_sha256, args.confirm_main_sha)):
+        parser.error("--initialize-acceptance-policy is a standalone operation")
     paths = paths_override or Paths(config=CONFIG_PATH, owner_uid=0)
     started = time.monotonic()
-    mode = "DEV" if args.dev else "STABLE" if args.stable or args.rollback else "LOCAL"
+    mode = ("ACCEPTANCE POLICY" if args.initialize_acceptance_policy is not None else
+            "DEV" if args.dev else "STABLE" if args.stable or args.rollback else "LOCAL")
     summary = {"mode": mode, "stages": {}, "warnings": []}
     phase = "Source"
     if not args.json and not args.check:
@@ -4787,6 +5628,13 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     try:
         if os.geteuid() != 0 and not test_driver:
             raise DeploymentError("Run this operation as root.")
+        if args.initialize_acceptance_policy is not None:
+            status = _initialize_acceptance_policy(paths, Path(args.initialize_acceptance_policy))
+            _stage(summary, "Native policy", "PASS" if status == "INSTALLED" else "SKIP",
+                   "independently approved policy installed and verified" if status == "INSTALLED"
+                   else "identical approved policy already installed; no changes made")
+            return emit("SUCCESS" if status == "INSTALLED" else "NOOP", 0, result=status,
+                        policy_status=status)
         if (args.dev or args.stable or args.rollback) and not args.check:
             with _configuration_component_lock(paths, command=True):
                 if args.dev:
@@ -4807,6 +5655,13 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
             upgraded = operation.get("kind") == "self_upgrade" and operation.get("status") == "COMPLETE"
             if (args.dev or args.stable or args.rollback or recovery or identity.get("dev_admission")
                     or last.get("mode") in {"STABLE", "DEV"} or upgraded):
+                if args.dev and (args.source or not paths.test_driver):
+                    dev_path = Path(args.source) if args.source else DEFAULT_DEV_SOURCE
+                    _check_trusted_tree(dev_path, paths.owner_uid)
+                    candidate = _development_source(dev_path)
+                    summary["source"] = candidate
+                    summary["source_commit"] = candidate["git_sha"]
+                    _stage(summary, "Source", "PASS", f"local DEV @ {candidate['git_sha'][:12]}; working contents read")
                 status, code = _stable_check(paths, summary, identity)
                 if not (args.dev or args.stable or args.rollback):
                     summary["mode"] = ("DEV" if identity.get("dev_admission") else
