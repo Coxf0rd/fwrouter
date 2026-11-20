@@ -2465,6 +2465,13 @@ def test_apply_pipeline_apply_mode_records_owned_table_success(
         reason="apply-attempt",
         mode=ApplyMode.APPLY,
         input_data={"source": "pytest"},
+        manifest_state={
+            "routing_global_state": {
+                "desired_mode": "direct", "applied_mode": "selective",
+                "selective_default": "direct", "server_mode": "auto",
+            },
+            "subjects": [],
+        },
     )
 
     assert result["ok"] is True
@@ -2478,7 +2485,10 @@ def test_apply_pipeline_apply_mode_records_owned_table_success(
     manifest_paths = result["manifest"]["paths"]
     assert Path(manifest_paths["last_good_nft_path"]).exists()
     assert Path(manifest_paths["last_good_manifest_path"]).exists()
-    assert Path(manifest_paths["applied_manifest_path"]).exists()
+    applied = json.loads(Path(manifest_paths["applied_manifest_path"]).read_text())
+    candidate = json.loads(Path(manifest_paths["candidate_manifest_path"]).read_text())
+    assert applied["routing_global_state"]["applied_mode"] == "direct"
+    assert candidate["routing_global_state"]["applied_mode"] == "selective"
     assert Path(manifest_paths["current_manifest_path"]).exists()
     assert Path(manifest_paths["snapshot_candidate_nft_path"]).exists()
     assert Path(manifest_paths["snapshot_manifest_path"]).exists()

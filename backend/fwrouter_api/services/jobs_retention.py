@@ -276,7 +276,12 @@ def cleanup_jobs_retention(*, dry_run: bool = True) -> dict[str, Any]:
     if not dry_run and (candidates or orphan_candidates):
         connection = connect()
         try:
-            connection.execute("BEGIN")
+            # Candidate discovery happened on separate read connections.  Take
+            # the write reservation before validating/deleting candidates so a
+            # concurrent writer cannot commit between our first read and a
+            # later write (which would make SQLite reject a deferred
+            # read-to-write transaction upgrade with SQLITE_BUSY).
+            connection.execute("BEGIN IMMEDIATE")
 
             for candidate in candidates:
                 job_id = candidate["job_id"]
