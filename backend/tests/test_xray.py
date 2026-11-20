@@ -3369,7 +3369,7 @@ def test_rollback_mihomo_preimage_rejects_nested_group_cycle(monkeypatch, tmp_pa
 
 @pytest.mark.parametrize("physical_component,crashpoint", [
     ("none", None), ("xray", None), ("mihomo", None),
-    ("xray", "plan"), ("xray", "partial_file"), ("xray", "witness"),
+    ("xray", "plan"), ("xray", "partial_file"), ("xray", "witness"), ("xray", "unwitnessed"),
 ])
 def test_owned_restore_applies_only_components_that_need_physical_recovery(
     monkeypatch, tmp_path: Path, physical_component: str, crashpoint: str | None,
@@ -3472,6 +3472,8 @@ def test_owned_restore_applies_only_components_that_need_physical_recovery(
 
         def interrupt_after_checkpoint_write(path, content):
             checkpoint_writes["count"] += 1
+            if crashpoint == "unwitnessed" and checkpoint_writes["count"] == 2:
+                raise SimulatedInterruption()
             original_write(path, content)
             interrupt_after = 1 if crashpoint == "plan" else 2
             if checkpoint_writes["count"] == interrupt_after:
@@ -3500,6 +3502,14 @@ def test_owned_restore_applies_only_components_that_need_physical_recovery(
         with xray_writer_guard(timeout_seconds=5):
             result = xray_subscription_service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
         assert current_projection_calls == []
+        if crashpoint == "unwitnessed":
+            assert result["ok"] is False
+            assert result["status"] == "pending"
+            assert result["details"]["reason"] == "xray_runtime_ownership_changed"
+            assert len(reloads) == 1
+            assert restarts == []
+            assert json.loads(checkpoint.read_text(encoding="utf-8")) == journal_after_crash
+            return
     else:
         result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
 
