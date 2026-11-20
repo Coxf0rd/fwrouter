@@ -1967,6 +1967,72 @@ def test_dev_baseline_recovery_creates_a_separate_verified_pin_and_reuses_it(
     assert len(created) == 1 and len(writes) == 2
 
 
+def test_dev_baseline_backup_rotates_only_recognized_unpublished_wal_sidecar_attempt(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths = deploy.replace(paths, test_driver=False)
+    stable_sha, backend_sha = "a" * 40, "b" * 64
+    reservation = {"id": "c" * 32, "source_sha": stable_sha,
+                   "backend_sha256": backend_sha, "schema": 27}
+    identity = {"stable_current": {"source_sha": stable_sha,
+                                   "installed_content": {"backend_sha256": backend_sha}},
+                "dev_admission": {"mode": "DEV"},
+                "dev_baseline_backup": reservation.copy()}
+    directory = deploy._backup_directory(paths, reservation)
+    directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory.mkdir(mode=0o700)
+    backup = directory / ("rollback-" + "d" * 32 + ".bak")
+    header = bytearray(100)
+    header[:16] = b"SQLite format 3\x00"
+    header[18:20] = b"\x02\x02"
+    backup.write_bytes(header)
+    backup.chmod(0o600)
+    wal = backup.with_name(backup.name + "-wal")
+    wal.touch(mode=0o600)
+    shm = backup.with_name(backup.name + "-shm")
+    shm.write_bytes(bytes(32768))
+    for sidecar in (wal, shm):
+        sidecar.chmod(0o600)
+
+    assert deploy._is_known_wal_sidecar_reservation(paths, reservation)
+    current_manifest = [backend_sha]
+    lifecycle = SimpleNamespace(_manifest_digest=lambda _items: current_manifest[0],
+                                _backend_manifest=lambda _path: [])
+    created = []
+
+    @contextmanager
+    def lock(_paths):
+        yield
+
+    def prepare(_paths, _lifecycle, replacement):
+        created.append(replacement.copy())
+        assert replacement["id"] != reservation["id"]
+        assert backup.exists() and wal.exists() and shm.exists()
+        return {**replacement, "filename": "rollback-" + "e" * 32 + ".bak",
+                "sha256": "1" * 64, "snapshot_sha256": "2" * 64}
+
+    monkeypatch.setattr(deploy, "_configuration_component_lock", lock)
+    monkeypatch.setattr(deploy, "_read_identity", lambda _paths: identity)
+    monkeypatch.setattr(deploy, "_write_identity", lambda _paths, _record: None)
+    monkeypatch.setattr(deploy, "_prepare_managed_backup", prepare)
+    monkeypatch.setattr(deploy, "_retained_backup_owner", lambda _paths: None)
+    monkeypatch.setattr(deploy, "_validate_managed_backup", lambda *_args: None)
+
+    result = {}
+    deploy._ensure_dev_baseline_backup(paths, lifecycle, {}, result)
+    first = identity["dev_baseline_backup"]
+    assert result["backup"]["status"] == "CREATED"
+    assert len(created) == 1 and first["id"] == created[0]["id"]
+    assert backup.exists() and wal.exists() and shm.exists()
+
+    deploy._ensure_dev_baseline_backup(paths, lifecycle, {}, result)
+    assert result["backup"]["status"] == "REUSED"
+    assert len(created) == 1
+
+    (directory / "operator-file").write_text("preserve")
+    assert not deploy._is_known_wal_sidecar_reservation(paths, reservation)
+
+
 @pytest.mark.parametrize("stable_command", ["--stable", "--rollback"])
 def test_byte_identical_dev_returns_to_stable_without_publication(
         deployment_fixture, monkeypatch, capsys, stable_command) -> None:
@@ -2466,3 +2532,41 @@ def test_local_dev_updater_requires_explicit_acknowledgement(deployment_fixture)
     with pytest.raises(SystemExit, match="2"):
         deploy.main(["--install-dev-updater"], paths_override=paths)
     assert not (paths.state_dir / deploy.DEV_UPDATER_DIRECTORY).exists()
+
+
+def test_local_updater_can_replace_only_before_pending_dev_publication(deployment_fixture, monkeypatch):
+    deploy, paths, _, source, *_ = deployment_fixture
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    state = {}
+    monkeypatch.setattr(deploy, "_read_identity", lambda _: state)
+    monkeypatch.setattr(deploy, "_verified_main_updater", lambda *_: "c" * 64)
+    prior = deploy._install_dev_updater(paths, source)
+    snapshot_root = deploy._dev_source_directory(paths)
+    snapshot_root.mkdir(mode=0o700)
+    snapshot = snapshot_root / "captured.tar"
+    snapshot.write_bytes(b"captured source")
+    snapshot.chmod(0o600)
+    captured = {"base_git_sha": prior["source_sha"], "snapshot_path": str(snapshot),
+                "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest()}
+    content = {"backend_sha256": "e" * 64}
+    installed = {"git_sha": "d" * 40, "installed_content": content, "mode": "UNKNOWN"}
+    state.update(operation={"kind": "self_upgrade", "status": "COMPLETE"},
+                 last_verified_install=installed, dev_admission=captured,
+                 stable_current={"source_sha": installed["git_sha"], "installed_content": content},
+                 dev_baseline_backup={"id": "a" * 32, "source_sha": installed["git_sha"],
+                                      "schema": 27, "backend_sha256": content["backend_sha256"]})
+    monkeypatch.setattr(deploy, "_installed_content_identity", lambda *_: content)
+    module = source / "installer/local_deploy.py"
+    module.write_bytes(module.read_bytes() + b"\n# candidate\n")
+    command(["/usr/bin/git", "-C", str(source), "-c", "user.name=FWRouter Test",
+             "-c", "user.email=test@example.invalid", "commit", "-qam", "update local engine"])
+    snapshot.write_bytes(b"tampered")
+    with pytest.raises(deploy.DeploymentError, match="snapshot failed digest verification"):
+        deploy._install_dev_updater(paths, source)
+    assert deploy._read_dev_updater(paths)["module_sha256"] == prior["module_sha256"]
+    snapshot.write_bytes(b"captured source")
+    updated = deploy._install_dev_updater(paths, source)
+    assert updated["result"] == "SUCCESS" and updated["source_sha"] != prior["source_sha"]
+    assert deploy._read_dev_updater(paths)["main_updater_sha256"] == prior["main_updater_sha256"]
+    assert state["dev_admission"] == captured
+    assert deploy._install_dev_updater(paths, source)["result"] == "NOOP"

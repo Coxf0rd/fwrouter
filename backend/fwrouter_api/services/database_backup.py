@@ -253,6 +253,15 @@ def create_sqlite_backup(source_path: Path, backup_dir: Path, *, prefix: str) ->
                 raise TimeoutError("DATABASE_BACKUP_DEADLINE_EXCEEDED")
 
         source.backup(destination, pages=256, progress=progress, sleep=0.05)
+        # SQLite's online backup copies the source database header, including
+        # its journal-mode flag.  Setting DELETE only before backup is not
+        # sufficient when the source is in WAL mode: the completed destination
+        # can still identify itself as WAL and ordinary readers may then
+        # create sidecars beside the published backup.  Normalize the private
+        # destination after the copy and before validation/publication.
+        journal_mode = destination.execute("PRAGMA journal_mode=DELETE").fetchone()
+        if not journal_mode or str(journal_mode[0]).casefold() != "delete":
+            raise ValueError("DATABASE_BACKUP_JOURNAL_MODE_NOT_STANDALONE")
         _validate_database(destination)
         if _logical_digest(destination) != source_digest:
             raise ValueError("DATABASE_BACKUP_CONTENT_MISMATCH")
@@ -262,7 +271,15 @@ def create_sqlite_backup(source_path: Path, backup_dir: Path, *, prefix: str) ->
         source.close()
         source = None
 
-        for suffix in ("-wal", "-shm"):
+        header_fd = os.open(temp_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            header = os.read(header_fd, 100)
+        finally:
+            os.close(header_fd)
+        if header[:16] != b"SQLite format 3\x00" or header[18:20] != b"\x01\x01":
+            raise ValueError("DATABASE_BACKUP_JOURNAL_MODE_NOT_STANDALONE")
+
+        for suffix in ("-wal", "-shm", "-journal"):
             if Path(f"{temp_path}{suffix}").exists():
                 raise ValueError("DATABASE_BACKUP_NOT_STANDALONE")
         standalone = sqlite3.connect(

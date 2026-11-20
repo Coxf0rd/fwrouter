@@ -138,9 +138,23 @@ def test_backup_includes_committed_wal_rows_and_full_logical_content(
         backup_path.as_uri() + "?mode=ro&immutable=1", uri=True,
     )
     try:
+        # The online backup inherits the source's WAL header unless the
+        # private destination is normalized after the copy.  The published
+        # artifact must be independently readable with just its main file.
+        assert immutable.execute("PRAGMA journal_mode").fetchone() == ("delete",)
         assert immutable.execute("SELECT COUNT(*) FROM overrides").fetchone() == (2,)
     finally:
         immutable.close()
+    assert all(not Path(f"{backup_path}{suffix}").exists()
+               for suffix in ("-wal", "-shm", "-journal"))
+    detached = tmp_path / "detached-recovery"
+    detached.mkdir()
+    detached_backup = detached / "recovery.sqlite"
+    detached_backup.write_bytes(backup_path.read_bytes())
+    with sqlite3.connect(detached_backup.as_uri() + "?mode=ro&immutable=1", uri=True) as recovered:
+        assert recovered.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert recovered.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert recovered.execute("SELECT COUNT(*) FROM overrides").fetchone() == (2,)
     assert db_path.read_bytes() == source_bytes_before
     assert wal_path.read_bytes() == wal_bytes_before
     assert result["ok"] is True and result["created"] is True

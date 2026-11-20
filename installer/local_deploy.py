@@ -3023,7 +3023,8 @@ def _read_dev_updater(paths: Paths) -> dict:
     if stat.S_IMODE(receipt.lstat().st_mode) != 0o600:
         raise DeploymentError("DEV updater identity is not private.")
     identity = _json_object(_read_stable_source_file(receipt, paths.owner_uid, limit=4096).decode("utf-8"))
-    if (set(identity) != {"source_sha", "module_sha256", "main_updater_sha256", "qualification"}
+    keys = {"source_sha", "module_sha256", "main_updater_sha256", "qualification"}
+    if (set(identity) - {"backup_owner_sha256"} != keys
             or identity["qualification"] != "LOCAL_DEV"
             or not _hex(identity["source_sha"], 40)
             or not _hex(identity["module_sha256"], 64)
@@ -3032,9 +3033,57 @@ def _read_dev_updater(paths: Paths) -> dict:
             or hashlib.sha256(_read_stable_source_file(directory / "local_deploy.py", paths.owner_uid)).hexdigest()
                != identity["module_sha256"]):
         raise DeploymentError("DEV updater content or identity does not match its recorded local source.")
+    if "backup_owner_sha256" in identity:
+        backup_owner = directory / "database_backup.py"
+        if (not _hex(identity["backup_owner_sha256"], 64)
+                or stat.S_IMODE(backup_owner.lstat().st_mode) != 0o644
+                or hashlib.sha256(_read_stable_source_file(backup_owner, paths.owner_uid)).hexdigest()
+                != identity["backup_owner_sha256"]):
+            raise DeploymentError("DEV SQLite backup owner does not match its recorded local source.")
     if identity["main_updater_sha256"] != _verified_main_updater(paths, _read_identity(paths)):
         raise DeploymentIncomplete("The qualified updater changed after the DEV updater was installed.")
     return identity
+
+
+def _retained_backup_owner(paths: Paths) -> Path | None:
+    directory = paths.state_dir / DEV_UPDATER_DIRECTORY
+    if Path(__file__).resolve() == directory / "local_deploy.py":
+        if "backup_owner_sha256" in _read_dev_updater(paths):
+            return directory / "database_backup.py"
+    return None
+
+
+def _verify_pending_dev_updater_replacement(paths: Paths, source: Path, commit: str,
+                                            identity: dict, previous: dict) -> None:
+    pending = identity.get("dev_admission") or {}
+    backup = identity.get("dev_baseline_backup")
+    stable = identity.get("stable_current") or {}
+    last = identity.get("last_verified_install") or {}
+    operation = identity.get("operation") or {}
+    if (last.get("mode") == "DEV" or operation.get("kind") != "self_upgrade"
+            or operation.get("status") != "COMPLETE"
+            or not _valid_managed_backup(backup, complete=False)
+            or backup["source_sha"] != last.get("git_sha")
+            or stable.get("source_sha") != last.get("git_sha")
+            or stable.get("installed_content") != last.get("installed_content")
+            or backup["backend_sha256"] != stable.get("installed_content", {}).get("backend_sha256")):
+        raise DeploymentIncomplete("Only a pre-publication DEV backup reservation can update its local deployer.")
+    for ancestor in (previous["source_sha"], pending["base_git_sha"]):
+        if _run(["/usr/bin/git", "-C", str(source), "merge-base", "--is-ancestor", ancestor, commit],
+                timeout=30).returncode:
+            raise DeploymentIncomplete("The DEV updater must descend from the retained engine and admitted source.")
+    capsule = Path(pending["snapshot_path"])
+    before = capsule.lstat()
+    if (capsule.parent != _dev_source_directory(paths) or not stat.S_ISREG(before.st_mode)
+            or before.st_uid != paths.owner_uid or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink != 1 or _backup_file_digest(capsule, before) != pending["snapshot_sha256"]):
+        raise DeploymentError("The admitted Development snapshot failed digest verification.")
+    lifecycle, _, ui = _source_modules(source, paths)
+    checkpoint = paths.state_dir / "pending.json"
+    if checkpoint.exists() and lifecycle._read_checkpoint(checkpoint)["status"] != "complete":
+        raise DeploymentIncomplete("Finish the pending lifecycle operation before replacing the DEV updater.")
+    if _installed_content_identity(source, paths, lifecycle, ui) != stable["installed_content"]:
+        raise DeploymentIncomplete("Installed content no longer matches the pre-publication Stable baseline.")
 
 
 def _install_dev_updater(paths: Paths, source: Path) -> dict:
@@ -3044,35 +3093,53 @@ def _install_dev_updater(paths: Paths, source: Path) -> dict:
     if _read_stable_source_file(source / relative, paths.owner_uid) != payload:
         raise DeploymentError("DEV updater differs from its exact Git blob.")
     compile(payload, relative, "exec")
+    backup_relative = "backend/fwrouter_api/services/database_backup.py"
+    backup_payload = _git_blob_bytes(source, commit, backup_relative)
+    if _read_stable_source_file(source / backup_relative, paths.owner_uid) != backup_payload:
+        raise DeploymentError("DEV SQLite backup owner differs from its exact Git blob.")
+    compile(backup_payload, backup_relative, "exec")
     with _configuration_component_lock(paths, command=True), _configuration_component_lock(paths):
         identity = _read_identity(paths)
         last = identity.get("last_verified_install") or {}
         if (last.get("mode") == "DEV" or any(identity.get(k) for k in
-                ("stable_admission", "rollback_admission", "dev_admission"))
+                ("stable_admission", "rollback_admission"))
                 or (identity.get("operation") or {}).get("status") in {"PENDING", "FAILED"}):
             raise DeploymentIncomplete("Complete the existing application deployment or recovery before installing a DEV updater.")
         main_digest = _verified_main_updater(paths, identity)
         receipt = {"source_sha": commit, "module_sha256": hashlib.sha256(payload).hexdigest(),
-                   "main_updater_sha256": main_digest, "qualification": "LOCAL_DEV"}
+                   "main_updater_sha256": main_digest, "qualification": "LOCAL_DEV",
+                   "backup_owner_sha256": hashlib.sha256(backup_payload).hexdigest()}
         directory = paths.state_dir / DEV_UPDATER_DIRECTORY
-        if os.path.lexists(directory):
-            if _read_dev_updater(paths) != receipt:
-                raise DeploymentIncomplete("A different DEV updater is retained for development recovery.")
+        previous = _read_dev_updater(paths) if os.path.lexists(directory) else None
+        if previous == receipt:
             return {**receipt, "path": str(directory / "local_deploy.py"), "result": "NOOP"}
+        if identity.get("dev_admission"):
+            if previous is None:
+                raise DeploymentIncomplete("The admitted DEV operation has no retained updater to replace.")
+            _verify_pending_dev_updater_replacement(paths, source, commit, identity, previous)
+        elif previous is not None:
+            raise DeploymentIncomplete("A different DEV updater is retained for development recovery.")
         _check_trusted_tree(paths.state_dir, paths.owner_uid)
         staging = Path(tempfile.mkdtemp(prefix=".dev-updater-", dir=paths.state_dir))
+        exchanged = False
         try:
             _atomic_replace_module(staging / "local_deploy.py", payload, paths.owner_uid)
+            _atomic_replace_module(staging / "database_backup.py", backup_payload, paths.owner_uid)
             fd = os.open(staging / "identity.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(receipt, stream, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
             _sync_lifecycle_owner_directory(staging)
-            staging.rename(directory)
+            if previous is None:
+                staging.rename(directory)
+            else:
+                _, _, ui = _source_modules(source, paths)
+                ui._exchange(staging, directory)
+                exchanged = True
             _sync_lifecycle_owner_directory(paths.state_dir)
         finally:
-            if staging.exists():
+            if not exchanged and staging.exists():
                 shutil.rmtree(staging)
         if _read_dev_updater(paths) != receipt:
             raise DeploymentError("Installed DEV updater verification failed.")
@@ -4275,14 +4342,20 @@ def _sqlite_backup_command(lifecycle, script: str, *args: str) -> dict:
 _READ_BACKUP_SNAPSHOT = """
 import json, sqlite3, sys
 from pathlib import Path
-from fwrouter_api.services.database_admin import _validate_database_file
+from fwrouter_api.db.schema_state import inspect_database_schema
 from fwrouter_api.services.database_backup import _logical_digest
 path = Path(sys.argv[1])
-schema = _validate_database_file(path, allow_legacy_schema27_profiles=True)
-if schema.get("compatibility_profile") not in (None, sys.argv[2]):
-    raise SystemExit(1)
 with sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True) as connection:
     connection.execute("PRAGMA query_only=ON")
+    if connection.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+        raise SystemExit("DATABASE_BACKUP_INTEGRITY_CHECK_FAILED")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise SystemExit("DATABASE_BACKUP_FOREIGN_KEY_CHECK_FAILED")
+    connection.row_factory = sqlite3.Row
+    schema = inspect_database_schema(connection, allow_legacy_schema27_profiles=True)
+    if (not schema.get("ok") or int(schema.get("actual_schema_version", -1)) != 27
+            or schema.get("compatibility_profile") not in (None, sys.argv[2])):
+        raise SystemExit("DATABASE_BACKUP_SCHEMA_INCOMPATIBLE")
     print(json.dumps({"schema": int(schema["actual_schema_version"]), "snapshot_sha256": _logical_digest(connection)}))
 """
 
@@ -4293,7 +4366,10 @@ def _validate_managed_backup(paths: Paths, lifecycle, pin: dict) -> None:
     path = _backup_directory(paths, pin) / pin["filename"]
     before = _protected_backup_file(paths, path)
     result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path), DEPLOYMENT_LEGACY_SCHEMA27)
-    if (result != {"schema": 27, "snapshot_sha256": pin["snapshot_sha256"]}
+    after = _protected_backup_file(paths, path)
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or result != {"schema": 27, "snapshot_sha256": pin["snapshot_sha256"]}
             or _backup_file_digest(path, before) != pin["sha256"]):
         raise DeploymentError("managed rollback backup does not match its schema and digest pin")
 
@@ -4341,7 +4417,7 @@ def _recover_backup_reservation(paths: Paths, directory: Path) -> list[Path]:
     return published
 
 
-def _prepare_managed_backup(paths: Paths, lifecycle, reservation: dict) -> dict:
+def _prepare_managed_backup(paths: Paths, lifecycle, reservation: dict, *, backup_owner: Path | None = None) -> dict:
     """Use the SQLite backup owner inside a durably reserved private directory."""
     if not _valid_managed_backup(reservation, complete=False):
         raise DeploymentError("managed rollback backup reservation is malformed")
@@ -4358,18 +4434,34 @@ def _prepare_managed_backup(paths: Paths, lifecycle, reservation: dict) -> dict:
         # This reservation was durable before creation. The SQLite owner
         # exposes only a complete atomic publication under the final name.
         result = _sqlite_backup_command(lifecycle, _READ_BACKUP_SNAPSHOT, str(path), DEPLOYMENT_LEGACY_SCHEMA27)
+        after = _protected_backup_file(paths, path)
         pin = {**reservation, "filename": path.name, "sha256": _backup_file_digest(path, before),
                "snapshot_sha256": result.get("snapshot_sha256")}
-        if result.get("schema") != 27 or not _valid_managed_backup(pin, complete=True):
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or result.get("schema") != 27 or not _valid_managed_backup(pin, complete=True)):
             raise DeploymentError("interrupted SQLite backup failed strict verification")
         return pin
 
-    result = _sqlite_backup_command(lifecycle, """
-import json, sys
+    create_script = """
+import importlib.util, json, sys
 from pathlib import Path
-from fwrouter_api.services.database_backup import create_sqlite_backup
+owner_path = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+if owner_path is None:
+    from fwrouter_api.services.database_backup import create_sqlite_backup
+else:
+    spec = importlib.util.spec_from_file_location("fwrouter_retained_database_backup", owner_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("DATABASE_BACKUP_OWNER_UNAVAILABLE")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    create_sqlite_backup = module.create_sqlite_backup
 print(json.dumps(create_sqlite_backup(Path(sys.argv[1]), Path(sys.argv[2]), prefix="rollback-")))
-""", str(paths.target("var/lib/fwrouter-v2/fwrouter.db")), str(directory))
+"""
+    args = [str(paths.target("var/lib/fwrouter-v2/fwrouter.db")), str(directory)]
+    if backup_owner is not None:
+        args.append(str(backup_owner))
+    result = _sqlite_backup_command(lifecycle, create_script, *args)
     filename = result.get("backup_path")
     if not isinstance(filename, str):
         raise DeploymentError("SQLite backup owner returned no publication path")
@@ -4380,6 +4472,49 @@ print(json.dumps(create_sqlite_backup(Path(sys.argv[1]), Path(sys.argv[2]), pref
            "snapshot_sha256": result.get("snapshot_sha256")}
     _validate_managed_backup(paths, lifecycle, pin)
     return pin
+
+
+def _is_known_wal_sidecar_reservation(paths: Paths, reservation: dict) -> bool:
+    """Recognize only the exact unpublished D2 WAL-header defect, read-only."""
+    directory = _backup_directory(paths, reservation)
+    try:
+        _check_trusted_tree(directory, paths.owner_uid)
+        directory_info = directory.lstat()
+        if (not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != paths.owner_uid
+                or stat.S_IMODE(directory_info.st_mode) != 0o700):
+            return False
+        entries = list(directory.iterdir())
+        backups = [entry for entry in entries
+                   if re.fullmatch(r"rollback-[0-9a-f]{32}\.bak", entry.name)]
+        if len(backups) != 1:
+            return False
+        backup = backups[0]
+        if set(entry.name for entry in entries) != {backup.name, backup.name + "-wal", backup.name + "-shm"}:
+            return False
+        backup_info = backup.lstat()
+        wal_info = backup.with_name(backup.name + "-wal").lstat()
+        shm_info = backup.with_name(backup.name + "-shm").lstat()
+        for info in (backup_info, wal_info, shm_info):
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != paths.owner_uid
+                    or info.st_dev != directory_info.st_dev or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                return False
+        if wal_info.st_size != 0 or shm_info.st_size <= 0:
+            return False
+        # SQLite header fields 18 and 19 are both 2 for WAL. Read the file
+        # directly: opening the candidate through SQLite could attach to these
+        # sidecars or change them while a process still has them open.
+        fd = os.open(backup, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            header = os.read(fd, 100)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        return (header[:16] == b"SQLite format 3\x00" and header[18:20] == b"\x02\x02"
+                and (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                == (backup_info.st_dev, backup_info.st_ino, backup_info.st_size, backup_info.st_mtime_ns))
+    except (OSError, DeploymentError):
+        return False
 
 
 def _ensure_dev_baseline_backup(paths: Paths, lifecycle, policy: dict, result: dict, *,
@@ -4418,13 +4553,26 @@ def _ensure_dev_baseline_backup(paths: Paths, lifecycle, policy: dict, result: d
                 raise DeploymentIncomplete("A pending SQLite recovery backup belongs to a different Stable baseline.")
             if actual != expected["backend_sha256"]:
                 raise DeploymentIncomplete("The backend changed before the reserved SQLite baseline was verified.")
+            if _is_known_wal_sidecar_reservation(paths, reservation):
+                # Preserve every file from the failed prepublication attempt.
+                # A deterministic replacement ID makes interrupted retries
+                # resume the same new reservation without touching live or
+                # potentially open SQLite sidecars.
+                replacement_id = hashlib.sha256(
+                    ("fwrouter-d2-wal-backup-repair:" + reservation["id"] + ":"
+                     + reservation["source_sha"] + ":" + reservation["backend_sha256"]).encode("ascii")
+                ).hexdigest()[:32]
+                reservation = {**reservation, "id": replacement_id}
         elif actual == expected["backend_sha256"]:
             reservation = {"id": uuid.uuid4().hex, **expected}
             record["dev_baseline_backup"] = reservation
             _write_identity(paths, record)
         else:
             raise DeploymentIncomplete("The accepted Stable baseline has no verified SQLite recovery backup. Supply an approved backup for that baseline before changing the backend.")
-        prepared = _prepare_managed_backup(paths, lifecycle, reservation)
+        backup_owner = _retained_backup_owner(paths) if not paths.test_driver else None
+        prepared = (_prepare_managed_backup(paths, lifecycle, reservation, backup_owner=backup_owner)
+                    if backup_owner is not None
+                    else _prepare_managed_backup(paths, lifecycle, reservation))
         _validate_managed_backup(paths, lifecycle, prepared)
         record["dev_baseline_backup"] = prepared
         _write_identity(paths, record)

@@ -244,3 +244,12 @@ run `sudo /usr/bin/python3 -I -B installer/controlled_backend_lifecycle.py norma
 The owner checks all four recorded D1 blobs and refuses a pending lifecycle
 operation. A retry after interruption leaves already repaired fragments
 alone.
+
+If DEV is admitted and a baseline backup failed before publication, the
+same acknowledged installer can update the retained local updater. It
+verifies the original captured snapshot, the installed Stable content and
+the unfinished backup reservation. The updater and its SQLite backup owner
+are retained from exact Git blobs. Resume with the retained updater's
+`--dev --acknowledge-stable-replacement` command, which reuses the admitted
+snapshot. Do not select a different source or remove SQLite sidecars to
+force a retry.
