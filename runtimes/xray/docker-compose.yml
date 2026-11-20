@@ -1,6 +1,6 @@
 services:
   fwrouter-xray:
-    image: teddysun/xray:latest
+    image: teddysun/xray:26.2.6@sha256:8c2017c7af290fe3c15268e82e658f3d51dab4369bac164b79cf2b2f175cdcea
     container_name: fwrouter-xray
     restart: unless-stopped
     networks:
