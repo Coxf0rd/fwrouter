@@ -828,7 +828,7 @@ def restore_mihomo_reconcile_checkpoint(
     expected_revision: int | None = None,
     operation_id: str | None = None,
 ) -> dict[str, Any]:
-    """CAS-restore and restart the previously active config from this reconcile."""
+    """Verify or restore the owned preimage of this Mihomo reconcile."""
     checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
     if not checkpoint.get("ok"):
         return {"ok": False, "recovered": False, "reason": checkpoint.get("reason") or "checkpoint_unavailable"}
@@ -846,27 +846,74 @@ def restore_mihomo_reconcile_checkpoint(
         return {"ok": False, "recovered": False, "reason": "rollback_context_missing_or_mismatched"}
     base = Path(str(checkpoint.get("base_path") or ""))
     backup = Path(str(checkpoint.get("backup_path") or ""))
+
+    def restored_runtime_verified(revision: int, incarnation: str, expected_hash: str) -> bool:
+        try:
+            proof = _native_udp_policy_proof()
+            with db_session() as connection:
+                return bool(
+                    proof.get("ok") is True
+                    and proof.get("native_top_level_rules_match") is True
+                    and proof.get("selector_membership_matches") is True
+                    and proof.get("guarded_rules_match") is True
+                    and read_selection_revision(connection) == revision
+                    and _file_hash(str(base)) == expected_hash
+                    and _mihomo_incarnation() == incarnation
+                )
+        except Exception:
+            return False
+
     with xray_writer_guard(timeout_seconds=30.0):
         expected_incarnation = str(checkpoint.get("runtime_incarnation_after") or "")
         observed_incarnation = _mihomo_incarnation()
+        active_hash = _file_hash(str(base))
+        before_hash = checkpoint.get("before_hash")
         if (
             not expected_incarnation
             or not observed_incarnation
             or observed_incarnation != expected_incarnation
-            or not base.is_file()
-            or not backup.is_file()
-            or _file_hash(str(base)) != checkpoint.get("candidate_hash")
+            or not active_hash
         ):
             return {"ok": False, "recovered": False, "reason": "active_config_changed"}
         with db_session() as connection:
             current_revision = read_selection_revision(connection)
-            if current_revision != int(expected_revision):
-                return {"ok": False, "recovered": False, "reason": "selection_revision_changed", "expected_revision": expected_revision, "current_revision": current_revision}
+        if current_revision != int(expected_revision):
+            return {"ok": False, "recovered": False, "reason": "selection_revision_changed",
+                    "expected_revision": expected_revision, "current_revision": current_revision}
+        if active_hash == before_hash:
+            from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches
+
+            verified = False
+            if (
+                observed_incarnation == checkpoint.get("runtime_incarnation_before")
+                and mihomo_udp_policy_receipt_matches()
+            ):
+                verified = (
+                    restored_runtime_verified(current_revision, observed_incarnation, before_hash)
+                    and mihomo_udp_policy_receipt_matches()
+                )
+            return {
+                "ok": verified, "recovered": verified, "runtime_verified": verified,
+                "reason": "verified_preimage_current" if verified else "preimage_runtime_unverified",
+                "operation_id": checkpoint_operation,
+                "restoration_required": False, "restored_components": [],
+                "runtime_modified": False, "selection_revision": current_revision,
+            }
+        if active_hash != checkpoint.get("candidate_hash"):
+            return {"ok": False, "recovered": False, "reason": "active_config_changed"}
+        try:
+            preimage = backup.read_bytes()
+            if hashlib.sha256(preimage).hexdigest() != before_hash:
+                return {"ok": False, "recovered": False, "reason": "restore_hash_mismatch"}
+            restored_text = preimage.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return {"ok": False, "recovered": False, "reason": "backup_unavailable"}
+        with db_session() as connection:
             rollback_revision = advance_selection_revision(connection, expected_revision=current_revision)
         if rollback_revision is None:
             return {"ok": False, "recovered": False, "reason": "selection_revision_changed"}
         try:
-            atomic_write_text(base, backup.read_text(encoding="utf-8"))
+            atomic_write_text(base, restored_text)
         except (OSError, UnicodeDecodeError) as exc:
             return {"ok": False, "recovered": False, "reason": "restore_write_failed", "error_message": str(exc), "selection_revision": rollback_revision}
         restored_hash = _file_hash(str(base))
@@ -881,13 +928,18 @@ def restore_mihomo_reconcile_checkpoint(
         except Exception as exc:
             return {"ok": False, "recovered": False, "reason": "restore_restart_failed", "error_message": str(exc), "selection_revision": rollback_revision}
         rollback_incarnation = _mihomo_incarnation()
-        verified = bool(
-            restarted.get("ok")
-            and rollback_incarnation
-            and rollback_incarnation != expected_incarnation
-            and _file_hash(str(base)) == checkpoint.get("before_hash")
-        )
-        return {"ok": verified, "recovered": verified, "restart": restarted, "selection_revision": rollback_revision}
+        runtime_changed = rollback_incarnation != expected_incarnation if rollback_incarnation else None
+        verified = bool(restarted.get("ok") and runtime_changed and restored_hash == before_hash)
+        if verified:
+            verified = restored_runtime_verified(rollback_revision, rollback_incarnation, before_hash)
+        return {
+            "ok": verified, "recovered": verified, "runtime_verified": verified,
+            "reason": "restored_and_verified" if verified else "restored_runtime_unverified",
+            "operation_id": checkpoint_operation,
+            "restoration_required": True,
+            "restored_components": ["mihomo"] if restarted.get("ok") and runtime_changed else [],
+            "runtime_modified": runtime_changed, "restart": restarted, "selection_revision": rollback_revision,
+        }
 
 
 def reconcile_mihomo_runtime(

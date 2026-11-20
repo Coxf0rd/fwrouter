@@ -13,7 +13,18 @@ from fwrouter_api.services.ui_state_logs import UI_OPERATIONAL_EVENT_MESSAGES
 from fwrouter_api.services.ui_text import _ui_text_title
 
 
-def test_mihomo_generation_checkpoint_restores_exact_previous_file_and_runtime(monkeypatch, tmp_path: Path) -> None:
+def _runtime_policy_readback(failed_check: str | None = None) -> dict[str, bool]:
+    return {
+        check: check != failed_check
+        for check in ("ok", "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match")
+    }
+
+
+@pytest.mark.parametrize("failed_check", [None, "ok", "native_top_level_rules_match",
+                                          "selector_membership_matches", "guarded_rules_match"])
+def test_mihomo_generation_checkpoint_restores_exact_previous_file_and_runtime(
+    monkeypatch, tmp_path: Path, failed_check: str | None,
+) -> None:
     base = tmp_path / "active.yaml"
     candidate = tmp_path / "candidate.yaml"
     last_good = tmp_path / "last-good"
@@ -33,15 +44,60 @@ def test_mihomo_generation_checkpoint_restores_exact_previous_file_and_runtime(m
         "runtime_incarnation_after": "container-a|started-a",
     })
     base.write_bytes(candidate.read_bytes())
-    identities = iter(["container-a|started-a", "container-b|started-b"])
+    identities = iter(["container-a|started-a", "container-b|started-b", "container-b|started-b"])
     monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: next(identities))
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", lambda: _runtime_policy_readback(failed_check))
     result = mihomo_reconcile.restore_mihomo_reconcile_checkpoint(
         checkpoint, expected_revision=0, operation_id="test-operation",
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is (failed_check is None)
+    assert result["runtime_verified"] is (failed_check is None)
     assert base.read_text(encoding="utf-8") == "proxy-groups: [last-good]\n"
     assert restarts == ["force_recreate"]
+
+
+@pytest.mark.parametrize("probe_result", ["verified", "unverified", "incarnation_changed"])
+def test_mihomo_current_preimage_recovery_leaves_runtime_and_revision_unchanged(
+    monkeypatch, tmp_path: Path, probe_result: str,
+) -> None:
+    base, candidate = tmp_path / "active.yaml", tmp_path / "candidate.yaml"
+    base.write_text("proxy-groups: [last-good]\n", encoding="utf-8")
+    candidate.write_text("proxy-groups: [candidate]\n", encoding="utf-8")
+    monkeypatch.setattr(mihomo_reconcile.config, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "backup")
+    checkpoint = mihomo_reconcile._capture_mihomo_reconcile_checkpoint(str(base), str(candidate))
+    checkpoint.update({
+        "expected_selection_revision": 0, "operation_id": "test-operation",
+        "runtime_incarnation_before": "same-runtime", "runtime_incarnation_after": "same-runtime",
+    })
+    incarnation = "same-runtime"
+    def native_proof():
+        nonlocal incarnation
+        if probe_result == "incarnation_changed":
+            incarnation = "replacement-runtime"
+        return _runtime_policy_readback("ok" if probe_result == "unverified" else None)
+
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: incarnation)
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", native_proof)
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_runtime.restart_mihomo_container",
+        lambda **_kwargs: pytest.fail("current preimage must not be recreated"),
+    )
+    before = base.stat().st_ino
+
+    for _ in range(2):
+        incarnation = "same-runtime"
+        result = mihomo_reconcile.restore_mihomo_reconcile_checkpoint(
+            checkpoint, expected_revision=0, operation_id="test-operation",
+        )
+        assert result["ok"] is (probe_result == "verified")
+        assert result["runtime_modified"] is False
+        assert result["selection_revision"] == 0
+        assert base.stat().st_ino == before
 
 
 def test_mihomo_generation_restore_refuses_external_active_config_change(monkeypatch, tmp_path: Path) -> None:
@@ -61,6 +117,33 @@ def test_mihomo_generation_restore_refuses_external_active_config_change(monkeyp
 
     assert result["ok"] is False
     assert base.read_text(encoding="utf-8") == "external-change"
+
+
+def test_mihomo_recovery_rejects_corrupt_preimage_before_mutation(monkeypatch, tmp_path: Path) -> None:
+    base, candidate = tmp_path / "active.yaml", tmp_path / "candidate.yaml"
+    base.write_text("proxy-groups: [last-good]\n", encoding="utf-8")
+    candidate.write_text("proxy-groups: [candidate]\n", encoding="utf-8")
+    monkeypatch.setattr(mihomo_reconcile.config, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "backup")
+    checkpoint = mihomo_reconcile._capture_mihomo_reconcile_checkpoint(str(base), str(candidate))
+    checkpoint.update({
+        "expected_selection_revision": 0, "operation_id": "test-operation",
+        "runtime_incarnation_after": "owned-runtime",
+    })
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: "owned-runtime")
+    monkeypatch.setattr(
+        mihomo_reconcile, "advance_selection_revision",
+        lambda *_args, **_kwargs: pytest.fail("corrupt backup may not advance revision"),
+    )
+    Path(checkpoint["backup_path"]).write_text("corrupt", encoding="utf-8")
+    base.write_bytes(candidate.read_bytes())
+
+    result = mihomo_reconcile.restore_mihomo_reconcile_checkpoint(
+        checkpoint, expected_revision=0, operation_id="test-operation",
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "restore_hash_mismatch", result
+    assert base.read_bytes() == candidate.read_bytes()
 
 
 def test_invalid_source_job_does_not_claim_saved_intent_or_last_good(monkeypatch) -> None:
@@ -297,7 +380,7 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     monkeypatch.setattr(config, "_resolved_last_good_mihomo_dir", lambda: last_good)
     monkeypatch.setattr(config, "managed_runtime_operation_blocked", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(mihomo_reconcile, "current_mihomo_input_fingerprint", lambda *_args: {"hash": "new"})
-    identities = iter(["container-a|started-a", "container-a|started-a", "container-b|started-b", "container-b|started-b", "container-c|started-c"])
+    identities = iter(["container-a|started-a", "container-a|started-a", "container-b|started-b", "container-b|started-b", "container-c|started-c", "container-c|started-c"])
     monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: next(identities))
     monkeypatch.setattr(mihomo_reconcile, "mihomo_input_unchanged", lambda _fingerprint: False)
     def write_candidate(*_args, **_kwargs):
@@ -318,6 +401,12 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
         "fwrouter_api.services.mihomo_runtime.restart_mihomo_container",
         lambda action, **_kwargs: restarts.append(action) or {"ok": True, "action": action},
     )
+
+    def native_rollback_readback():
+        assert restarts == ["force_recreate"]
+        assert "192.0.2.10" in base.read_text(encoding="utf-8")
+        return _runtime_policy_readback()
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", native_rollback_readback)
 
     result = mihomo_reconcile.reconcile_mihomo_runtime(
         verification_callback=lambda: {"ok": False, "error_code": "READBACK_MISMATCH"},

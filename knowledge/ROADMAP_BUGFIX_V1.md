@@ -66,6 +66,10 @@ The installed and source Compose files matched before the audit. The Xray Compos
 
 **Acceptance:** Inject a failure before and after each physical apply step. Verify zero lifecycle calls to unaffected components, exact recovery readback for affected components, idempotent resume after interruption, and retained recovery evidence when verification fails. Interleave a refresh, watchdog selection and newer user intent. Stale apply and rollback must make zero writes over the newer owner.
 
+**B3 implementation.** Recovery compares each owned runtime with the checkpoint before taking a lifecycle action. Xray checks the loaded client identities, configuration hashes and runtime incarnation. Mihomo checks the checkpoint-bound policy receipt and fresh native readback. A verified component can stay running while the other is restored. Final verification and the selection revision still gate recovery completion.
+
+Generation, reconciliation, Core Apply and selector publication use the existing writer guard and revision fences. The isolated cross-process check exercises actual lock contention, timeout, and reacquisition after killing the owner. On retry, a journaled rollback continues using its recorded source and per-component witnesses. Historical checkpoints without that journal keep their existing inventory-bound recovery path. If a new incarnation or a partially published projection cannot be tied to the interrupted owner, recovery retains the checkpoint for diagnosis. Isolated adapter fixtures cover both component-specific physical actions and retries after the plan, a partial artifact write, and a recorded Xray action. Native Docker Xray recovery, crash injection at every physical apply boundary and LAN continuity remain **NOT_VERIFIED**.
+
 ## B4 — Integration QA
 
 **Depends on:** B1–B3 passing targeted regressions and an isolated environment with private networking, fixtures, services and data.
