@@ -646,7 +646,7 @@ def _mihomo_readback(
     expected_handoffs = build_xray_handoff_assignments(expected_bindings)
     routing = servers.get_routing_global_state(expire_ttl=False)
     expected_config = mihomo_config.build_mihomo_config(routing, xray_handoff_assignments=expected_handoffs)
-    if not _configs_equal(parsed, expected_config):
+    if not _mihomo_effective_configs_match(parsed, expected_config, _configs_equal):
         raise ValueError("MIHOMO_DURABLE_CONFIG_PROJECTION_MISMATCH")
     profiles = mihomo_input_fingerprint_profiles(routing)
     generation_profile = next(
@@ -720,6 +720,29 @@ def _mihomo_readback(
         "native_rule_count": len(rules),
         **checks,
     }
+
+
+def _mihomo_effective_configs_match(
+    actual: dict[str, Any], expected: dict[str, Any], compare: Any,
+) -> bool:
+    """Ignore only the bounded FWRouter listener-sanitization diagnostic."""
+    actual_meta = actual.get("fwrouter")
+    expected_meta = expected.get("fwrouter")
+    if not isinstance(actual_meta, dict) or not isinstance(expected_meta, dict):
+        return compare(actual, expected)
+
+    field = "sanitized_managed_listeners"
+    values = tuple(meta[field] for meta in (actual_meta, expected_meta) if field in meta)
+    if any(
+        not isinstance(value, list) or len(value) > 4096
+        or any(not isinstance(item, str) or len(item) > 512 for item in value)
+        for value in values
+    ):
+        return False
+
+    normalized_actual = {**actual, "fwrouter": {**actual_meta, field: []}}
+    normalized_expected = {**expected, "fwrouter": {**expected_meta, field: []}}
+    return compare(normalized_actual, normalized_expected)
 
 
 def _mihomo_generation_owner_snapshot_matches(
