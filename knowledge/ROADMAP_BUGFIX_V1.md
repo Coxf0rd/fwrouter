@@ -84,6 +84,12 @@ The retained Mihomo v1.19.31 image binary ran in a private loopback namespace. A
 
 The owned-generation fixture now stops after an Xray reload with no persisted completion witness. The next resolver call returns pending, keeps the journal, and performs no second reload or Mihomo recreation. A real cross-process writer contention check verified timeout, owner termination, and lock reacquisition. B1–B3 fixtures exercise NOOP, inventory-only updates, unknown health, selective restores and stale revisions. Native scheduling/refresh and concurrent Apply/watchdog integration, Reality, ARM64 execution, and direct/VPN TCP, UDP and DNS continuity across the full LAN topology remain **NOT_VERIFIED**.
 
+### Final QA and DEV admission
+
+The two external-client API regressions assumed the DELETE response contained a terminal result. The API can return a queued or running job with a null result. Both failures reproduce with a queued response and real job workers. The tests now await the terminal deletion result before retrying or inspecting data, and the failure-path fixture also waits for client creation. The same forced-async cases pass with the original outcome assertions intact.
+
+Local component, schema, cross-process writer and private Docker Xray evidence remains separate from installed DEV acceptance. On the inspected host, D1 exposes no DEV mode. Native acceptance policy and a qualified Stable rollback record are absent. The installed database passes integrity and foreign-key checks and matches the known legacy schema 27 profile, while the strict validator in this branch rejects it. DEV acceptance stays **BLOCKED** until the supported D2 updater, exact schema admission, independently approved image policy and verified Stable recovery are available. Full native staged rollback and LAN/TUN continuity remain **NOT_VERIFIED**.
+
 ## Boundaries
 
 Optional-module architecture belongs to **Stage 6.4 Core/Services**. This work stays within existing runtime ownership. Scope excludes a broad runtime rewrite, a second global orchestrator, and parallel deployment or reconciliation systems. Preserve D2 qualification, lifecycle, identity, rollback and recovery contracts. Documentation work involves no Stable changes.

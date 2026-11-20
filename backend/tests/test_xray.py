@@ -4725,6 +4725,22 @@ def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
     assert synced.status_code == 200
 
 
+def _delete_subscription_profile_and_wait(client: TestClient, profile_ref: str) -> dict[str, object]:
+    response = client.request(
+        "DELETE", f"/api/v2/xray/subscription-profiles/{profile_ref}", json={"requested_by": "pytest"},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    profile = data["subscription_profile"]
+    if profile is None:
+        job = _wait_for_job_result(client, data["job"]["job_id"])
+        terminal_result = job.get("result")
+        assert isinstance(terminal_result, dict), job
+        profile = terminal_result["subscription_profile"]
+    assert isinstance(profile, dict)
+    return profile
+
+
 def test_external_client_create_materializes_subscription_profile_and_delete_hard_deletes_it(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -4801,16 +4817,8 @@ def test_external_client_create_materializes_subscription_profile_and_delete_har
                 "SELECT 1 FROM subscription_profile_snapshots WHERE token = 'misha'"
             ).fetchone() is not None
             delete_ref = f"subscription-account:{account_row['account_id']}"
-        deleted = client.request(
-            "DELETE",
-            f"/api/v2/xray/subscription-profiles/{delete_ref}",
-            json={"requested_by": "pytest"},
-        )
-        deleted_again = client.request(
-            "DELETE",
-            f"/api/v2/xray/subscription-profiles/{delete_ref}",
-            json={"requested_by": "pytest"},
-        )
+        deleted_payload = _delete_subscription_profile_and_wait(client, delete_ref)
+        deleted_again_payload = _delete_subscription_profile_and_wait(client, delete_ref)
         after_delete = client.get(
             "/s/misha",
             headers={"X-Forwarded-Host": "xray.example.test", "X-Forwarded-Proto": "https"},
@@ -4825,13 +4833,9 @@ def test_external_client_create_materializes_subscription_profile_and_delete_har
     assert len(before_delete_subjects) >= 2
     assert len(before_delete_overrides) >= 1
     assert len(other_subjects_before) >= 1
-    assert deleted.status_code == 200
-    deleted_payload = deleted.json()["data"]["subscription_profile"]
     assert deleted_payload["deleted_compatibility_clients_count"] == 1
     assert deleted_payload["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
     assert deleted_payload["cleanup"]["server_overrides_deleted"] == len(before_delete_overrides)
-    assert deleted_again.status_code == 200
-    deleted_again_payload = deleted_again.json()["data"]["subscription_profile"]
     assert deleted_again_payload["ok"] is False
     assert deleted_again_payload["result"]["error_code"] == "SUBSCRIPTION_PROFILE_NOT_FOUND"
     assert after_delete.status_code == 404
@@ -5234,6 +5238,8 @@ def test_subscription_profile_delete_preserves_database_rows_when_materialize_fa
             json={"alias": "Misha", "email": "misha", "requested_by": "pytest"},
         )
         assert created.status_code == 200
+        creation_job = _wait_for_job_result(client, created.json()["data"]["job"]["job_id"])
+        assert creation_job["status"] == "success", creation_job
         with db_session() as connection:
             before_delete_subjects = connection.execute(
                 """
@@ -5275,27 +5281,16 @@ def test_subscription_profile_delete_preserves_database_rows_when_materialize_fa
                 "error_code": "XRAY_TEST_MATERIALIZE_FAILED",
             },
         )
-        deleted = client.request(
-            "DELETE",
-            "/api/v2/xray/subscription-profiles/misha",
-            json={"requested_by": "pytest"},
-        )
-        deleted_again = client.request(
-            "DELETE",
-            "/api/v2/xray/subscription-profiles/misha",
-            json={"requested_by": "pytest"},
-        )
+        deleted_payload = _delete_subscription_profile_and_wait(client, "misha")
+        deleted_again_payload = _delete_subscription_profile_and_wait(client, "misha")
 
     assert len(before_delete_subjects) >= 2
     assert len(before_delete_overrides) >= 1
-    assert deleted.status_code == 200
-    payload = deleted.json()["data"]["subscription_profile"]
-    assert payload["ok"] is False
-    assert payload["stage"] == "reconcile_subscription_profile_delete"
-    assert payload["cleanup"]["subjects_deleted"] == 0
-    assert payload["cleanup"]["server_overrides_deleted"] == 0
-    assert deleted_again.status_code == 200
-    assert deleted_again.json()["data"]["subscription_profile"]["cleanup"]["subjects_deleted"] == 0
+    assert deleted_payload["ok"] is False
+    assert deleted_payload["stage"] == "reconcile_subscription_profile_delete"
+    assert deleted_payload["cleanup"]["subjects_deleted"] == 0
+    assert deleted_payload["cleanup"]["server_overrides_deleted"] == 0
+    assert deleted_again_payload["cleanup"]["subjects_deleted"] == 0
 
     with db_session() as connection:
         remaining_subjects = connection.execute(
