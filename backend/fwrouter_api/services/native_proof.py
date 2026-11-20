@@ -1183,8 +1183,25 @@ def _core_readback(
             or live_mode.get("mode") != routing.get("applied_mode")):
         raise ValueError("CORE_NATIVE_STATE_MISMATCH")
     manifest_routing = manifest.get("routing_global_state")
+    manifest_mode_status = "MATCH"
     if not _routing_manifest_matches(manifest_routing, routing):
-        raise ValueError("CORE_APPLIED_MANIFEST_MISMATCH")
+        # A known historical apply bug can leave only applied_mode stale in
+        # the manifest. Treat that field as diagnostic when current durable
+        # desired/applied state and the fresh runtime probe already agree.
+        # The manifest bytes and owner receipt remain pinned and verified
+        # below, as do the effective nftables and IP policy checks.
+        stale_manifest_mode = (
+            isinstance(manifest_routing, dict)
+            and manifest_routing.get("applied_mode") in {"direct", "selective", "vpn"}
+            and manifest_routing.get("applied_mode") != routing.get("applied_mode")
+            and routing.get("desired_mode") == routing.get("applied_mode") == live_mode.get("mode")
+            and _routing_manifest_matches(
+                {**manifest_routing, "applied_mode": routing.get("applied_mode")}, routing,
+            )
+        )
+        if not stale_manifest_mode:
+            raise ValueError("CORE_APPLIED_MANIFEST_MISMATCH")
+        manifest_mode_status = "STALE_MANIFEST"
     nft_path = dataplane_global.get_settings().paths.generated_dir / "dataplane" / "applied.nft"
     nft_sha = _hash_regular_file(nft_path)
     receipt_raw = _read_regular_file(core_native_proof_path(), maximum_bytes=64 * 1024)
@@ -1231,6 +1248,7 @@ def _core_readback(
         "core_intent_revision": db["core_revision"],
         "selection_revision": (db.get("selection") or {}).get("revision"),
         "applied_manifest_stable": True,
+        "applied_manifest_mode_status": manifest_mode_status,
         "applied_nft_stable": True,
         "native_rule_semantics_match_owner_receipt": True,
         "native_rule_semantics_sha256": semantic_sha_before,
