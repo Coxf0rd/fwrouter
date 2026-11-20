@@ -248,6 +248,9 @@
     const objectLabel = safeHumanLabel(event?.entity_label);
     const safeServerLabel = (value) => safeHumanLabel(value?.server_label);
     const codeOrType = eventCode || eventType;
+    if (codeOrType === "job.terminal_outcome") {
+      return t("events.type.job_finished");
+    }
     if (codeOrType === "vpn_auto_server_switched") {
       const oldLabel = safeServerLabel(previous);
       const newLabel = safeServerLabel(next);
