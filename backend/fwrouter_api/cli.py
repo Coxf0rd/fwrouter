@@ -324,7 +324,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         upgrade_parser.add_argument("--expected-schema", required=True, type=int)
         upgrade_parser.add_argument("--apply", action="store_true")
         upgrade_parser.add_argument("--confirm-offline", action="store_true")
+        preflight_parser = database_subparsers.add_parser(
+            "preflight", help="Read-only admission for a named, reviewed schema profile."
+        )
+        preflight_parser.add_argument("--expected-schema", required=True, type=int)
+        preflight_parser.add_argument("--compatibility-profile", required=True)
         upgrade_args = database_parser.parse_args(arguments[1:])
+        if upgrade_args.database_command == "preflight":
+            expected_profile = "legacy_migrated_schema27_manual_ping_additive"
+            if (upgrade_args.expected_schema != 27
+                    or upgrade_args.compatibility_profile != expected_profile):
+                print(json.dumps({"ok": False,
+                                  "error_code": "DATABASE_COMPATIBILITY_PROFILE_UNSUPPORTED"},
+                                 sort_keys=True))
+                return 2
+            try:
+                from fwrouter_api.core.config import get_settings
+                from fwrouter_api.services.database_admin import validate_database_file
+
+                path = get_settings().paths.db_path
+                _validate_database_path(path)
+                state = validate_database_file(
+                    path, accepted_compatibility_profiles=(expected_profile,),
+                )
+                if str(state.get("actual_schema_version")) != "27":
+                    raise ValueError("DATABASE_SCHEMA_VERSION_MISMATCH")
+                profile = state.get("compatibility_profile")
+                if profile != expected_profile:
+                    raise ValueError("DATABASE_COMPATIBILITY_PROFILE_MISMATCH")
+                print(json.dumps({
+                    "ok": True,
+                    "status": "already_current",
+                    "current_schema": 27,
+                    "target_schema": 27,
+                    "database_changed": False,
+                    "compatibility_profile": profile,
+                    "integrity": "ok",
+                    "foreign_key_violations": 0,
+                }, sort_keys=True))
+                return 0
+            except Exception as exc:
+                code = str(exc) if str(exc).startswith("DATABASE_") else type(exc).__name__
+                print(json.dumps({"ok": False, "error_code": code}, sort_keys=True))
+                return 1
         if upgrade_args.database_command != "upgrade":
             database_parser.print_help()
             return 2
