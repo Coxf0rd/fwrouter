@@ -1835,8 +1835,9 @@ def test_shared_runtime_switches_stable_dirty_dev_and_back_without_requalifying_
 
 
 @pytest.mark.parametrize("accept_dev_before_rollback", [False, True])
+@pytest.mark.parametrize("retained_updater", [False, True])
 def test_interrupted_dev_resumes_and_rolls_back_after_original_source_is_deleted(
-        deployment_fixture, monkeypatch, capsys, accept_dev_before_rollback) -> None:
+        deployment_fixture, monkeypatch, capsys, accept_dev_before_rollback, retained_updater) -> None:
     deploy, paths, _, old_source, _db, _env, _active, calls, owner_driver, system_driver = deployment_fixture
     real_report = deploy._report_lifecycle
 
@@ -1865,6 +1866,10 @@ def test_interrupted_dev_resumes_and_rolls_back_after_original_source_is_deleted
 
     code, stable = invoke("--stable")
     assert code == 0, stable["stages"]
+    if retained_updater:
+        monkeypatch.setattr(deploy, "_verified_main_updater", lambda *_: "f" * 64)
+        retained = deploy._install_dev_updater(paths, origin)
+        monkeypatch.setattr(deploy, "__file__", retained["path"])
     (developer / "backend/dev-resume-local.py").write_text("SENTINEL = True\n")
     (developer / "ui/index.html").write_text("captured before interruption\n")
 
@@ -2424,3 +2429,40 @@ def test_runtime_image_config_from_group_writable_directory_requires_exact_histo
             paths, "opt/fwrouter-xray/docker-compose.yml", limit=4096,
             historical_blob="runtimes/xray/docker-compose.yml",
         )
+
+
+def test_local_dev_updater_preserves_qualified_module_and_rejects_stable(
+        deployment_fixture, monkeypatch, capsys) -> None:
+    deploy, paths, _, source, *_ = deployment_fixture
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    module = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+    wrapper = paths.target("usr/local/sbin/fwrouter-deploy")
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    module.write_bytes(b"# qualified module\n")
+    module.chmod(0o644)
+    wrapper.write_bytes(b"#!/bin/sh\n")
+    wrapper.chmod(0o755)
+    prior = {"components": {"updater": {
+        "qualification_status": "VERIFIED_MAIN_CI",
+        "installed_sha256": hashlib.sha256(module.read_bytes()).hexdigest(),
+        "wrapper_sha256": hashlib.sha256(wrapper.read_bytes()).hexdigest(),
+    }}}
+    monkeypatch.setattr(deploy, "_read_identity", lambda _: prior)
+    first = deploy._install_dev_updater(paths, source)
+    assert first["source_sha"] == deploy._source_commit(source, paths.owner_uid)
+    assert first["qualification"] == "LOCAL_DEV" and first["result"] == "SUCCESS"
+    assert module.read_bytes() == b"# qualified module\n"
+    assert deploy._install_dev_updater(paths, source)["result"] == "NOOP"
+    monkeypatch.setattr(deploy, "__file__", first["path"])
+    assert deploy.main(["--stable", "--json"], paths_override=paths) == 1
+    assert "restricted to DEV" in capsys.readouterr().err
+    Path(first["path"]).write_bytes(b"# changed local module\n")
+    with pytest.raises(deploy.DeploymentError, match="does not match"):
+        deploy._read_dev_updater(paths)
+
+
+def test_local_dev_updater_requires_explicit_acknowledgement(deployment_fixture) -> None:
+    deploy, paths, *_ = deployment_fixture
+    with pytest.raises(SystemExit, match="2"):
+        deploy.main(["--install-dev-updater"], paths_override=paths)
+    assert not (paths.state_dir / deploy.DEV_UPDATER_DIRECTORY).exists()

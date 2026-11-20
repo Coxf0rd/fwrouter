@@ -217,3 +217,22 @@ python3 installer/ui_publication.py \
 The source digest must equal the requested release digest. Missing/corrupt releases, a different UI source, or backend-manifest mismatch fail closed before pointer change. The command does not decide whether a rollback is operationally appropriate; it supplies only the same atomic UI publication primitive under the existing deployment lifecycle owner.
 
 The controlled backend lifecycle CLI uses its separate durable rollout lock only for the duration of that CLI operation; that lock is released before the installer is invoked. Do not treat it as nested or held during installer execution. The UI publication helper does not install or stop services, mutate host networking, reset bootstrap state, or download source.
+
+#### Validate a local D2 updater in DEV
+
+Stage the exact source commit as a clean, root-controlled temporary Git
+checkout. Install its local updater without replacing the Main-qualified
+updater or wrapper.
+
+```bash
+sudo /usr/bin/python3 -I -B "$FWROUTER_TEMP_SOURCE/installer/local_deploy.py" \
+  --install-dev-updater --acknowledge-local-deployer
+FWROUTER_DEV_UPDATER=/var/lib/fwrouter-v2/state/controlled-rollout/dev-updater/local_deploy.py
+sudo /usr/bin/python3 -I -B "$FWROUTER_DEV_UPDATER" --dev --source "$FWROUTER_TEMP_SOURCE" --check
+```
+
+The local updater is retained with its exact Git SHA, module digest and
+Main-qualified updater digest. It may run DEV and the existing qualified
+application rollback for DEV. Use that same retained updater for interrupted
+DEV or its rollback. Historical recovery pins recorded by the local updater
+need an updater that understands their format.

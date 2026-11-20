@@ -2994,6 +2994,91 @@ def _atomic_replace_module(path: Path, payload: bytes, owner_uid: int) -> None:
                 pass
 
 
+DEV_UPDATER_DIRECTORY = "dev-updater"
+
+
+def _verified_main_updater(paths: Paths, identity: dict) -> str:
+    recorded = identity.get("components", {}).get("updater") or {}
+    module = paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+    wrapper = paths.target("usr/local/sbin/fwrouter-deploy")
+    for path, mode in ((module, 0o644), (wrapper, 0o755)):
+        _check_trusted_tree(path.parent, paths.owner_uid)
+        if stat.S_IMODE(path.lstat().st_mode) != mode:
+            raise DeploymentError("Qualified updater entrypoint has an unsafe mode.")
+    digest = hashlib.sha256(_read_stable_source_file(module, paths.owner_uid)).hexdigest()
+    if (recorded.get("qualification_status") != "VERIFIED_MAIN_CI"
+            or recorded.get("installed_sha256") != digest
+            or recorded.get("wrapper_sha256") != hashlib.sha256(
+                _read_stable_source_file(wrapper, paths.owner_uid)).hexdigest()):
+        raise DeploymentIncomplete("The installed Main-qualified updater and wrapper must match their verified identity.")
+    return digest
+
+
+def _read_dev_updater(paths: Paths) -> dict:
+    directory = paths.state_dir / DEV_UPDATER_DIRECTORY
+    _check_trusted_tree(directory, paths.owner_uid)
+    if stat.S_IMODE(directory.lstat().st_mode) != 0o700:
+        raise DeploymentError("DEV updater directory is not private.")
+    receipt = directory / "identity.json"
+    if stat.S_IMODE(receipt.lstat().st_mode) != 0o600:
+        raise DeploymentError("DEV updater identity is not private.")
+    identity = _json_object(_read_stable_source_file(receipt, paths.owner_uid, limit=4096).decode("utf-8"))
+    if (set(identity) != {"source_sha", "module_sha256", "main_updater_sha256", "qualification"}
+            or identity["qualification"] != "LOCAL_DEV"
+            or not _hex(identity["source_sha"], 40)
+            or not _hex(identity["module_sha256"], 64)
+            or not _hex(identity["main_updater_sha256"], 64)
+            or stat.S_IMODE((directory / "local_deploy.py").lstat().st_mode) != 0o644
+            or hashlib.sha256(_read_stable_source_file(directory / "local_deploy.py", paths.owner_uid)).hexdigest()
+               != identity["module_sha256"]):
+        raise DeploymentError("DEV updater content or identity does not match its recorded local source.")
+    if identity["main_updater_sha256"] != _verified_main_updater(paths, _read_identity(paths)):
+        raise DeploymentIncomplete("The qualified updater changed after the DEV updater was installed.")
+    return identity
+
+
+def _install_dev_updater(paths: Paths, source: Path) -> dict:
+    commit = _source_commit(source, paths.owner_uid)
+    relative = "installer/local_deploy.py"
+    payload = _git_blob_bytes(source, commit, relative)
+    if _read_stable_source_file(source / relative, paths.owner_uid) != payload:
+        raise DeploymentError("DEV updater differs from its exact Git blob.")
+    compile(payload, relative, "exec")
+    with _configuration_component_lock(paths, command=True), _configuration_component_lock(paths):
+        identity = _read_identity(paths)
+        last = identity.get("last_verified_install") or {}
+        if (last.get("mode") == "DEV" or any(identity.get(k) for k in
+                ("stable_admission", "rollback_admission", "dev_admission"))
+                or (identity.get("operation") or {}).get("status") in {"PENDING", "FAILED"}):
+            raise DeploymentIncomplete("Complete the existing application deployment or recovery before installing a DEV updater.")
+        main_digest = _verified_main_updater(paths, identity)
+        receipt = {"source_sha": commit, "module_sha256": hashlib.sha256(payload).hexdigest(),
+                   "main_updater_sha256": main_digest, "qualification": "LOCAL_DEV"}
+        directory = paths.state_dir / DEV_UPDATER_DIRECTORY
+        if os.path.lexists(directory):
+            if _read_dev_updater(paths) != receipt:
+                raise DeploymentIncomplete("A different DEV updater is retained for development recovery.")
+            return {**receipt, "path": str(directory / "local_deploy.py"), "result": "NOOP"}
+        _check_trusted_tree(paths.state_dir, paths.owner_uid)
+        staging = Path(tempfile.mkdtemp(prefix=".dev-updater-", dir=paths.state_dir))
+        try:
+            _atomic_replace_module(staging / "local_deploy.py", payload, paths.owner_uid)
+            fd = os.open(staging / "identity.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(receipt, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _sync_lifecycle_owner_directory(staging)
+            staging.rename(directory)
+            _sync_lifecycle_owner_directory(paths.state_dir)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+        if _read_dev_updater(paths) != receipt:
+            raise DeploymentError("Installed DEV updater verification failed.")
+        return {**receipt, "path": str(directory / "local_deploy.py"), "result": "SUCCESS"}
+
+
 def _host_plan(source: Path, paths: Paths) -> tuple[list[dict], Path | None]:
     rows: list[dict] = []
     for source_rel, target_rel, mode in HOST_ROWS:
@@ -5536,6 +5621,10 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     mode.add_argument("--stable", action="store_true", help="deploy latest qualified origin/main")
     mode.add_argument("--rollback", action="store_true", help="restore the previously accepted Stable version")
     mode.add_argument("--dev", action="store_true", help="deploy local development source")
+    mode.add_argument("--install-dev-updater", action="store_true",
+                      help="install the exact trusted checkout updater for DEV and its rollback only")
+    parser.add_argument("--acknowledge-local-deployer", action="store_true",
+                        help="acknowledge installing a local updater alongside the qualified Main updater")
     parser.add_argument("--source", metavar="PATH", help="Development source checkout (default /srv/fwrouter)")
     parser.add_argument("--acknowledge-stable-replacement", action="store_true",
                         help="acknowledge a Development deployment that would replace Stable")
@@ -5557,6 +5646,11 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     parser.add_argument("--expected-installed-module-sha256")
     parser.add_argument("--confirm-main-sha")
     args = parser.parse_args(argv)
+    if args.install_dev_updater != args.acknowledge_local_deployer:
+        parser.error("--install-dev-updater requires --acknowledge-local-deployer")
+    if args.install_dev_updater and any((args.check, args.source, args.configure_source, args.self_upgrade,
+                                        args.initialize_acceptance_policy, args.allow_timer_catchup)):
+        parser.error("--install-dev-updater is a standalone operation")
     if args.initialize_acceptance_policy is not None and not args.initialize_acceptance_policy:
         parser.error("--initialize-acceptance-policy requires a non-empty approved file path")
     if args.source and not args.dev:
@@ -5628,6 +5722,24 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
     try:
         if os.geteuid() != 0 and not test_driver:
             raise DeploymentError("Run this operation as root.")
+        module = Path(__file__).resolve()
+        retained = paths.state_dir / DEV_UPDATER_DIRECTORY / "local_deploy.py"
+        if module == retained:
+            if not (args.dev or args.rollback or (args.check and not args.stable)) or any((
+                    args.stable, args.self_upgrade, args.configure_source, args.initialize_acceptance_policy,
+                    args.allow_timer_catchup, args.install_dev_updater)):
+                raise DeploymentError("The local updater is restricted to DEV, its qualified rollback, and read-only checks.")
+            local = _read_dev_updater(paths)
+            summary["dev_updater"] = local
+            _stage(summary, "DEV updater", "PASS", f"local DEV module @ {local['source_sha'][:12]}")
+        elif (not test_driver and module != paths.target("usr/local/libexec/fwrouter/local_deploy.py")
+              and not args.check and (args.dev or args.stable or args.rollback)):
+            raise DeploymentError("Install this DEV updater from its trusted checkout before applying a runtime change.")
+        if args.install_dev_updater:
+            result = _install_dev_updater(paths, module.parent.parent)
+            summary["dev_updater"] = result
+            _stage(summary, "DEV updater", "PASS", f"installed local DEV module @ {result['source_sha'][:12]}")
+            return emit(result["result"], 0)
         if args.initialize_acceptance_policy is not None:
             status = _initialize_acceptance_policy(paths, Path(args.initialize_acceptance_policy))
             _stage(summary, "Native policy", "PASS" if status == "INSTALLED" else "SKIP",
@@ -5637,6 +5749,13 @@ def main(argv: list[str] | None = None, *, paths_override: Paths | None = None,
                         policy_status=status)
         if (args.dev or args.stable or args.rollback) and not args.check:
             with _configuration_component_lock(paths, command=True):
+                if module == retained:
+                    _read_dev_updater(paths)
+                    if args.rollback:
+                        active = _read_identity(paths)
+                        if ((active.get("last_verified_install") or {}).get("mode") != "DEV"
+                                and not active.get("rollback_admission")):
+                            raise DeploymentIncomplete("The local updater only rolls back a Development deployment.")
                 if args.dev:
                     _development_deploy(
                         paths, summary, source_path=Path(args.source) if args.source else DEFAULT_DEV_SOURCE,
