@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import filecmp
 import hashlib
 import inspect
 import math
@@ -39,8 +38,7 @@ from fwrouter_api.services.mihomo_config_yaml import (
     MAX_MIHOMO_CONFIG_BYTES,
     MAX_MIHOMO_YAML_DEPTH,
     MAX_MIHOMO_YAML_NODES,
-    MihomoYamlError,
-    load_mihomo_yaml_mapping,
+    compare_mihomo_yaml_files,
 )
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     _file_hash,
@@ -331,16 +329,7 @@ def _yaml_value_is_json_safe(value: Any) -> bool:
 
 def _semantic_config_files_equal(active_path: str, candidate_path: str) -> bool:
     """Compare only bounded, unambiguous YAML; every uncertain case falls back to apply."""
-    parsed: list[dict[str, Any]] = []
-    for path in (active_path, candidate_path):
-        try:
-            parsed.append(load_mihomo_yaml_mapping(path, max_bytes=MAX_SEMANTIC_CONFIG_BYTES))
-        except (MihomoYamlError, OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
-            return False
-    try:
-        return _configs_equal(parsed[0], parsed[1])
-    except (TypeError, ValueError):
-        return False
+    return compare_mihomo_yaml_files(active_path, candidate_path, max_bytes=MAX_SEMANTIC_CONFIG_BYTES)
 
 
 def promote_mihomo_candidate_config(
@@ -1342,13 +1331,20 @@ def reconcile_mihomo_runtime(
         return result
 
     files_match = False
+    effective_config = "unproven"
     if os.path.exists(base_path) and os.path.exists(candidate_path):
-        try:
-            files_match = filecmp.cmp(base_path, candidate_path, shallow=False)
-        except OSError:
-            files_match = False
-        if not files_match:
-            files_match = _semantic_config_files_equal(base_path, candidate_path)
+        active_digest = _file_hash(base_path)
+        candidate_digest = _file_hash(candidate_path)
+        files_match = bool(active_digest and active_digest == candidate_digest)
+        if files_match:
+            effective_config = "byte_identical"
+        elif active_digest and candidate_digest:
+            files_match = (
+                _semantic_config_files_equal(base_path, candidate_path)
+                and _file_hash(base_path) == active_digest
+                and _file_hash(candidate_path) == candidate_digest
+            )
+            effective_config = "serialization_only" if files_match else "changed"
     else:
         try:
             status = get_mihomo_config_status(include_config=True)
@@ -1402,16 +1398,10 @@ def reconcile_mihomo_runtime(
             },
             "reconcile_action": "none",
             "reconcile_reason": "unchanged_config",
+            "effective_config": effective_config,
             "state_consistency_ok": True,
             "config": status_summary,
         }
-        _write_mihomo_reconcile_logs(
-            ok=bool(result["ok"]),
-            event_type="mihomo_reconcile_skipped" if result["ok"] else "mihomo_reconcile_failed",
-            message="Mihomo reconcile skipped because active config already matches candidate.",
-            details=result,
-            operational_level="debug",
-        )
         if result["ok"]:
             with xray_writer_guard(timeout_seconds=30.0):
                 inventory_block = _inventory_candidate_promotion_blocked(_inventory_admission)
@@ -1507,6 +1497,14 @@ def reconcile_mihomo_runtime(
                         result.update({"ok": False, "stage": "native_udp_policy_receipt",
                                        "reconcile_reason": "input_fingerprint_unavailable",
                                        "last_good_retained": True})
+        _write_mihomo_reconcile_logs(
+            ok=bool(result["ok"]),
+            event_type="mihomo_reconcile_skipped" if result["ok"] else "mihomo_reconcile_failed",
+            message=("Mihomo runtime was verified without replacing its config." if result["ok"]
+                     else "Mihomo unchanged-config verification failed."),
+            details=result,
+            operational_level="debug",
+        )
         return result
 
     restart_action = "force_recreate"

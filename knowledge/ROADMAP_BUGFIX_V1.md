@@ -36,6 +36,12 @@
 
 **Acceptance:** Byte-identical and semantically equal inputs across both paths cause zero Mihomo recreations and zero Xray restarts. A supported selector-only change uses readback with unchanged process/container identities. Structural changes still validate and activate. Fixtures count runtime calls per affected component, verify that unrelated components receive zero lifecycle calls and prove any suppressed transition is safe.
 
+**Runtime API boundary:** Mihomo's selector API already provides a targeted write and readback for a target in the loaded group. In pinned Mihomo v1.19.31, configuration reload suspends the tunnel and updates proxies, rules, DNS, listeners and TUN. HTTP success alone gives no continuity guarantee. Retain controlled activation for proxy/group or structural changes unless a narrower operation has verified runtime and recovery behavior. Xray exposes handler and routing mutations, but FWRouter generation currently proves the mounted configuration and native client/binding state. Keep the controlled restart for genuine Xray config changes until a targeted update can preserve those proofs. [Mihomo v1.19.31 apply implementation](https://github.com/MetaCubeX/mihomo/blob/v1.19.31/hub/executor/executor.go#L78-L116) · [Xray API](https://xtls.github.io/en/config/api.html)
+
+**B2 status: source implemented.** The comparison preserves sequence order, scalar spelling and types, explicit defaults, identifiers and references. Ambiguous or unavailable comparisons keep the controlled apply path. Format-only reuse retains the verified active representation for native validation and preserves exact SHA bindings through publication and recovery. Xray verifies the mounted config and running incarnation before proceeding after a restart or accepting staged NOOP. Local alias updates already use the metadata path. Generated binding metadata still follows the existing config and native proof contract.
+
+**Remaining gates:** A completed transition is recorded before a missing incarnation can block the operation. Recovery remains gated on the runtime ownership evidence. Unproven recovery paths retain the existing lifecycle actions. B3 owns broader rollback side-effect reduction. Qualified child-process and native Xray Docker profiles require their designated isolated runners. LAN continuity and live acceptance remain B4 work.
+
 ## B3 — Recovery & Concurrency
 
 **Depends on:** B1 outcome diagnostics, B2 affected-component decisions and existing checkpoint and D2 recovery contracts.

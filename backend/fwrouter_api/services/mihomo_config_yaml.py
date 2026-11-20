@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import math
 import stat
 from typing import Any
 
@@ -268,7 +269,27 @@ def _json_safe(value: Any) -> bool:
     return True
 
 
-def _parse_bounded_yaml_mapping(raw: bytes) -> dict[str, Any]:
+def _comparison_shape(node: Any) -> Any:
+    """Keep cooked scalar spelling as well as tag for Go typed field decoding."""
+    if isinstance(node, MappingNode):
+        keys = [key.value.casefold() for key, _ in node.value]
+        if len(keys) != len(set(keys)):
+            raise MihomoYamlInvalidError("ambiguous_case_mapping_key")
+        return {key.value: _comparison_shape(value) for key, value in node.value}
+    if isinstance(node, SequenceNode):
+        return [_comparison_shape(value) for value in node.value]
+    if not isinstance(node, ScalarNode) or node.tag not in {
+        "tag:yaml.org,2002:str", "tag:yaml.org,2002:bool", "tag:yaml.org,2002:int",
+        "tag:yaml.org,2002:float", "tag:yaml.org,2002:null",
+    }:
+        raise MihomoYamlInvalidError("unsupported_comparison_scalar")
+    if node.tag == "tag:yaml.org,2002:float":
+        if not math.isfinite(float(node.value.replace("_", ""))):
+            raise MihomoYamlInvalidError("nonfinite_comparison_scalar")
+    return (node.tag, node.value)
+
+
+def _parse_bounded_yaml_mapping(raw: bytes, *, comparison: bool = False) -> dict[str, Any]:
     """Parse a JSON-compatible YAML mapping with early event, alias and key bounds.
 
     A streaming event pass rejects aliases, duplicate/non-string mapping keys,
@@ -307,6 +328,8 @@ def _parse_bounded_yaml_mapping(raw: bytes) -> dict[str, Any]:
             if isinstance(event, AliasEvent):
                 raise MihomoYamlInvalidError("aliases_unsupported")
             if isinstance(event, DocumentStartEvent):
+                if comparison and (event.version or event.tags):
+                    raise MihomoYamlInvalidError("unsupported_comparison_directive")
                 documents += 1
                 if documents > 1:
                     raise MihomoYamlInvalidError("multiple_documents")
@@ -352,6 +375,8 @@ def _parse_bounded_yaml_mapping(raw: bytes) -> dict[str, Any]:
                     raise MihomoYamlInvalidError("invalid_collection_shape")
                 continue
             if isinstance(event, ScalarEvent):
+                if comparison and event.tag is not None:
+                    raise MihomoYamlInvalidError("unsupported_comparison_scalar_tag")
                 count_node()
                 if not frames:
                     raise MihomoYamlInvalidError("root_mapping_required")
@@ -376,7 +401,12 @@ def _parse_bounded_yaml_mapping(raw: bytes) -> dict[str, Any]:
         raise MihomoYamlInvalidError("invalid_yaml") from None
 
     try:
+        if comparison:
+            node = yaml.compose(text, Loader=loader_type)
+            return _comparison_shape(node)
         value = yaml.load(text, Loader=loader_type)
+    except MihomoYamlError:
+        raise
     except (yaml.YAMLError, ValueError, TypeError, RecursionError):
         # Do not propagate parser messages that can contain raw config values.
         raise MihomoYamlInvalidError("invalid_yaml") from None
@@ -396,3 +426,19 @@ def load_mihomo_yaml_mapping(
 
 def parse_mihomo_yaml_mapping(raw: bytes) -> dict[str, Any]:
     return _parse_bounded_yaml_mapping(raw)
+
+
+
+def compare_mihomo_yaml_files(
+    left: str | os.PathLike[str], right: str | os.PathLike[str], *,
+    max_bytes: int = MAX_MIHOMO_CONFIG_BYTES,
+) -> bool:
+    """Recognize serialization-only changes without guessing runtime defaults."""
+    try:
+        return _parse_bounded_yaml_mapping(
+            read_mihomo_yaml_bytes(left, max_bytes=max_bytes), comparison=True,
+        ) == _parse_bounded_yaml_mapping(
+            read_mihomo_yaml_bytes(right, max_bytes=max_bytes), comparison=True,
+        )
+    except (MihomoYamlError, OSError):
+        return False

@@ -960,6 +960,9 @@ def _batch_materialize_xray_subject_bindings(
 
 def _apply_staged_mihomo_candidate(
     candidate_path: str, expected_sha256: str, *, inventory_admission: Any = None,
+    runtime_noop_proof_required: bool = False,
+    runtime_noop_expected_incarnation: str | None = None,
+    runtime_noop_transition_proof: dict[str, str] | None = None,
     candidate_input_fingerprint: dict[str, Any] | None = None,
     fixed_routing_snapshot: dict[str, Any] | None = None,
     fixed_workflow_revision: int | None = None,
@@ -1012,7 +1015,16 @@ def _apply_staged_mihomo_candidate(
                 "last_good_retained": True}
 
     active_path = Path(mihomo_config._resolved_base_config_path())
-    if active_path.exists() and hashlib.sha256(active_path.read_bytes()).hexdigest() == expected_sha256:
+    active_matches_candidate = (
+        active_path.exists()
+        and hashlib.sha256(active_path.read_bytes()).hexdigest() == expected_sha256
+    )
+    if runtime_noop_proof_required and not active_matches_candidate:
+        return {"ok": False, "stage": "runtime_readback",
+                "error_code": "MIHOMO_SEMANTIC_NOOP_RUNTIME_UNVERIFIED",
+                "runtime_verified": False, "last_good_retained": True,
+                "container": {"ok": False, "action": "none", "reason": "active_generation_changed"}}
+    if active_matches_candidate:
         unchanged_revision_ok = (
             fixed_workflow_revision is None and ordinary_fixed_context is None
             or (type(expected_selection_revision) is int
@@ -1027,11 +1039,71 @@ def _apply_staged_mihomo_candidate(
                 fixed_routing_snapshot, None,
                 expected_selection_revision=expected_selection_revision,
                 ordinary_fixed_context=ordinary_fixed_context)
+        runtime_noop_verified = True
+        if unchanged_revision_ok and runtime_noop_proof_required:
+            # A semantic comparison only authorizes representative bytes. At
+            # apply time, independently prove that this exact active generation
+            # is still the one recorded as loaded by the current runtime.
+            from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+            from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+                _current_runtime_incarnation, _load_state,
+                mihomo_input_receipt_snapshot_matches,
+                mihomo_udp_policy_receipt_matches,
+            )
+            try:
+                active_hash = hashlib.sha256(active_path.read_bytes()).hexdigest()
+                incarnation = _current_runtime_incarnation()
+                runtime_proof = _native_udp_policy_proof()
+                readback_ok = bool(
+                    runtime_proof.get("ok") is True
+                    and runtime_proof.get("native_top_level_rules_match") is True
+                    and runtime_proof.get("selector_membership_matches") is True
+                    and runtime_proof.get("guarded_rules_match") is True
+                )
+                if isinstance(runtime_noop_transition_proof, dict):
+                    # The immediately preceding staged transition itself was
+                    # accepted by the lifecycle owner. Reuse its exact SHA and
+                    # incarnation, then require fresh native readback here;
+                    # historical persisted receipts may not exist yet.
+                    runtime_noop_verified = bool(
+                        runtime_noop_transition_proof.get("sha256") == expected_sha256 == active_hash
+                        and runtime_noop_transition_proof.get("incarnation")
+                        and runtime_noop_transition_proof.get("incarnation") == incarnation
+                        and readback_ok
+                        and hashlib.sha256(active_path.read_bytes()).hexdigest() == active_hash
+                        and _current_runtime_incarnation() == incarnation
+                    )
+                else:
+                    runtime_state = _load_state()
+                    runtime_noop_verified = bool(
+                        isinstance(runtime_state, dict)
+                        and runtime_state.get("active_config_hash") == active_hash == expected_sha256
+                        and incarnation
+                        and runtime_state.get("runtime_incarnation") == incarnation
+                        and (runtime_noop_expected_incarnation is None
+                             or incarnation == runtime_noop_expected_incarnation)
+                        and mihomo_input_receipt_snapshot_matches(runtime_state)
+                        and mihomo_udp_policy_receipt_matches(runtime_state)
+                        and readback_ok
+                        and hashlib.sha256(active_path.read_bytes()).hexdigest() == active_hash
+                        and _current_runtime_incarnation() == incarnation
+                    )
+            except Exception:
+                runtime_noop_verified = False
+            unchanged_revision_ok = unchanged_revision_ok and runtime_noop_verified
         return {
             "ok": unchanged_revision_ok,
-            "stage": "unchanged" if unchanged_revision_ok else "fixed_routing_snapshot",
-            "error_code": None if unchanged_revision_ok else "FIXED_XRAY_SELECTION_REVISION_UNVERIFIED",
+            "stage": "unchanged" if unchanged_revision_ok else (
+                "runtime_readback" if runtime_noop_proof_required and not runtime_noop_verified
+                else "fixed_routing_snapshot"
+            ),
+            "error_code": None if unchanged_revision_ok else (
+                "MIHOMO_SEMANTIC_NOOP_RUNTIME_UNVERIFIED"
+                if runtime_noop_proof_required and not runtime_noop_verified
+                else "FIXED_XRAY_SELECTION_REVISION_UNVERIFIED"
+            ),
             "selection_revision": expected_selection_revision,
+            "runtime_verified": runtime_noop_verified if runtime_noop_proof_required else None,
             "container": {"ok": unchanged_revision_ok, "action": "none", "reason": "config_unchanged"},
         }
     if not _fixed_xray_generation_context_matches(
@@ -2324,11 +2396,12 @@ def _write_xray_generation_checkpoint(
 def _update_xray_generation_checkpoint(
     checkpoint_path: Path, *, phase: str, selection_revision: int | None = None,
     xray_runtime_incarnation: str | None = None, xray_mounted_config_sha256: str | None = None,
-) -> None:
+) -> str | None:
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     data["phase"] = phase
     from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
-    data["mihomo_runtime_incarnation"] = get_mihomo_runtime_incarnation()
+    mihomo_incarnation = get_mihomo_runtime_incarnation()
+    data["mihomo_runtime_incarnation"] = mihomo_incarnation
     if selection_revision is not None:
         if type(selection_revision) is not int or selection_revision < int(data.get("selection_revision", 0)):
             raise ValueError("Generation checkpoint cannot adopt an invalid or older selection revision.")
@@ -2338,6 +2411,7 @@ def _update_xray_generation_checkpoint(
     if xray_mounted_config_sha256 is not None:
         data["xray_mounted_config_sha256_after"] = xray_mounted_config_sha256
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
+    return mihomo_incarnation
 
 
 def _record_xray_generation_selection_revision(
@@ -4478,6 +4552,12 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             transition,
             staged_generation["native_validation"]["transition"]["candidate_sha256"],
             inventory_admission=_inventory_admission,
+            runtime_noop_proof_required=bool(
+                staged_generation["native_validation"]["transition"].get("runtime_noop_proof_required")
+            ),
+            runtime_noop_expected_incarnation=(
+                staged_generation["native_validation"]["transition"].get("runtime_noop_expected_incarnation")
+            ),
             candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
             fixed_routing_snapshot=_fixed_routing_snapshot,
             fixed_workflow_revision=_fixed_workflow_revision,
@@ -4498,10 +4578,21 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                     "details": _strip_raw_payload(applied_transition),
                     **({"runtime_verified": False, "generation_recovery": restored}
                        if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else {})}
-        _update_xray_generation_checkpoint(
+        transition_incarnation = _update_xray_generation_checkpoint(
             checkpoint_path, phase="transition_applied",
             selection_revision=transition_selection_revision,
         )
+        transition_runtime_proof = None
+        final_write = staged_generation["native_validation"]["final"].get("write") or {}
+        if final_write.get("effective_candidate_reused") is True:
+            if not transition_incarnation:
+                return {"ok": False, "status": "pending", "stage": "mihomo_transition_apply",
+                        "error_code": "MIHOMO_SEMANTIC_NOOP_RUNTIME_UNVERIFIED",
+                        "runtime_verified": False}
+            transition_runtime_proof = {
+                "sha256": staged_generation["native_validation"]["transition"]["candidate_sha256"],
+                "incarnation": transition_incarnation,
+            }
         if _fixed_workflow_revision is not None:
             fixed_stage_selection_revision = transition_selection_revision
         if not _fixed_xray_generation_context_matches(
@@ -4541,6 +4632,13 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             final_path,
             staged_generation["native_validation"]["final"]["candidate_sha256"],
             inventory_admission=_inventory_admission,
+            runtime_noop_proof_required=bool(
+                staged_generation["native_validation"]["final"].get("runtime_noop_proof_required")
+            ),
+            runtime_noop_expected_incarnation=(
+                staged_generation["native_validation"]["final"].get("runtime_noop_expected_incarnation")
+            ),
+            runtime_noop_transition_proof=transition_runtime_proof,
             candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
             fixed_routing_snapshot=_fixed_routing_snapshot,
             fixed_workflow_revision=_fixed_workflow_revision,
