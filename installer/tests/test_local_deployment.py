@@ -2170,6 +2170,177 @@ def test_dev_admission_rechecks_installed_mode_and_snapshot_under_component_lock
     assert "dev_admission" not in record
 
 
+def test_dev_incomplete_supersession_requires_exact_identity_recovery_health_and_native_reason(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, source, old_source, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True)
+    metadata = deploy._dev_snapshot_capture(old_source, paths)
+    metadata.pop("_created_by_capture", None)
+    with deploy._materialize_development_snapshot(paths, metadata) as (_captured, captured_commit, _scratch):
+        metadata.update(mode="DEV", qualification_status="NOT_VERIFIED", git_sha=captured_commit)
+    content = {"backend_sha256": "a" * 64, "ui_sha256": "b" * 64,
+               "host_pair_sha256": {row[0]: "c" * 64 for row in deploy.HOST_ROWS}}
+    operation_id = str(uuid.uuid4())
+    qualification = _qualification("d" * 40)
+    backup = {"id": "e" * 32, "source_sha": "d" * 40, "backend_sha256": "a" * 64,
+              "schema": 27, "filename": "rollback-" + "e" * 32 + ".bak",
+              "sha256": "1" * 64, "snapshot_sha256": "2" * 64}
+    operation = {"status": "VERIFIED_CONTENT", "lifecycle_status": "complete",
+                 "pending_units": [], "pending_units_status": "OBSERVED",
+                 "operation_id": operation_id, "requested_source": dict(metadata),
+                 "native_proof": {"status": "NOT_VERIFIED", "scope": "owner_readback_required",
+                                  "evidence_refs": []},
+                 "acceptance": {"status": "NOT_VERIFIED", "reason": "native_proof_not_verified"}}
+    installed = {**metadata, "source_content": content, "installed_content": content,
+                 "operation_id": operation_id, "completed_at": "2026-11-20T00:00:00Z",
+                 "observed_runtime_image_id": {"xray": "UNKNOWN", "mihomo": "UNKNOWN"},
+                 "native_proof": operation["native_proof"], "acceptance": operation["acceptance"]}
+    identity = {"operation": operation, "last_verified_install": installed,
+                "dev_admission": dict(metadata),
+                "stable_current": {"source_sha": "d" * 40, "qualification": qualification,
+                                   "installed_content": content, "lifecycle_owner_sha": "d" * 40},
+                "lifecycle_owners": {"d" * 40: {"test": True}},
+                "database_rollback": backup,
+                "components": {
+                    "backend": {"mode": "DEV", "source_sha": metadata["git_sha"],
+                                "operation_id": operation_id, "installed_sha256": content["backend_sha256"]},
+                    "ui": {"mode": "DEV", "source_sha": metadata["git_sha"],
+                           "operation_id": operation_id, "installed_sha256": content["ui_sha256"]},
+                    "host_pair": {"mode": "DEV", "source_sha": metadata["git_sha"],
+                                  "operation_id": operation_id,
+                                  "installed_sha256": content["host_pair_sha256"]}}}
+    lifecycle = SimpleNamespace(_read_checkpoint=lambda _path: {"status": "complete"})
+    monkeypatch.setattr(deploy, "_read_lifecycle_owner_capsule", lambda *_args, **_kwargs: ({}, Path("/capsule")))
+    monkeypatch.setattr(deploy, "_source_modules", lambda *_args, **_kwargs: (lifecycle, None, object()))
+    monkeypatch.setattr(deploy, "_require_development_lifecycle_contract", lambda *_: None)
+    monkeypatch.setattr(deploy, "_installed_content_identity", lambda *_: content)
+    monkeypatch.setattr(deploy, "_validate_managed_backup", lambda *_: None)
+    monkeypatch.setattr(deploy, "_read_health", lambda *_: {"API": {"status": "PASS"},
+                                                              "Mihomo": {"status": "PASS"}})
+    monkeypatch.setattr(deploy, "_strict_database_preflight", lambda *_: "already_current")
+    monkeypatch.setattr(deploy, "_runtime_image_evidence", lambda *_: ("PASS", "verified", {}))
+    monkeypatch.setattr(deploy, "_require_core_ip_receipt_readonly_plan", lambda *_: {"status": "READY"})
+    monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+        "status": "NOT_VERIFIED", "reason": "native_generation_receipt_missing_or_invalid"})
+
+    deploy._verify_incomplete_dev_supersession(paths, identity, source, {})
+
+    for failure, mutate in (
+            ("component", lambda row: row["components"]["backend"].update(source_sha="0" * 40)),
+            ("health", lambda row: None),
+            ("proof", lambda row: None)):
+        changed = json.loads(json.dumps(identity))
+        if failure == "component":
+            mutate(changed)
+        elif failure == "health":
+            monkeypatch.setattr(deploy, "_read_health", lambda *_: {"API": {"status": "FAIL"}})
+        else:
+            monkeypatch.setattr(deploy, "_read_health", lambda *_: {"API": {"status": "PASS"}})
+            monkeypatch.setattr(deploy, "_native_acceptance", lambda *_: {
+                "status": "NOT_VERIFIED", "reason": "mihomo_runtime_mismatch"})
+        with pytest.raises(deploy.DeploymentIncomplete):
+            deploy._verify_incomplete_dev_supersession(paths, changed, source, {})
+
+
+def test_dev_incomplete_supersession_preserves_not_verified_evidence_atomically(
+        deployment_fixture, monkeypatch) -> None:
+    deploy, paths, _source, old_source, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    snapshot_root = deploy._dev_source_directory(paths)
+    snapshot_root.mkdir(mode=0o700)
+    old_path = snapshot_root / ("a" * 64 + ".tar")
+    old_path.write_bytes(b"old snapshot")
+    old_path.chmod(0o600)
+    new_path = snapshot_root / ("b" * 64 + ".tar")
+    new_path.write_bytes(b"new snapshot")
+    new_path.chmod(0o600)
+    old = {"path": str(old_source), "git_sha": "1" * 40, "base_git_sha": "1" * 40,
+           "dirty": False, "provenance": "local_development_worktree", "mode": "DEV",
+           "qualification_status": "NOT_VERIFIED", "content_sha256": "a" * 64,
+           "snapshot_sha256": hashlib.sha256(old_path.read_bytes()).hexdigest(),
+           "snapshot_path": str(old_path), "file_count": 1}
+    current = {"mode": "DEV", "git_sha": old["git_sha"], "acceptance": {"status": "NOT_VERIFIED"}}
+    operation_id = str(uuid.uuid4())
+    content = {"backend_sha256": "c" * 64, "ui_sha256": "d" * 64,
+               "host_pair_sha256": {row[0]: "e" * 64 for row in deploy.HOST_ROWS}}
+    proof = {"status": "NOT_VERIFIED", "scope": "owner_readback_required", "evidence_refs": []}
+    acceptance = {"status": "NOT_VERIFIED", "reason": "native_proof_not_verified"}
+    current.update(operation_id=operation_id, installed_content=content)
+    record = {"last_verified_install": current, "dev_admission": old,
+              "dev_current": dict(old),
+              "operation": {"status": "VERIFIED_CONTENT", "operation_id": operation_id,
+                            "requested_source": dict(old), "native_proof": proof, "acceptance": acceptance}}
+    new = {**old, "git_sha": "2" * 40, "base_git_sha": "2" * 40,
+           "content_sha256": "b" * 64, "snapshot_path": str(new_path),
+           "snapshot_sha256": hashlib.sha256(new_path.read_bytes()).hexdigest()}
+    @contextmanager
+    def no_lock(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(deploy, "_configuration_component_lock", no_lock)
+    monkeypatch.setattr(deploy, "_identity_record_base", lambda *_: record)
+    monkeypatch.setattr(deploy, "_verify_incomplete_dev_supersession", lambda *_args, **_kwargs: None)
+    writes = []
+    monkeypatch.setattr(deploy, "_write_identity", lambda _paths, value: writes.append(json.loads(json.dumps(value))))
+    monkeypatch.setattr(deploy, "_backup_file_digest", lambda path, _info: hashlib.sha256(path.read_bytes()).hexdigest())
+
+    deploy._remember_development_admission(paths, new, current, False, supersede_incomplete=True)
+
+    assert len(writes) == 1
+    saved = writes[0]
+    assert saved["dev_admission"] == new
+    assert saved["dev_retired"]["snapshot_path"] == str(old_path)
+    history = saved["dev_current"]["superseded_incomplete"]
+    assert history["acceptance"] == acceptance
+    assert history["native_proof"] == proof
+    assert history["operation_id"] == operation_id
+    assert saved["last_verified_install"] == current
+
+
+def test_dev_supersession_requires_successful_read_only_core_receipt_plan(deployment_fixture, monkeypatch) -> None:
+    deploy, paths, *_ = deployment_fixture
+    lifecycle = SimpleNamespace(_verified_backend_interpreter=lambda: Path(sys.executable))
+    pins = "a" * 64
+    output = {"status": "READY", "action": "REATTEST", "plan_sha256": "b" * 64,
+              "tool_manifest_sha256": pins, "installed_backend_manifest_sha256": pins,
+              "checkpoint_sha256": "c" * 64, "generation_digest": "d" * 64,
+              "generation_revision": 210, "operation_id": str(uuid.uuid4()),
+              "database_fence_sha256": "e" * 64, "receipt_sha256": "f" * 64,
+              "old_ip_semantics_sha256": "1" * 64, "current_ip_semantics_sha256": "2" * 64}
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, json.dumps(output), "")
+
+    monkeypatch.setattr(deploy, "_run", run)
+    assert deploy._require_core_ip_receipt_readonly_plan(paths, lifecycle, pins) == output
+    argv, kwargs = calls[-1]
+    assert "--plan" in argv and "--apply" not in argv
+    assert argv[argv.index("--expected-tool-manifest-sha256") + 1] == pins
+    assert argv[argv.index("--expected-installed-backend-manifest-sha256") + 1] == pins
+    assert kwargs["host_environment"] is True
+
+    output["status"] = "BLOCKED"
+    output["reason"] = "CORE_IP_RECEIPT_REATTEST_PROOF_CHECKPOINT_REQUIRED"
+    with pytest.raises(deploy.DeploymentIncomplete, match="read-only Core IP receipt plan"):
+        deploy._require_core_ip_receipt_readonly_plan(paths, lifecycle, pins)
+
+
+def test_dev_source_noop_ignores_only_incomplete_history_metadata(deployment_fixture) -> None:
+    deploy, *_ = deployment_fixture
+    candidate = {"path": "/srv/fwrouter", "git_sha": "a" * 40, "base_git_sha": "b" * 40,
+                 "dirty": False, "content_sha256": "c" * 64, "snapshot_sha256": "d" * 64,
+                 "snapshot_path": "/var/lib/fwrouter-v2/state/controlled-rollout/dev-snapshots/" + "c" * 64 + ".tar",
+                 "file_count": 5}
+    current = {**candidate, "superseded_incomplete": {"acceptance": {"status": "NOT_VERIFIED"}}}
+    assert deploy._same_development_source_pin(current, candidate)
+    current["git_sha"] = "e" * 40
+    assert not deploy._same_development_source_pin(current, candidate)
+
+
+
+
 @pytest.mark.parametrize("candidate_profile", [
     "legacy_migrated_schema27_manual_ping_additive",
     "legacy_migrated_schema27_from_7",
