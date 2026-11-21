@@ -34,7 +34,7 @@ class SystemSubjectSyncRequest(BaseModel):
     discover_host: bool = True
 
 
-@router.get("/system-subjects", response_model=ApiResponse)
+@router.get("/system-subjects", response_model=ApiResponse, summary='List System Subjects')
 def list_system_subjects_endpoint(
     is_active: bool | None = None,
     include_deleted: bool = False,
@@ -48,7 +48,7 @@ def list_system_subjects_endpoint(
     return ApiResponse(ok=True, data={"subjects": subjects})
 
 
-@router.get("/system-subjects/{subject_id}", response_model=ApiResponse)
+@router.get("/system-subjects/{subject_id}", response_model=ApiResponse, summary='Get System Subject')
 def get_system_subject_endpoint(subject_id: str) -> ApiResponse:
     subject = get_system_subject(subject_id)
     if subject is None:
@@ -63,7 +63,7 @@ def get_system_subject_endpoint(subject_id: str) -> ApiResponse:
     return ApiResponse(ok=True, data={"subject": subject})
 
 
-@router.post("/system-subjects/{subject_id}/mode", response_model=ApiResponse)
+@router.post("/system-subjects/{subject_id}/mode", response_model=ApiResponse, summary='Set System Subject Mode')
 def set_system_subject_mode_endpoint(
     subject_id: str,
     request: SetSystemSubjectModeRequest,
@@ -81,7 +81,7 @@ def set_system_subject_mode_endpoint(
     return build_job_action_response(job, result_key="subject_mode")
 
 
-@router.post("/system-subjects/sync", response_model=ApiResponse)
+@router.post("/system-subjects/sync", response_model=ApiResponse, summary='Synchronize System Subjects')
 def sync_system_subjects_endpoint(request: SystemSubjectSyncRequest) -> ApiResponse:
     try:
         job = request_system_subject_sync(
@@ -96,7 +96,7 @@ def sync_system_subjects_endpoint(request: SystemSubjectSyncRequest) -> ApiRespo
     return ApiResponse(ok=True, data={"job": job})
 
 
-@router.delete("/system-subjects/{subject_id}", response_model=ApiResponse)
+@router.delete("/system-subjects/{subject_id}", response_model=ApiResponse, summary='Delete System Subject')
 def delete_system_subject_endpoint(subject_id: str, requested_by: str = "api") -> ApiResponse:
     result = delete_system_subject(subject_id, requested_by=requested_by)
     if not result["ok"]:

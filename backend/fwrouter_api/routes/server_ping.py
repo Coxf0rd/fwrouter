@@ -26,7 +26,7 @@ class ServerPingSweepRequest(BaseModel):
     limit: int = Field(default=DEFAULT_SWEEP_LIMIT, ge=1, le=20)
 
 
-@router.get("/server-ping/active", response_model=ApiResponse)
+@router.get("/server-ping/active", response_model=ApiResponse, summary='Get Active Server Ping')
 def get_active_server_ping_endpoint() -> ApiResponse:
     result = check_active_server_delay(
         update_state=False,
@@ -35,7 +35,7 @@ def get_active_server_ping_endpoint() -> ApiResponse:
     return ApiResponse(ok=result["ok"], data={"ping": result})
 
 
-@router.post("/server-ping/active", response_model=ApiResponse)
+@router.post("/server-ping/active", response_model=ApiResponse, summary='Update Active Server Ping')
 def update_active_server_ping_endpoint(
     request: CheckActiveServerPingRequest,
 ) -> ApiResponse:
@@ -47,7 +47,7 @@ def update_active_server_ping_endpoint(
     return ApiResponse(ok=result["ok"], data={"ping": result})
 
 
-@router.get("/server-ping/sweep", response_model=ApiResponse)
+@router.get("/server-ping/sweep", response_model=ApiResponse, summary='Get Server Ping Sweep')
 def get_server_ping_sweep_endpoint(
     limit: int = Query(default=DEFAULT_SWEEP_LIMIT, ge=1, le=20),
 ) -> ApiResponse:
@@ -59,7 +59,7 @@ def get_server_ping_sweep_endpoint(
     return ApiResponse(ok=result["ok"], data={"sweep": result})
 
 
-@router.post("/server-ping/sweep", response_model=ApiResponse)
+@router.post("/server-ping/sweep", response_model=ApiResponse, summary='Update Server Ping Sweep')
 def update_server_ping_sweep_endpoint(
     request: ServerPingSweepRequest,
 ) -> ApiResponse:

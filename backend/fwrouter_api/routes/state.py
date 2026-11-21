@@ -18,17 +18,17 @@ from fwrouter_api.services.state_projection import (
 router = APIRouter()
 
 
-@router.get("/state/system", response_model=ApiResponse)
+@router.get("/state/system", response_model=ApiResponse, summary='Read System State')
 def get_state_system_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data={"state": build_system_state_projection()})
 
 
-@router.get("/state/modules", response_model=ApiResponse)
+@router.get("/state/modules", response_model=ApiResponse, summary='Read Module State')
 def get_state_modules_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data={"modules": build_module_state_projection()})
 
 
-@router.get("/state/subjects", response_model=ApiResponse)
+@router.get("/state/subjects", response_model=ApiResponse, summary='Read Subject State')
 def get_state_subjects_endpoint(
     include_deleted: bool = Query(default=False),
     limit: int = Query(default=500, ge=1, le=500),
@@ -46,7 +46,7 @@ def get_state_subjects_endpoint(
     )
 
 
-@router.get("/state/subjects/{subject_id}", response_model=ApiResponse)
+@router.get("/state/subjects/{subject_id}", response_model=ApiResponse, summary='Get State Subject')
 def get_state_subject_endpoint(
     subject_id: str,
     include_deleted: bool = Query(default=False),
@@ -67,26 +67,26 @@ def get_state_subject_endpoint(
     return ApiResponse(ok=True, data=result)
 
 
-@router.get("/state/routing", response_model=ApiResponse)
+@router.get("/state/routing", response_model=ApiResponse, summary='Read Routing State')
 def get_state_routing_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data=build_routing_state_projection())
 
 
-@router.get("/state/watchdog", response_model=ApiResponse)
+@router.get("/state/watchdog", response_model=ApiResponse, summary='Read Watchdog State')
 def get_state_watchdog_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data=build_watchdog_state_projection())
 
 
-@router.get("/state/rules", response_model=ApiResponse)
+@router.get("/state/rules", response_model=ApiResponse, summary='Read Rules State')
 def get_state_rules_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data=build_rules_state_projection())
 
 
-@router.get("/state/xray", response_model=ApiResponse)
+@router.get("/state/xray", response_model=ApiResponse, summary='Read Xray State')
 def get_state_xray_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data=build_xray_state_projection())
 
 
-@router.get("/state/vpn", response_model=ApiResponse)
+@router.get("/state/vpn", response_model=ApiResponse, summary='Read VPN State')
 def get_state_vpn_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data=build_vpn_state_projection())

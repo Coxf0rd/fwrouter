@@ -30,7 +30,7 @@ class SwitchVpnAutoRequest(BaseModel):
     management_context: dict[str, object] | None = None
 
 
-@router.get("/selector/vpn-auto", response_model=ApiResponse)
+@router.get("/selector/vpn-auto", response_model=ApiResponse, summary='Get VPN Auto Selector')
 def get_vpn_auto_selector_endpoint(
     check_on_demand: bool = Query(default=False),
     exclude_active: bool = Query(default=False),
@@ -51,12 +51,17 @@ def get_vpn_auto_selector_endpoint(
     return ApiResponse(ok=result["ok"], data={"selector": result})
 
 
-@router.get("/selector/vpn-auto/state", response_model=ApiResponse)
+@router.get("/selector/vpn-auto/state", response_model=ApiResponse, summary='Get VPN Auto Selector State')
 def get_vpn_auto_selector_state_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data={"vpn_auto": get_vpn_auto_state(read_only=True, cache_runtime=True)})
 
 
-@router.post("/selector/vpn-auto/switch", response_model=ApiResponse)
+@router.post(
+    "/selector/vpn-auto/switch",
+    response_model=ApiResponse,
+    summary="Switch the VPN Auto selector",
+    description="Changes the selected VPN Auto target through the selector controller and verifies runtime readback. Requires confirm_switch=true.",
+)
 def switch_vpn_auto_selector_endpoint(request: SwitchVpnAutoRequest) -> ApiResponse:
     if not request.confirm_switch:
         return ApiResponse(

@@ -240,7 +240,7 @@ class XrayRequestedByRequest(BaseModel):
     requested_by: str | None = "api"
 
 
-@router.get("/xray", response_model=ApiResponse)
+@router.get("/xray", response_model=ApiResponse, summary='Get Xray Status')
 def get_xray_endpoint() -> ApiResponse:
     ok, payload = xray_service_call(get_xray_status)
     if ok and isinstance(payload, dict):
@@ -254,7 +254,12 @@ def get_xray_endpoint() -> ApiResponse:
     )
 
 
-@router.post("/xray/vpn-auto/reconcile", response_model=ApiResponse)
+@router.post(
+    "/xray/vpn-auto/reconcile",
+    response_model=ApiResponse,
+    summary="Reconcile Xray VPN Auto clients",
+    description="Reconciles Xray's VPN Auto client projection with the current selector state. The response reports the operation and verification result.",
+)
 def apply_xray_vpn_auto_reconcile_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
     from fwrouter_api.services.xray_vpn_auto_pending import request_xray_vpn_auto_apply_now
 
@@ -271,7 +276,7 @@ def apply_xray_vpn_auto_reconcile_endpoint(request: XrayRequestedByRequest) -> A
     )
 
 
-@router.get("/xray/clients", response_model=ApiResponse)
+@router.get("/xray/clients", response_model=ApiResponse, summary='List Xray Clients')
 def list_xray_clients_endpoint() -> ApiResponse:
     ok, payload = xray_service_call(list_xray_clients)
     return ApiResponse(
@@ -281,7 +286,12 @@ def list_xray_clients_endpoint() -> ApiResponse:
     )
 
 
-@router.post("/xray/clients", response_model=ApiResponse)
+@router.post(
+    "/xray/clients",
+    response_model=ApiResponse,
+    summary="Create an Xray client",
+    description="Creates a persistent Xray client record and applies the required Xray generation through the existing runtime lifecycle. The response may contain an asynchronous job when generation is queued.",
+)
 def create_xray_client_endpoint(request: XrayClientCreateRequest) -> ApiResponse:
     ok, payload = xray_service_call(
         submit_xray_client_create,
@@ -306,7 +316,12 @@ def create_xray_client_endpoint(request: XrayClientCreateRequest) -> ApiResponse
     )
 
 
-@router.patch("/xray/clients/{client_id}", response_model=ApiResponse)
+@router.patch(
+    "/xray/clients/{client_id}",
+    response_model=ApiResponse,
+    summary="Update an Xray client alias",
+    description="Updates the client's alias metadata. This does not change the client's runtime identity.",
+)
 def update_xray_client_alias_endpoint(client_id: str, request: XrayClientAliasRequest) -> ApiResponse:
     ok, payload = xray_service_call(
         update_xray_client_alias,
@@ -328,7 +343,12 @@ def update_xray_client_alias_endpoint(client_id: str, request: XrayClientAliasRe
     )
 
 
-@router.delete("/xray/clients/{client_id}", response_model=ApiResponse)
+@router.delete(
+    "/xray/clients/{client_id}",
+    response_model=ApiResponse,
+    summary="Delete an Xray client",
+    description="Deletes the client from persisted Xray state and submits the required runtime generation update. The response reports whether the operation completed or is queued.",
+)
 def delete_xray_client_endpoint(client_id: str, request: XrayRequestedByRequest) -> ApiResponse:
     ok, payload = xray_service_call(submit_xray_client_delete, client_id, requested_by=request.requested_by or "api")
     if ok and isinstance(payload.get("job"), dict):
@@ -347,7 +367,12 @@ def delete_xray_client_endpoint(client_id: str, request: XrayRequestedByRequest)
     )
 
 
-@router.delete("/xray/subscription-profiles/{token}", response_model=ApiResponse)
+@router.delete(
+    "/xray/subscription-profiles/{token}",
+    response_model=ApiResponse,
+    summary="Delete an Xray subscription profile",
+    description="Deletes the subscription profile identified by this token and submits any required Xray update. Treat the token as sensitive profile identity data.",
+)
 def delete_xray_subscription_profile_endpoint(token: str, request: XrayRequestedByRequest) -> ApiResponse:
     ok, payload = xray_service_call(
         submit_xray_subscription_profile_delete,
@@ -374,7 +399,12 @@ def delete_xray_subscription_profile_endpoint(token: str, request: XrayRequested
     )
 
 
-@router.post("/xray/reload", response_model=ApiResponse)
+@router.post(
+    "/xray/reload",
+    response_model=ApiResponse,
+    summary="Reload Xray runtime configuration",
+    description="Requests the existing Xray runtime owner to materialize current bindings and force a runtime reload, then reports the resulting operation status.",
+)
 def reload_xray_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
     ok, payload = xray_service_call(reload_xray, requested_by=request.requested_by or "api")
     if ok and payload["ok"]:
@@ -391,7 +421,12 @@ def reload_xray_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
     )
 
 
-@router.post("/xray/sync-subjects", response_model=ApiResponse)
+@router.post(
+    "/xray/sync-subjects",
+    response_model=ApiResponse,
+    summary="Synchronize Xray clients to subjects",
+    description="Synchronizes Xray client records with the routed subject inventory. This may update persisted subject bindings and the returned result reports synchronization outcomes.",
+)
 def sync_xray_subjects_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
     ok, payload = xray_service_call(sync_xray_subjects, requested_by=request.requested_by or "api")
     if ok and payload["ok"]:
@@ -412,7 +447,7 @@ def sync_xray_subjects_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
     )
 
 
-@router.get("/xray/clients/{client_id}/subscription", response_model=ApiResponse)
+@router.get("/xray/clients/{client_id}/subscription", response_model=ApiResponse, summary='Export Xray Subscription')
 def export_xray_subscription_endpoint(client_id: str) -> ApiResponse:
     ok, payload = xray_service_call(export_xray_subscription, client_id)
     if ok and payload["ok"]:
@@ -432,8 +467,40 @@ _SUBSCRIPTION_TEXT_RESPONSES = {
     200: {
         "description": "Rendered subscription. The media type depends on the selected format.",
         "content": {
-            "text/plain": {"schema": {"type": "string"}},
-            "application/yaml": {"schema": {"type": "string"}},
+            "text/plain": {
+                "schema": {"type": "string"},
+                "example": "vless://00000000-0000-4000-8000-000000000001@example.invalid:443?type=ws&security=tls&sni=example.invalid&path=%2Fvless&host=example.invalid#EXAMPLE_ONLY\n",
+            },
+            "application/yaml": {
+                "schema": {"type": "string"},
+                "example": (
+                    "proxies:\n"
+                    "  - name: EXAMPLE_ONLY\n"
+                    "    type: vless\n"
+                    "    server: example.invalid\n"
+                    "    port: 443\n"
+                    "    uuid: 00000000-0000-4000-8000-000000000001\n"
+                    "    tls: true\n"
+                    "    servername: example.invalid\n"
+                    "    udp: true\n"
+                    "    network: ws\n"
+                    "    client-fingerprint: chrome\n"
+                    "    alpn:\n"
+                    "      - http/1.1\n"
+                    "    ws-opts:\n"
+                    "      path: /vless\n"
+                    "      headers:\n"
+                    "        Host: example.invalid\n"
+                    "proxy-groups:\n"
+                    "  - name: FWRouter Xray\n"
+                    "    type: select\n"
+                    "    proxies:\n"
+                    "      - EXAMPLE_ONLY\n"
+                    "      - DIRECT\n"
+                    "rules:\n"
+                    "  - MATCH,FWRouter Xray\n"
+                ),
+            },
         },
     },
     404: {

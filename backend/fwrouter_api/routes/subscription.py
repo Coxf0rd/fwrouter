@@ -125,13 +125,13 @@ class SubscriptionUrlRequest(BaseModel):
     requested_by: str | None = "api"
 
 
-@router.get("/subscription", response_model=ApiResponse)
+@router.get("/subscription", response_model=ApiResponse, summary='Get Subscription')
 def get_subscription_endpoint() -> ApiResponse:
     state = get_subscription_state()
     return ApiResponse(ok=True, data={"subscription": _redact_subscription_state(state)})
 
 
-@router.post("/subscription/validate", response_model=ApiResponse)
+@router.post("/subscription/validate", response_model=ApiResponse, summary='Validate Subscription')
 def validate_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
     validation = validate_subscription_url(request.url)
 
@@ -149,7 +149,12 @@ def validate_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiRespon
     )
 
 
-@router.post("/subscription", response_model=ApiResponse)
+@router.post(
+    "/subscription",
+    response_model=ApiResponse,
+    summary="Save subscription settings or import a batch",
+    description="With url, validates and saves the subscription source without starting a refresh. With urls, refreshes the submitted inventory and applies the resulting runtime configuration; this can change active servers or runtime state.",
+)
 def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
     if request.urls is not None:
         import_result = refresh_subscription_inventory_batch(
@@ -290,7 +295,12 @@ def refresh_subscription_endpoint() -> ApiResponse:
     )
 
 
-@router.post("/subscription/sources/{source_ref}/refresh", response_model=ApiResponse)
+@router.post(
+    "/subscription/sources/{source_ref}/refresh",
+    response_model=ApiResponse,
+    summary="Refresh a saved subscription source",
+    description="Accepts a source-scoped refresh job and returns its job_id. The HTTP response acknowledges or reuses work; it does not confirm successful runtime application. Inspect the job through GET /api/v2/jobs/{job_id}.",
+)
 def refresh_subscription_source_endpoint(source_ref: str) -> ApiResponse:
     if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:
         return ApiResponse(
@@ -340,7 +350,12 @@ class SubscriptionVpnAutoExclusiveRequest(BaseModel):
     enabled: bool
 
 
-@router.post("/subscription/sources/{source_ref}/vpn-auto-exclusive", response_model=ApiResponse)
+@router.post(
+    "/subscription/sources/{source_ref}/vpn-auto-exclusive",
+    response_model=ApiResponse,
+    summary="Set VPN Auto exclusivity for a subscription source",
+    description="Queues a source-scoped operation to enable or disable its exclusive VPN Auto behavior. The response includes a job_id; check its status with GET /api/v2/jobs/{job_id}.",
+)
 def set_subscription_vpn_auto_exclusive_endpoint(
     source_ref: str,
     request: SubscriptionVpnAutoExclusiveRequest,
@@ -404,7 +419,12 @@ def set_subscription_vpn_auto_exclusive_endpoint(
     )
 
 
-@router.delete("/subscription/sources/{source_ref}", response_model=ApiResponse)
+@router.delete(
+    "/subscription/sources/{source_ref}",
+    response_model=ApiResponse,
+    summary="Delete a saved subscription source",
+    description="Queues source deletion and the related inventory/runtime reconciliation. The response includes a job_id; deletion is not complete until that job finishes successfully.",
+)
 def delete_subscription_source_endpoint(source_ref: str) -> ApiResponse:
     if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:
         return ApiResponse(
@@ -454,7 +474,12 @@ class ProviderOperationRequest(BaseModel):
     expected_revision: int | None = Field(default=None, ge=1)
 
 
-@router.post("/subscription/sources/{source_ref}/provider", response_model=ApiResponse)
+@router.post(
+    "/subscription/sources/{source_ref}/provider",
+    response_model=ApiResponse,
+    summary="Run a provider operation",
+    description="Queues an operation for the configured provider integration. Depending on action, it may call the provider API or change the selected member, protocol, or preferences. The response includes a job_id for status lookup.",
+)
 def provider_operation_endpoint(source_ref: str, request: ProviderOperationRequest) -> ApiResponse:
     from fwrouter_api.services.provider_jobs import PROVIDER_OPERATION, register_provider_handler
     from fwrouter_api.services.subscription import _subscription_url_for_source_ref
@@ -498,7 +523,12 @@ def _provider_configuration_error(exc: Exception) -> ApiResponse:
     return ApiResponse(ok=False, error={"code": code, "message": code})
 
 
-@router.post("/subscription/sources/{source_ref}/provider/configuration", response_model=ApiResponse)
+@router.post(
+    "/subscription/sources/{source_ref}/provider/configuration",
+    response_model=ApiResponse,
+    summary="Update provider configuration",
+    description="Updates the provider binding for a saved subscription source. An optional api_key replaces the stored provider credential and is excluded from response serialization.",
+)
 def provider_configuration_endpoint(source_ref: str, request: ProviderConfigurationRequest) -> ApiResponse:
     from fwrouter_api.services.provider_managed import save_provider_configuration
     try:
@@ -513,7 +543,12 @@ def provider_configuration_endpoint(source_ref: str, request: ProviderConfigurat
         return _provider_configuration_error(exc)
 
 
-@router.post("/subscription/sources/{source_ref}/provider/configs", response_model=ApiResponse)
+@router.post(
+    "/subscription/sources/{source_ref}/provider/configs",
+    response_model=ApiResponse,
+    summary="Discover provider configurations",
+    description="Performs a bounded read-only discovery request to the configured provider and returns safe configuration identifiers and labels.",
+)
 def provider_configs_endpoint(source_ref: str) -> ApiResponse:
     from fwrouter_api.services.provider_managed import discover_provider_configs
     try:

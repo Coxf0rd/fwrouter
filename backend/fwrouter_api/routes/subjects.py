@@ -65,7 +65,7 @@ def _client_ip_from_request(request: Request) -> str:
     return str(client.host).strip() if client and client.host else ""
 
 
-@router.get("/subjects", response_model=ApiResponse)
+@router.get("/subjects", response_model=ApiResponse, summary='List Subjects')
 def list_subjects_endpoint(
     subject_type: str | None = None,
     is_active: bool | None = None,
@@ -81,7 +81,7 @@ def list_subjects_endpoint(
     return ApiResponse(ok=True, data={"subjects": subjects})
 
 
-@router.get("/subjects/{subject_id}", response_model=ApiResponse)
+@router.get("/subjects/{subject_id}", response_model=ApiResponse, summary='Get Subject Details')
 def get_subject_endpoint(subject_id: str) -> ApiResponse:
     subject = get_subject_with_effective_state(subject_id)
 
@@ -98,13 +98,13 @@ def get_subject_endpoint(subject_id: str) -> ApiResponse:
     return ApiResponse(ok=True, data={"subject": subject})
 
 
-@router.post("/subjects/{subject_id}/proxy-get-check", response_model=ApiResponse)
+@router.post("/subjects/{subject_id}/proxy-get-check", response_model=ApiResponse, summary='Check Subject Proxy Access')
 def subject_proxy_get_check_endpoint(subject_id: str, payload: SubjectProxyGetRequest) -> ApiResponse:
     result = check_subject_proxy_get(subject_id=subject_id, url=payload.url or "https://www.gstatic.com/generate_204", timeout_ms=payload.timeout_ms)
     return ApiResponse(ok=result.get("status") == "success", data={"proxy_get": result})
 
 
-@router.get("/ui/whoami", response_model=ApiResponse)
+@router.get("/ui/whoami", response_model=ApiResponse, summary='Identify the UI Client')
 def get_ui_whoami_endpoint(request: Request) -> ApiResponse:
     client_ip = _client_ip_from_request(request)
     matched_subject = find_subject_by_ip(client_ip)
@@ -124,7 +124,7 @@ def get_ui_whoami_endpoint(request: Request) -> ApiResponse:
     )
 
 
-@router.patch("/subjects/{subject_id}/alias", response_model=ApiResponse)
+@router.patch("/subjects/{subject_id}/alias", response_model=ApiResponse, summary='Set Subject Alias')
 def set_subject_alias_endpoint(subject_id: str, request: SetSubjectAliasRequest) -> ApiResponse:
     subject = update_subject_alias(
         subject_id,
@@ -143,7 +143,7 @@ def set_subject_alias_endpoint(subject_id: str, request: SetSubjectAliasRequest)
     return ApiResponse(ok=True, data={"subject": subject})
 
 
-@router.post("/subjects/{subject_id}/mode", response_model=ApiResponse)
+@router.post("/subjects/{subject_id}/mode", response_model=ApiResponse, summary='Set Subject Mode')
 def set_subject_mode_endpoint(subject_id: str, request: SetSubjectModeRequest) -> ApiResponse:
     intent = (
         "set_subject_user_mode"
@@ -170,7 +170,7 @@ def set_subject_mode_endpoint(subject_id: str, request: SetSubjectModeRequest) -
     return build_job_action_response(job, result_key="subject_mode")
 
 
-@router.delete("/subjects/{subject_id}/mode", response_model=ApiResponse)
+@router.delete("/subjects/{subject_id}/mode", response_model=ApiResponse, summary='Clear Subject User Mode')
 def clear_subject_user_mode_endpoint(
     subject_id: str,
     requested_by: str | None = "api",
@@ -189,7 +189,7 @@ def clear_subject_user_mode_endpoint(
     return build_job_action_response(job, result_key="subject_mode")
 
 
-@router.post("/subjects/sync", response_model=ApiResponse)
+@router.post("/subjects/sync", response_model=ApiResponse, summary='Synchronize Subject Inventory')
 def sync_subject_inventory_endpoint(request: SubjectSyncRequest) -> ApiResponse:
     manager = get_default_job_manager()
     input_data = {

@@ -99,8 +99,8 @@ _SECURE_EVENT_OPENAPI = {
 }
 
 
-@router.get("/events/secure/recent", openapi_extra=_SECURE_EVENT_OPENAPI)
-@router.post("/events/secure/recent", openapi_extra=_SECURE_EVENT_OPENAPI)
+@router.get("/events/secure/recent", openapi_extra=_SECURE_EVENT_OPENAPI, summary='Read Recent Registry-Scoped Events')
+@router.post("/events/secure/recent", openapi_extra=_SECURE_EVENT_OPENAPI, summary='Read Recent Registry-Scoped Events')
 def secure_recent_events_endpoint(request: Request) -> JSONResponse:
     """Read-only registry-scoped projection; POST supports browser Origin semantics."""
     from fwrouter_api.services.secure_event_read_admission import (
@@ -141,7 +141,7 @@ def secure_recent_events_endpoint(request: Request) -> JSONResponse:
             headers=headers,
         )
 
-@router.get("/events/recent")
+@router.get("/events/recent", summary='List Recent Events')
 def list_recent_events_endpoint(
     type: Literal["audit", "operational", "diagnostic"] | None = Query(default=None),
     severity: str | None = None,
@@ -162,7 +162,7 @@ def list_recent_events_endpoint(
     return redact_http_attribution({**events, "summary": summarize_events(events).model_dump(mode="json")})
 
 
-@router.get("/events/{event_id}")
+@router.get("/events/{event_id}", summary='Get Event')
 def get_event_endpoint(event_id: str) -> dict[str, object]:
     event = get_event_by_id(event_id)
     return redact_http_attribution({"event_id": event_id, "found": event is not None, "event": event})

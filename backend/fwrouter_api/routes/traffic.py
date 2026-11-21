@@ -37,12 +37,12 @@ class TrafficCollectRequest(BaseModel):
     samples: list[TrafficCounterSampleRequest] = Field(default_factory=list)
 
 
-@router.get("/traffic/state", response_model=ApiResponse)
+@router.get("/traffic/state", response_model=ApiResponse, summary='Get Traffic State')
 def get_traffic_state_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data={"traffic": get_traffic_accounting_state()})
 
 
-@router.get("/traffic/monthly", response_model=ApiResponse)
+@router.get("/traffic/monthly", response_model=ApiResponse, summary='List Monthly Traffic')
 def list_monthly_traffic_endpoint(
     subject_id: str | None = None,
     period_month: str | None = None,
@@ -60,7 +60,12 @@ def list_monthly_traffic_endpoint(
     )
 
 
-@router.post("/traffic/collect", response_model=ApiResponse)
+@router.post(
+    "/traffic/collect",
+    response_model=ApiResponse,
+    summary="Queue traffic collection",
+    description="Creates a traffic accounting collection job. dry_run requests a preview; run_now defaults to true and starts the job immediately, waiting for its result.",
+)
 def collect_traffic_endpoint(request: TrafficCollectRequest) -> ApiResponse:
     manager = get_default_job_manager()
     input_data = {

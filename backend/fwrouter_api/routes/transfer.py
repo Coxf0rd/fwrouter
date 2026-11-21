@@ -59,12 +59,12 @@ def export_control_plane_endpoint(
     return ApiResponse(ok=True, data=exported)
 
 
-@router.get("/transfer/control-plane/files", response_model=ApiResponse)
+@router.get("/transfer/control-plane/files", response_model=ApiResponse, summary='List Control Plane Snapshot Files')
 def list_control_plane_snapshot_files_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data=list_control_plane_snapshot_files())
 
 
-@router.post("/transfer/control-plane/validate", response_model=ApiResponse)
+@router.post("/transfer/control-plane/validate", response_model=ApiResponse, summary='Validate Control Plane')
 def validate_control_plane_endpoint(request: ControlPlaneSnapshotRequest) -> ApiResponse:
     resolved = resolve_control_plane_snapshot_source(
         snapshot=request.snapshot,
@@ -77,7 +77,7 @@ def validate_control_plane_endpoint(request: ControlPlaneSnapshotRequest) -> Api
     return ApiResponse(ok=validation["ok"], data={"validation": validation, "source": source})
 
 
-@router.post("/transfer/control-plane/plan", response_model=ApiResponse)
+@router.post("/transfer/control-plane/plan", response_model=ApiResponse, summary='Plan a control-plane import')
 def plan_control_plane_endpoint(request: ControlPlanePlanRequest) -> ApiResponse:
     resolved = resolve_control_plane_snapshot_source(
         snapshot=request.snapshot,

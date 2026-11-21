@@ -113,7 +113,7 @@ class GlobalManualCheckRequest(ManualCheckRequest):
     scope: Literal["admin_all", "user_global", "user_vpn_auto"]
 
 
-@router.get("/servers", response_model=ApiResponse)
+@router.get("/servers", response_model=ApiResponse, summary='List Servers')
 def list_servers_endpoint(
     inventory_state: str | None = None,
     vpn_auto: bool | None = None,
@@ -133,13 +133,13 @@ def list_servers_endpoint(
     return ApiResponse(ok=True, data={"servers": servers})
 
 
-@router.post("/servers/sync/mihomo", response_model=ApiResponse)
+@router.post("/servers/sync/mihomo", response_model=ApiResponse, summary='Synchronize Servers from Mihomo')
 def sync_servers_from_mihomo_endpoint() -> ApiResponse:
     result = sync_servers_from_mihomo()
     return ApiResponse(ok=True, data={"sync": result})
 
 
-@router.get("/servers/{server_id}", response_model=ApiResponse)
+@router.get("/servers/{server_id}", response_model=ApiResponse, summary='Get Server Details')
 def get_server_endpoint(server_id: str) -> ApiResponse:
     server = get_server_api(server_id)
 
@@ -156,7 +156,7 @@ def get_server_endpoint(server_id: str) -> ApiResponse:
     return ApiResponse(ok=True, data={"server": server})
 
 
-@router.post("/servers/manual-check", response_model=ApiResponse)
+@router.post("/servers/manual-check", response_model=ApiResponse, summary='Run Global Server Check')
 def global_manual_check_endpoint(request: GlobalManualCheckRequest) -> ApiResponse:
     result = run_global_manual_check(
         scope=request.scope, timeout_ms=request.timeout_ms, checked_by=request.checked_by,
@@ -169,7 +169,7 @@ def global_manual_check_endpoint(request: GlobalManualCheckRequest) -> ApiRespon
     return ApiResponse(ok=True, data={"manual_check": result})
 
 
-@router.get("/servers/{server_id}/members", response_model=ApiResponse)
+@router.get("/servers/{server_id}/members", response_model=ApiResponse, summary='Get Server Members')
 def get_server_members_endpoint(server_id: str) -> ApiResponse:
     topology = get_runtime_logical_topology(server_id)
     if topology is None:
@@ -177,7 +177,7 @@ def get_server_members_endpoint(server_id: str) -> ApiResponse:
     return ApiResponse(ok=True, data={"topology": topology})
 
 
-@router.post("/servers/{server_id}/manual-check", response_model=ApiResponse)
+@router.post("/servers/{server_id}/manual-check", response_model=ApiResponse, summary='Check Server Manually')
 def manual_check_server_endpoint(server_id: str, request: ManualCheckRequest) -> ApiResponse:
     result = run_manual_check(
         server_id,
@@ -196,25 +196,25 @@ def manual_check_server_endpoint(server_id: str, request: ManualCheckRequest) ->
     return ApiResponse(ok=True, data={"manual_check": result})
 
 
-@router.post("/servers/{server_id}/ping", response_model=ApiResponse)
+@router.post("/servers/{server_id}/ping", response_model=ApiResponse, summary='Ping Logical Server')
 def ping_logical_server_endpoint(server_id: str, request: MemberPingRequest) -> ApiResponse:
     result = check_server_delay(server_id, update_state=True, checked_by="api_logical", timeout_ms=request.timeout_ms)
     return ApiResponse(ok=bool(result.get("ok")), data={"logical_ping": result})
 
 
-@router.post("/servers/{server_id}/members/{member_id}/ping", response_model=ApiResponse)
+@router.post("/servers/{server_id}/members/{member_id}/ping", response_model=ApiResponse, summary='Ping Server Member')
 def ping_server_member_endpoint(server_id: str, member_id: str, request: MemberPingRequest) -> ApiResponse:
     result = check_member_delay(server_id, member_id, timeout_ms=request.timeout_ms)
     return ApiResponse(ok=bool(result.get("ok")), data={"member_ping": result})
 
 
-@router.post("/servers/member-probes", response_model=ApiResponse)
+@router.post("/servers/member-probes", response_model=ApiResponse, summary='Probe Server Members')
 def probe_server_members_endpoint(request: MemberProbeRequest) -> ApiResponse:
     result = probe_members(budget=request.budget, timeout_ms=request.timeout_ms)
     return ApiResponse(ok=bool(result.get("ok")), data={"member_probes": result})
 
 
-@router.patch("/servers/{server_id}/preferences", response_model=ApiResponse)
+@router.patch("/servers/{server_id}/preferences", response_model=ApiResponse, summary='Update Server Preferences')
 def update_server_preferences_endpoint(
     server_id: str,
     request: UpdateServerPreferencesRequest,
@@ -241,7 +241,7 @@ def update_server_preferences_endpoint(
     return ApiResponse(ok=True, data={"server_preferences": result})
 
 
-@router.put("/servers/vpn-auto", response_model=ApiResponse)
+@router.put("/servers/vpn-auto", response_model=ApiResponse, summary='Replace VPN Auto Servers')
 def replace_vpn_auto_servers_endpoint(
     request: ReplaceVpnAutoServersRequest,
 ) -> ApiResponse:
@@ -264,7 +264,7 @@ def replace_vpn_auto_servers_endpoint(
     return ApiResponse(ok=True, data={"vpn_auto": result})
 
 
-@router.post("/servers/custom/https", response_model=ApiResponse)
+@router.post("/servers/custom/https", response_model=ApiResponse, summary='Create Custom HTTPS Proxy Server')
 def create_custom_https_proxy_server_endpoint(
     request: CustomHttpsProxyServerRequest,
 ) -> ApiResponse:
@@ -295,7 +295,7 @@ def create_custom_https_proxy_server_endpoint(
     return ApiResponse(ok=True, data={"custom_server": result})
 
 
-@router.put("/servers/custom/https/{server_id}", response_model=ApiResponse)
+@router.put("/servers/custom/https/{server_id}", response_model=ApiResponse, summary='Update Custom HTTPS Proxy Server')
 def update_custom_https_proxy_server_endpoint(
     server_id: str,
     request: CustomHttpsProxyServerRequest,
@@ -328,14 +328,14 @@ def update_custom_https_proxy_server_endpoint(
     return ApiResponse(ok=True, data={"custom_server": result})
 
 
-@router.post("/servers/custom/proxy", response_model=ApiResponse)
+@router.post("/servers/custom/proxy", response_model=ApiResponse, summary='Create Custom Proxy Server')
 def create_custom_proxy_server_endpoint(
     request: CustomHttpsProxyServerRequest,
 ) -> ApiResponse:
     return create_custom_https_proxy_server_endpoint(request)
 
 
-@router.put("/servers/custom/proxy/{server_id}", response_model=ApiResponse)
+@router.put("/servers/custom/proxy/{server_id}", response_model=ApiResponse, summary='Update Custom Proxy Server')
 def update_custom_proxy_server_endpoint(
     server_id: str,
     request: CustomHttpsProxyServerRequest,
@@ -343,7 +343,7 @@ def update_custom_proxy_server_endpoint(
     return update_custom_https_proxy_server_endpoint(server_id, request)
 
 
-@router.delete("/servers/custom/proxy/{server_id}", response_model=ApiResponse)
+@router.delete("/servers/custom/proxy/{server_id}", response_model=ApiResponse, summary='Delete Custom Proxy Server')
 def delete_custom_proxy_server_endpoint(
     server_id: str,
     requested_by: str = Query(default="api"),
@@ -351,7 +351,7 @@ def delete_custom_proxy_server_endpoint(
     return delete_custom_https_proxy_server_endpoint(server_id, requested_by)
 
 
-@router.delete("/servers/custom/https/{server_id}", response_model=ApiResponse)
+@router.delete("/servers/custom/https/{server_id}", response_model=ApiResponse, summary='Delete Custom HTTPS Proxy Server')
 def delete_custom_https_proxy_server_endpoint(
     server_id: str,
     requested_by: str = Query(default="api"),
@@ -369,7 +369,7 @@ def delete_custom_https_proxy_server_endpoint(
     return ApiResponse(ok=True, data={"custom_server": result})
 
 
-@router.get("/routing/global", response_model=ApiResponse)
+@router.get("/routing/global", response_model=ApiResponse, summary='Get Global Routing')
 def get_global_routing_endpoint() -> ApiResponse:
     state = get_routing_global_state(expire_ttl=False)
 
@@ -398,7 +398,7 @@ def get_global_routing_endpoint() -> ApiResponse:
     )
 
 
-@router.post("/routing/global", response_model=ApiResponse)
+@router.post("/routing/global", response_model=ApiResponse, summary='Update Global Routing')
 def update_global_routing_endpoint(request: UpdateGlobalRoutingRequest) -> ApiResponse:
     has_mode = request.mode is not None
     has_selective = request.selective_default is not None
@@ -449,7 +449,7 @@ def update_global_routing_endpoint(request: UpdateGlobalRoutingRequest) -> ApiRe
     return build_job_action_response(job, result_key="routing_mutation")
 
 
-@router.post("/routing/global/fixed-server", response_model=ApiResponse)
+@router.post("/routing/global/fixed-server", response_model=ApiResponse, summary='Set Global Fixed Server')
 def set_global_fixed_server_endpoint(
     request: SetGlobalFixedServerRequest,
 ) -> ApiResponse:
@@ -490,7 +490,7 @@ def set_global_fixed_server_endpoint(
     return build_job_action_response(job, result_key="global_fixed_server")
 
 
-@router.delete("/routing/global/fixed-server", response_model=ApiResponse)
+@router.delete("/routing/global/fixed-server", response_model=ApiResponse, summary='Clear Global Fixed Server')
 def clear_global_fixed_server_endpoint(
     confirm_switch: bool = Query(default=False),
     requested_by: str = Query(default="admin"),
@@ -548,13 +548,13 @@ def clear_global_fixed_server_endpoint(
     return ApiResponse(ok=True, data={"global_fixed_server": result})
 
 
-@router.get("/subjects/{subject_id}/server-override", response_model=ApiResponse)
+@router.get("/subjects/{subject_id}/server-override", response_model=ApiResponse, summary='Get Subject Server Override')
 def get_subject_server_override_endpoint(subject_id: str) -> ApiResponse:
     override = get_subject_server_override(subject_id)
     return ApiResponse(ok=True, data={"server_override": override})
 
 
-@router.post("/subjects/{subject_id}/server-override", response_model=ApiResponse)
+@router.post("/subjects/{subject_id}/server-override", response_model=ApiResponse, summary='Set Subject Server Override')
 def set_subject_server_override_endpoint(
     subject_id: str,
     request: SetSubjectServerOverrideRequest,
@@ -576,7 +576,7 @@ def set_subject_server_override_endpoint(
     return build_job_action_response(job, result_key="server_override")
 
 
-@router.delete("/subjects/{subject_id}/server-override", response_model=ApiResponse)
+@router.delete("/subjects/{subject_id}/server-override", response_model=ApiResponse, summary='Clear Subject Server Override')
 def clear_subject_server_override_endpoint(subject_id: str) -> ApiResponse:
     try:
         job = submit_apply_mutation(

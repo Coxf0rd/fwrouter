@@ -89,6 +89,22 @@ API_PREFIX = "/api/v2"
 API_BIND_HOST = "127.0.0.1"
 API_BIND_PORT = 5000
 
+OPENAPI_TAGS = [
+    {"name": "System & State", "description": "Read system health, configuration state, and persisted status."},
+    {"name": "Core & Modules", "description": "Core routing policy and managed module configuration and status."},
+    {"name": "Events & Logs", "description": "Read operational events and diagnostic logs."},
+    {"name": "Jobs & Operations", "description": "Start and inspect background work and operator operations. POST operations may change state or run work."},
+    {"name": "Subjects & Servers", "description": "Manage routed subjects, servers, and their relationships."},
+    {"name": "Routing & Rules", "description": "Inspect and reconcile routing rules and policy."},
+    {"name": "Subscriptions", "description": "Refresh subscription inventory and manage subscription-related operations."},
+    {"name": "Runtime", "description": "Inspect and manage runtime integrations, including Mihomo and Xray."},
+    {"name": "VPN Automation", "description": "VPN selection, health observations, watchdog status, and server probes."},
+    {"name": "Traffic", "description": "Read traffic observations and history."},
+    {"name": "Data Transfer", "description": "Validate, export, and import control-plane data. Export options may write files or include sensitive values; import changes state."},
+    {"name": "UI Management API", "description": "Management endpoints used by the UI for settings, inventory, and client views."},
+    {"name": "Public Subscriptions", "description": "Token-based subscription downloads served by the public subscription gateway."},
+]
+
 
 def _startup_tasks_enabled() -> bool:
     raw = os.getenv("FWROUTER_STARTUP_TASKS_ENABLED", "true").strip().lower()
@@ -159,9 +175,11 @@ def create_app(
             "subscriptions separately."
         ),
         debug=settings.debug,
+        openapi_tags=OPENAPI_TAGS,
         docs_url=f"{API_PREFIX}/docs",
         redoc_url=f"{API_PREFIX}/redoc",
         openapi_url=f"{API_PREFIX}/openapi.json",
+        swagger_ui_parameters={"docExpansion": "none"},
         lifespan=lifespan,
     )
 
@@ -189,31 +207,31 @@ def create_app(
             reset_event_context(context_token)
             reset_api_request_id(api_request_token)
 
-    app.include_router(system_router, prefix=API_PREFIX)
-    app.include_router(system_subjects_router, prefix=API_PREFIX)
-    app.include_router(core_router, prefix=API_PREFIX)
-    app.include_router(events_router, prefix=API_PREFIX)
-    app.include_router(modules_router, prefix=API_PREFIX)
-    app.include_router(jobs_router, prefix=API_PREFIX)
-    app.include_router(operations_router, prefix=API_PREFIX)
-    app.include_router(subjects_router, prefix=API_PREFIX)
-    app.include_router(servers_router, prefix=API_PREFIX)
-    app.include_router(state_router, prefix=API_PREFIX)
-    app.include_router(reconcile_router, prefix=API_PREFIX)
-    app.include_router(diagnose_router, prefix=API_PREFIX)
-    app.include_router(rules_router, prefix=API_PREFIX)
-    app.include_router(subscription_router, prefix=API_PREFIX)
-    app.include_router(logs_router, prefix=API_PREFIX)
-    app.include_router(runtime_router, prefix=API_PREFIX)
-    app.include_router(mihomo_router, prefix=API_PREFIX)
-    app.include_router(selector_router, prefix=API_PREFIX)
-    app.include_router(watchdog_router, prefix=API_PREFIX)
-    app.include_router(server_ping_router, prefix=API_PREFIX)
-    app.include_router(traffic_router, prefix=API_PREFIX)
-    app.include_router(transfer_router, prefix=API_PREFIX)
-    app.include_router(ui_router, prefix=API_PREFIX)
-    app.include_router(xray_router, prefix=API_PREFIX)
-    app.include_router(public_xray_router)
+    app.include_router(system_router, prefix=API_PREFIX, tags=["System & State"])
+    app.include_router(system_subjects_router, prefix=API_PREFIX, tags=["System & State"])
+    app.include_router(core_router, prefix=API_PREFIX, tags=["Core & Modules"])
+    app.include_router(events_router, prefix=API_PREFIX, tags=["Events & Logs"])
+    app.include_router(modules_router, prefix=API_PREFIX, tags=["Core & Modules"])
+    app.include_router(jobs_router, prefix=API_PREFIX, tags=["Jobs & Operations"])
+    app.include_router(operations_router, prefix=API_PREFIX, tags=["Jobs & Operations"])
+    app.include_router(subjects_router, prefix=API_PREFIX, tags=["Subjects & Servers"])
+    app.include_router(servers_router, prefix=API_PREFIX, tags=["Subjects & Servers"])
+    app.include_router(state_router, prefix=API_PREFIX, tags=["System & State"])
+    app.include_router(reconcile_router, prefix=API_PREFIX, tags=["Routing & Rules"])
+    app.include_router(diagnose_router, prefix=API_PREFIX, tags=["Routing & Rules"])
+    app.include_router(rules_router, prefix=API_PREFIX, tags=["Routing & Rules"])
+    app.include_router(subscription_router, prefix=API_PREFIX, tags=["Subscriptions"])
+    app.include_router(logs_router, prefix=API_PREFIX, tags=["Events & Logs"])
+    app.include_router(runtime_router, prefix=API_PREFIX, tags=["Runtime"])
+    app.include_router(mihomo_router, prefix=API_PREFIX, tags=["Runtime"])
+    app.include_router(selector_router, prefix=API_PREFIX, tags=["VPN Automation"])
+    app.include_router(watchdog_router, prefix=API_PREFIX, tags=["VPN Automation"])
+    app.include_router(server_ping_router, prefix=API_PREFIX, tags=["VPN Automation"])
+    app.include_router(traffic_router, prefix=API_PREFIX, tags=["Traffic"])
+    app.include_router(transfer_router, prefix=API_PREFIX, tags=["Data Transfer"])
+    app.include_router(ui_router, prefix=API_PREFIX, tags=["UI Management API"])
+    app.include_router(xray_router, prefix=API_PREFIX, tags=["Runtime"])
+    app.include_router(public_xray_router, tags=["Public Subscriptions"])
 
     # Describe existing admission guards without adding authentication dependencies
     # or changing their request parsing and rejection order.

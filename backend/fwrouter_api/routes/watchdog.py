@@ -37,7 +37,12 @@ class VpnWatchdogAutoCheckRequest(BaseModel):
     log_events: bool = False
 
 
-@router.post("/watchdog/vpn/check", response_model=ApiResponse)
+@router.post(
+    "/watchdog/vpn/check",
+    response_model=ApiResponse,
+    summary="Run a VPN watchdog check",
+    description="Runs bounded VPN health checks and records requested ping observations. Automatic selector switching is attempted only when both allow_switch and confirm_switch are true.",
+)
 def check_vpn_watchdog_endpoint(request: VpnWatchdogCheckRequest) -> ApiResponse:
     if request.allow_switch and not request.confirm_switch:
         return ApiResponse(
@@ -62,7 +67,12 @@ def check_vpn_watchdog_endpoint(request: VpnWatchdogCheckRequest) -> ApiResponse
     return ApiResponse(ok=result["ok"], data={"watchdog": result})
 
 
-@router.post("/watchdog/vpn/auto-check", response_model=ApiResponse)
+@router.post(
+    "/watchdog/vpn/auto-check",
+    response_model=ApiResponse,
+    summary="Run an automatic VPN watchdog check",
+    description="Runs the automatic VPN health and traffic checks. Selector switching requires confirm_switch=true even when allow_switch is true.",
+)
 def check_vpn_watchdog_auto_endpoint(request: VpnWatchdogAutoCheckRequest) -> ApiResponse:
     if request.allow_switch and not request.confirm_switch:
         return ApiResponse(
