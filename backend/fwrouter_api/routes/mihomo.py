@@ -18,19 +18,24 @@ from fwrouter_api.services.mihomo_runtime import (
 router = APIRouter()
 
 
-@router.get("/mihomo", response_model=ApiResponse)
+@router.get("/mihomo", response_model=ApiResponse, summary='Get Mihomo Status')
 def get_mihomo_endpoint() -> ApiResponse:
     status = get_mihomo_status()
     return ApiResponse(ok=True, data={"mihomo": status})
 
 
-@router.post("/mihomo/sync", response_model=ApiResponse)
+@router.post(
+    "/mihomo/sync",
+    response_model=ApiResponse,
+    summary="Sync Mihomo server inventory",
+    description="Reads the current server inventory from Mihomo and synchronizes that inventory into SQLite. This operation does not request a runtime restart.",
+)
 def sync_mihomo_endpoint() -> ApiResponse:
     result = sync_mihomo_inventory()
     return ApiResponse(ok=True, data={"sync": result})
 
 
-@router.get("/mihomo/config", response_model=ApiResponse)
+@router.get("/mihomo/config", response_model=ApiResponse, summary='Get Mihomo Config')
 def get_mihomo_config_endpoint(
     include_config: bool = Query(
         default=False,
@@ -41,7 +46,12 @@ def get_mihomo_config_endpoint(
     return ApiResponse(ok=True, data={"config": status})
 
 
-@router.post("/mihomo/config/promote", response_model=ApiResponse)
+@router.post(
+    "/mihomo/config/promote",
+    response_model=ApiResponse,
+    summary="Promote a validated Mihomo configuration",
+    description="Validates and promotes the current Mihomo candidate configuration through the existing runtime owner. The response reports whether promotion and runtime verification succeeded.",
+)
 def promote_mihomo_config_endpoint() -> ApiResponse:
     result = validate_and_promote_mihomo_candidate_config()
     if not result["ok"]:
@@ -60,7 +70,12 @@ def promote_mihomo_config_endpoint() -> ApiResponse:
     )
 
 
-@router.post("/mihomo/config/reconcile", response_model=ApiResponse)
+@router.post(
+    "/mihomo/config/reconcile",
+    response_model=ApiResponse,
+    summary="Reconcile Mihomo runtime configuration",
+    description="Reconciles the current desired Mihomo configuration with the managed runtime and reports the selected action and verification result.",
+)
 def reconcile_mihomo_config_endpoint() -> ApiResponse:
     result = reconcile_mihomo_runtime()
 
@@ -76,13 +91,18 @@ def reconcile_mihomo_config_endpoint() -> ApiResponse:
 
     return ApiResponse(ok=True, data={"mihomo_reconcile": result})
 
-@router.get("/mihomo/container", response_model=ApiResponse)
+@router.get("/mihomo/container", response_model=ApiResponse, summary='Get Mihomo Container')
 def get_mihomo_container_endpoint() -> ApiResponse:
     status = get_mihomo_container_status()
     return ApiResponse(ok=status["ok"], data={"container": status})
 
 
-@router.post("/mihomo/restart", response_model=ApiResponse)
+@router.post(
+    "/mihomo/restart",
+    response_model=ApiResponse,
+    summary="Restart the Mihomo container",
+    description="Explicitly restarts the managed Mihomo container. Existing proxy connections may be interrupted while the runtime returns to service.",
+)
 def restart_mihomo_endpoint() -> ApiResponse:
     result = restart_mihomo_container()
 

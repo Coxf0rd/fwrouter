@@ -28,13 +28,13 @@ class SetModuleLifecycleModeRequest(BaseModel):
     requested_by: str | None = "api"
 
 
-@router.get("/modules", response_model=ApiResponse)
+@router.get("/modules", response_model=ApiResponse, summary='List Modules')
 def list_modules() -> ApiResponse:
     modules = fetch_modules()
     return ApiResponse(ok=True, data={"modules": modules})
 
 
-@router.get("/modules/{module_name}", response_model=ApiResponse)
+@router.get("/modules/{module_name}", response_model=ApiResponse, summary='Get Module Details')
 def get_module(module_name: str) -> ApiResponse:
     modules = fetch_modules()
     module = find_module(modules, module_name)
@@ -52,7 +52,12 @@ def get_module(module_name: str) -> ApiResponse:
     return ApiResponse(ok=True, data={"module": module})
 
 
-@router.post("/modules/{module_name}/desired-state", response_model=ApiResponse)
+@router.post(
+    "/modules/{module_name}/desired-state",
+    response_model=ApiResponse,
+    summary="Set a module's desired state",
+    description="Persists the module's enabled or disabled intent. run_now=true (the default) immediately runs the existing lifecycle action; false updates intent without invoking that action in this request.",
+)
 def set_module_desired_state_endpoint(
     module_name: str,
     request: SetModuleDesiredStateRequest,
@@ -86,7 +91,12 @@ def set_module_desired_state_endpoint(
     return ApiResponse(ok=True, data=result)
 
 
-@router.post("/modules/{module_name}/lifecycle-mode", response_model=ApiResponse)
+@router.post(
+    "/modules/{module_name}/lifecycle-mode",
+    response_model=ApiResponse,
+    summary="Set a module's lifecycle mode",
+    description="Changes whether FWRouter manages a module lifecycle, observes it, or leaves it unmanaged. This updates persisted module configuration.",
+)
 def set_module_lifecycle_mode_endpoint(
     module_name: str,
     request: SetModuleLifecycleModeRequest,

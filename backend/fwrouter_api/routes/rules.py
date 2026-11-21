@@ -41,7 +41,7 @@ class FullRulesUpdateRequest(BaseModel):
     run_now: bool = True
 
 
-@router.get("/rules", response_model=ApiResponse)
+@router.get("/rules", response_model=ApiResponse, summary='List Routing Rules')
 def get_rules_endpoint() -> ApiResponse:
     overview = get_rules_overview()
     return ApiResponse(
@@ -53,18 +53,18 @@ def get_rules_endpoint() -> ApiResponse:
     )
 
 
-@router.get("/rules/summary", response_model=ApiResponse)
+@router.get("/rules/summary", response_model=ApiResponse, summary='Get Rules Summary')
 def get_rules_summary_endpoint() -> ApiResponse:
     summary = get_rules_summary()
     return ApiResponse(ok=True, data={"rules": summary})
 
 
-@router.get("/rules/effective", response_model=ApiResponse)
+@router.get("/rules/effective", response_model=ApiResponse, summary='Get Effective Rules')
 def get_effective_rules_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data={"rules": get_effective_rules()})
 
 
-@router.post("/rules/manual/validate", response_model=ApiResponse)
+@router.post("/rules/manual/validate", response_model=ApiResponse, summary='Validate Manual Rules')
 def validate_manual_rules_endpoint(request: ManualRulesRequest) -> ApiResponse:
     validation = validate_manual_rules(request.text)
     return ApiResponse(
@@ -82,7 +82,7 @@ def validate_manual_rules_endpoint(request: ManualRulesRequest) -> ApiResponse:
     )
 
 
-@router.post("/rules/manual", response_model=ApiResponse)
+@router.post("/rules/manual", response_model=ApiResponse, summary='Save Manual Rules Draft')
 def save_manual_rules_draft_endpoint(request: ManualRulesRequest) -> ApiResponse:
     overview = save_manual_draft(request.text, requested_by=request.requested_by or "api")
     validation: dict[str, Any] = overview["manual"]["draft_validation"]
@@ -102,7 +102,7 @@ def save_manual_rules_draft_endpoint(request: ManualRulesRequest) -> ApiResponse
     )
 
 
-@router.post("/rules/manual/apply", response_model=ApiResponse)
+@router.post("/rules/manual/apply", response_model=ApiResponse, summary='Apply Manual Rules')
 def apply_manual_rules_endpoint(request: ApplyManualRulesRequest) -> ApiResponse:
     try:
         job = submit_apply_mutation(
@@ -117,7 +117,7 @@ def apply_manual_rules_endpoint(request: ApplyManualRulesRequest) -> ApiResponse
     return build_job_action_response(job, result_key="rules_apply")
 
 
-@router.post("/rules/full-update", response_model=ApiResponse)
+@router.post("/rules/full-update", response_model=ApiResponse, summary='Run Rules Full Update')
 def rules_full_update_endpoint(request: FullRulesUpdateRequest) -> ApiResponse:
     try:
         job = submit_rules_full_update(
@@ -155,7 +155,7 @@ def rules_full_update_endpoint(request: FullRulesUpdateRequest) -> ApiResponse:
     return ApiResponse(ok=True, data={"job": job, **payload})
 
 
-@router.get("/rules/jobs/{job_id}", response_model=ApiResponse)
+@router.get("/rules/jobs/{job_id}", response_model=ApiResponse, summary='Get Rules Job')
 def get_rules_job_endpoint(job_id: str) -> ApiResponse:
     job = get_job(job_id)
     if job is None:

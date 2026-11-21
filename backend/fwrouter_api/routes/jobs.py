@@ -66,7 +66,12 @@ class CreateJobRequest(BaseModel):
     run_now: bool = False
 
 
-@router.get("/jobs", response_model=ApiResponse)
+@router.get(
+    "/jobs",
+    response_model=ApiResponse,
+    summary="List recent background jobs",
+    description="Read recent job records, optionally filtered by job type or status.",
+)
 def list_recent_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     job_type: str | None = None,
@@ -76,7 +81,61 @@ def list_recent_jobs(
     return _safe_response(ok=True, data={"jobs": jobs})
 
 
-@router.post("/jobs", response_model=ApiResponse)
+@router.post(
+    "/jobs",
+    response_model=ApiResponse,
+    summary="Queue a background job",
+    description=(
+        "Creates a job record. With run_now=false, it remains queued; use POST "
+        "/api/v2/jobs/{job_id}/run to start it. run_now=true starts it immediately and waits for completion. "
+        "Use GET /api/v2/jobs/{job_id} to inspect its recorded state."
+    ),
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "queue_refresh": {
+                            "summary": "Queue a subscription refresh",
+                            "description": "Creates background work when submitted; run_now=false does not wait for completion.",
+                            "value": {
+                                "job_type": "subscription_refresh",
+                                "requested_by": "swagger-example",
+                                "run_now": False,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+    responses={
+        "200": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "queued_job": {
+                            "summary": "Queued subscription refresh",
+                            "value": {
+                                "ok": True,
+                                "data": {
+                                    "job": {
+                                        "job_id": "example-job-id",
+                                        "job_type": "subscription_refresh",
+                                        "status": "queued",
+                                    },
+                                    "status": "queued",
+                                    "error": None,
+                                },
+                                "error": None,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+)
 def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
     if request.job_type not in SAFE_API_JOB_TYPES:
         return _safe_response(
@@ -143,7 +202,7 @@ def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
     )
 
 
-@router.get("/jobs/{job_id}", response_model=ApiResponse)
+@router.get("/jobs/{job_id}", response_model=ApiResponse, summary='Get Job Detail')
 def get_job_detail(job_id: str) -> ApiResponse:
     job = get_job(job_id)
 
@@ -167,7 +226,12 @@ def get_job_detail(job_id: str) -> ApiResponse:
     )
 
 
-@router.post("/jobs/{job_id}/run", response_model=ApiResponse)
+@router.post(
+    "/jobs/{job_id}/run",
+    response_model=ApiResponse,
+    summary="Run a queued job",
+    description="Starts the specified eligible queued job and waits for its result. Some job types are restricted to the API-safe allowlist.",
+)
 def run_job_endpoint(job_id: str) -> ApiResponse:
     manager = get_default_job_manager()
     job = manager.get_job(job_id)

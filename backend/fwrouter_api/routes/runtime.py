@@ -12,13 +12,13 @@ from fwrouter_api.services.runtime import (
 router = APIRouter()
 
 
-@router.get("/runtime", response_model=ApiResponse)
+@router.get("/runtime", response_model=ApiResponse, summary='Get Runtime Status')
 def get_runtime_endpoint() -> ApiResponse:
     runtime = get_runtime_summary()
     return ApiResponse(ok=True, data={"runtime": runtime})
 
 
-@router.get("/runtime/scoped-egress", response_model=ApiResponse)
+@router.get("/runtime/scoped-egress", response_model=ApiResponse, summary='Get Scoped Egress Runtime')
 def get_scoped_egress_runtime_endpoint() -> ApiResponse:
     scoped_egress = get_scoped_egress_runtime_summary()
     return ApiResponse(ok=True, data={"scoped_egress": scoped_egress})

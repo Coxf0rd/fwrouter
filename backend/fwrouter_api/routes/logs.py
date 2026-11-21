@@ -71,7 +71,7 @@ def _coalesce_adjacent_ui_duplicates(
     return coalesced
 
 
-@router.get("/logs/operational", response_model=ApiResponse)
+@router.get("/logs/operational", response_model=ApiResponse, summary='List Operational Logs')
 def list_operational_logs_endpoint(
     limit: int = Query(default=100, ge=1, le=500),
     level: str | None = None,
@@ -97,7 +97,7 @@ def list_operational_logs_endpoint(
     )
 
 
-@router.get("/logs/technical", response_model=ApiResponse)
+@router.get("/logs/technical", response_model=ApiResponse, summary='List Technical Logs')
 def list_technical_logs_endpoint(
     limit: int = Query(default=100, ge=1, le=500),
     level: str | None = None,

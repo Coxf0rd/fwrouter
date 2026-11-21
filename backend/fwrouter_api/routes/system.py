@@ -14,8 +14,65 @@ from fwrouter_api.services.database_schema_read_model import get_cached_schema_s
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_HEALTH_RESPONSE_EXAMPLE = {
+    "ok": True,
+    "data": {
+        "service": "fwrouter-api",
+        "version": "x.y.z",
+        "status": "healthy",
+        "environment": "example",
+        "database": {
+            "status": "healthy",
+            "schema": {
+                "ok": True,
+                "status": "ok",
+                "expected_schema_version": "27",
+                "actual_schema_version": "27",
+                "rebuild_required": False,
+                "problem_count": 0,
+                "drifted_tables": [],
+            },
+        },
+    },
+    "error": None,
+}
 
-@router.get("/health", response_model=ApiResponse)
+_SYSTEM_SUMMARY_EXAMPLE = {
+    "ok": True,
+    "data": {
+        "core": {
+            "desired_state": "enabled",
+            "runtime_state": "running",
+            "apply_state": "clean",
+        },
+        "backend": {"status": "healthy", "version": "x.y.z", "environment": "example"},
+        "modules": [{"module_name": "core", "desired_state": "enabled", "runtime_state": "running"}],
+        "warnings": [],
+    },
+    "error": None,
+}
+
+
+@router.get(
+    "/health",
+    response_model=ApiResponse,
+    summary="Read API and database health",
+    description="Read-only API and SQLite schema status. A healthy response does not establish dataplane or external connectivity.",
+    responses={
+        "200": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "healthy": {
+                            "summary": "Healthy API and database",
+                            "value": _HEALTH_RESPONSE_EXAMPLE,
+                        },
+                    },
+                },
+            },
+        },
+    },
+)
 def health() -> ApiResponse:
     settings = get_settings()
     db_status = "unknown"
@@ -62,7 +119,27 @@ def health() -> ApiResponse:
     )
 
 
-@router.get("/system/summary", response_model=ApiResponse)
+@router.get(
+    "/system/summary",
+    response_model=ApiResponse,
+    summary="Read system and service status",
+    description="Read-only summary of Core policy state, backend readiness, modules, and current warnings. Values reflect current observations and persisted state.",
+    responses={
+        "200": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "system_status": {
+                            "summary": "System and service status",
+                            "description": "Illustrative compact values; the live endpoint returns additional policy and module details.",
+                            "value": _SYSTEM_SUMMARY_EXAMPLE,
+                        },
+                    },
+                },
+            },
+        },
+    },
+)
 def system_summary() -> ApiResponse:
     try:
         with readonly_db_session_scope(), db_session() as connection:

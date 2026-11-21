@@ -12,7 +12,7 @@ from fwrouter_api.services.api_client_attribution import redact_http_attribution
 router = APIRouter()
 
 
-@router.get("/diagnose")
+@router.get("/diagnose", summary='Read Diagnostics')
 def get_diagnose_endpoint(
     view: Literal["full", "summary"] = Query(default="full"),
 ) -> dict[str, object]:

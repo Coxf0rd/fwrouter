@@ -63,7 +63,7 @@ def _create_or_conflict(
     return ApiResponse(ok=True, data={"job": job})
 
 
-@router.post("/apply/dry-run", response_model=ApiResponse)
+@router.post("/apply/dry-run", response_model=ApiResponse, summary="Preview a control-plane apply")
 def apply_control_plane_dry_run_endpoint(request: ApplyDryRunRequest) -> ApiResponse:
     return _create_or_conflict(
         job_type="apply_control_plane_dry_run",
@@ -74,7 +74,12 @@ def apply_control_plane_dry_run_endpoint(request: ApplyDryRunRequest) -> ApiResp
     )
 
 
-@router.post("/maintenance/cleanup", response_model=ApiResponse)
+@router.post(
+    "/maintenance/cleanup",
+    response_model=ApiResponse,
+    summary="Queue maintenance cleanup",
+    description="Creates a maintenance cleanup job. The dry_run field controls whether it reports candidates only or performs the cleanup; run_now controls immediate execution and waiting.",
+)
 def maintenance_cleanup_endpoint(request: MaintenanceCleanupRequest) -> ApiResponse:
     return _create_or_conflict(
         job_type="maintenance_cleanup",
@@ -85,7 +90,12 @@ def maintenance_cleanup_endpoint(request: MaintenanceCleanupRequest) -> ApiRespo
     )
 
 
-@router.post("/full-refresh", response_model=ApiResponse)
+@router.post(
+    "/full-refresh",
+    response_model=ApiResponse,
+    summary="Run a full control-plane refresh",
+    description="Runs the existing full-refresh operation and returns its result. This operation may update derived control-plane state.",
+)
 def full_refresh_endpoint(request: FullRefreshRequest) -> ApiResponse:
     result = run_full_refresh(requested_by=request.requested_by or "api")
     if result["ok"]:

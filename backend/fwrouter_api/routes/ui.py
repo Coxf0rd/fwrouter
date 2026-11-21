@@ -240,6 +240,7 @@ def get_client_list_settings_endpoint(request: Request) -> Response:
                         "additionalProperties": False,
                         "maxProperties": 1,
                     },
+                    "example": {"show_inactive": True},
                 },
             },
         },
@@ -360,12 +361,12 @@ def _fetch_external_ip(*, proxy_url: str | None = None) -> tuple[str, str | None
         return "", str(exc)
 
 
-@router.get("/ui/router-summary", response_model=ApiResponse)
+@router.get("/ui/router-summary", response_model=ApiResponse, summary='Get UI Router Summary')
 def get_ui_router_summary_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data=redact_http_attribution({"router": get_ui_router_summary()}))
 
 
-@router.get("/ui/external-ip", response_model=ApiResponse)
+@router.get("/ui/external-ip", response_model=ApiResponse, summary='Get UI External IP')
 def get_ui_external_ip_endpoint() -> ApiResponse:
     current_ip, current_error = _fetch_external_ip()
     vpn_ip, vpn_error = _fetch_external_ip(proxy_url=MIHOMO_MIXED_PROXY_URL)
@@ -389,8 +390,16 @@ def get_ui_external_ip_endpoint() -> ApiResponse:
 @router.get(
     "/ui/clients",
     response_model=ApiResponse,
+    summary="Read UI client inventory",
+    description="Returns clients and panel visibility from a consistent display-settings snapshot. If the settings change during the read, the endpoint returns 503 with Retry-After.",
     openapi_extra={
         "responses": {
+            "200": {
+                "content": {"application/json": {"examples": {"empty_inventory": {
+                    "summary": "Empty client inventory",
+                    "value": {"ok": True, "data": {"display_settings": {}, "clients": [], "panel_clients": []}, "error": None},
+                }}}},
+            },
             "503": {
                 "description": "The display settings changed while the client view was being built.",
                 "headers": {"Retry-After": {"description": "Retry delay in seconds.", "schema": {"type": "string"}}},
@@ -424,7 +433,7 @@ def get_ui_clients_endpoint() -> ApiResponse:
     )
 
 
-@router.get("/ui/settings/workspace", response_model=ApiResponse)
+@router.get("/ui/settings/workspace", response_model=ApiResponse, summary='Get UI Settings Workspace')
 def get_ui_settings_workspace_endpoint() -> ApiResponse:
     try:
         return ApiResponse(ok=True, data=redact_http_attribution({"workspace": get_ui_settings_workspace()}))
@@ -435,8 +444,16 @@ def get_ui_settings_workspace_endpoint() -> ApiResponse:
 @router.get(
     "/ui/settings/inventory",
     response_model=ApiResponse,
+    summary="Read UI settings inventory",
+    description="Returns the UI settings inventory using a consistent display-settings snapshot. A concurrent settings change can produce 503 with Retry-After.",
     openapi_extra={
         "responses": {
+            "200": {
+                "content": {"application/json": {"examples": {"empty_inventory": {
+                    "summary": "Empty settings inventory",
+                    "value": {"ok": True, "data": {"items": []}, "error": None},
+                }}}},
+            },
             "503": {
                 "description": "The display settings changed while the inventory was being built.",
                 "headers": {"Retry-After": {"description": "Retry delay in seconds.", "schema": {"type": "string"}}},
@@ -474,7 +491,7 @@ def get_ui_settings_inventory_endpoint(
     )
 
 
-@router.post("/ui/external-connections/preview", response_model=ApiResponse)
+@router.post("/ui/external-connections/preview", response_model=ApiResponse, summary='Preview UI External Connection')
 def preview_ui_external_connection_endpoint(request: ExternalConnectionSettingsRequest) -> ApiResponse:
     try:
         result = preview_custom_external_connection(request.model_dump(exclude_none=True))
@@ -483,7 +500,7 @@ def preview_ui_external_connection_endpoint(request: ExternalConnectionSettingsR
     return ApiResponse(ok=True, data=result)
 
 
-@router.post("/ui/external-connections", response_model=ApiResponse)
+@router.post("/ui/external-connections", response_model=ApiResponse, summary='Create UI External Connection')
 def create_ui_external_connection_endpoint(request: ExternalConnectionSettingsRequest) -> ApiResponse:
     try:
         result = create_custom_external_connection(request.model_dump(exclude_none=True))
@@ -492,7 +509,7 @@ def create_ui_external_connection_endpoint(request: ExternalConnectionSettingsRe
     return ApiResponse(ok=True, data=result)
 
 
-@router.put("/ui/external-connections/{connection_id}", response_model=ApiResponse)
+@router.put("/ui/external-connections/{connection_id}", response_model=ApiResponse, summary='Replace UI external connection settings')
 def put_ui_external_connection_endpoint(connection_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
     try:
         result = upsert_custom_external_connection(
@@ -505,7 +522,7 @@ def put_ui_external_connection_endpoint(connection_id: str, request: ExternalCon
     return ApiResponse(ok=True, data=result)
 
 
-@router.patch("/ui/external-connections/{connection_id}", response_model=ApiResponse)
+@router.patch("/ui/external-connections/{connection_id}", response_model=ApiResponse, summary='Update UI external connection settings')
 def patch_ui_external_connection_endpoint(connection_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
     try:
         result = upsert_custom_external_connection(
@@ -518,7 +535,7 @@ def patch_ui_external_connection_endpoint(connection_id: str, request: ExternalC
     return ApiResponse(ok=True, data=result)
 
 
-@router.delete("/ui/external-connections/{connection_id}", response_model=ApiResponse)
+@router.delete("/ui/external-connections/{connection_id}", response_model=ApiResponse, summary='Delete UI External Connection')
 def delete_ui_external_connection_endpoint(connection_id: str) -> ApiResponse:
     try:
         result = delete_custom_external_connection(connection_id)
@@ -527,7 +544,7 @@ def delete_ui_external_connection_endpoint(connection_id: str) -> ApiResponse:
     return ApiResponse(ok=True, data=result)
 
 
-@router.get("/ui/external-connections/{connection_id}/contract", response_model=ApiResponse)
+@router.get("/ui/external-connections/{connection_id}/contract", response_model=ApiResponse, summary='Get UI External Connection Contract')
 def get_ui_external_connection_contract_endpoint(connection_id: str) -> ApiResponse:
     contract = external_connection_contract(connection_id)
     if not contract:
@@ -547,7 +564,7 @@ def get_ui_external_connection_contract_endpoint(connection_id: str) -> ApiRespo
     )
 
 
-@router.post("/ui/external-connections/{connection_id}/collect", response_model=ApiResponse)
+@router.post("/ui/external-connections/{connection_id}/collect", response_model=ApiResponse, summary='Collect External Connection Data')
 def collect_ui_external_connection_endpoint(connection_id: str, request: ExternalConnectionCollectRequest) -> ApiResponse:
     result = run_external_connection_collector(
         connection_id,
@@ -564,12 +581,12 @@ def collect_ui_external_connection_endpoint(connection_id: str, request: Externa
     )
 
 
-@router.get("/ui/settings/display", response_model=ApiResponse)
+@router.get("/ui/settings/display", response_model=ApiResponse, summary='Get UI Display Settings')
 def get_ui_display_settings_endpoint() -> ApiResponse:
     return ApiResponse(ok=True, data={"display_settings": get_ui_display_settings()})
 
 
-@router.put("/ui/settings/display", response_model=ApiResponse)
+@router.put("/ui/settings/display", response_model=ApiResponse, summary='Save UI Display Settings')
 async def save_ui_display_settings_endpoint(request: Request) -> Response:
     raw_payload: dict[str, Any] = {}
     try:

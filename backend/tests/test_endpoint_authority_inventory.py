@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_PATH = REPO_ROOT / "knowledge/audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.json"
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
 # An authority edit requires an explicit test/reference review, not just regenerating JSON.
-REVIEWED_AUTHORITY_SHA256 = "c5eca1859a8c08639b12f5b87f28fafc3a34cc0ef8aa04656ec64d97bc26278a"
+REVIEWED_AUTHORITY_SHA256 = "9aa489bc65b67fc5438a9bf3c82f89437eec97913919f1dd594697b9c6598a3f"
 AUTHORITY_PROJECTION_FIELDS = (
     "order", "path", "methods", "handler", "handler_source_sha256", "include_in_schema",
     "route_kind", "authority_class", "admission_contract", "application_dependencies", "dependencies",
@@ -689,3 +689,88 @@ def test_inventory_can_retry_a_stale_snapshot(schema, path):
     response = operation(schema, path, "get")["responses"]["503"]
     assert "Retry-After" in response["headers"]
     assert "application/json" in response["content"]
+
+
+def test_swagger_operation_organization(schema):
+    from fastapi.openapi.models import OpenAPI
+
+    OpenAPI.model_validate(schema)
+    names = [tag["name"] for tag in schema["tags"]]
+    assert len(names) == len(set(names))
+    assert all(tag.get("description", "").strip() for tag in schema["tags"])
+    used = set()
+    for path, operations in schema["paths"].items():
+        for method, spec in operations.items():
+            assert len(spec["tags"]) == 1, (path, method)
+            assert spec["summary"].strip() and not spec["summary"].endswith(" Endpoint"), (path, method)
+            used.update(spec["tags"])
+    assert set(names) == used
+    for path, method in [
+        ("/api/v2/health", "get"),
+        ("/api/v2/system/summary", "get"),
+        ("/api/v2/jobs", "post"),
+        ("/api/v2/jobs/{job_id}/run", "post"),
+        ("/api/v2/subscription/refresh", "post"),
+        ("/api/v2/ui/settings/client-list", "patch"),
+        ("/api/v2/transfer/control-plane/export", "get"),
+        ("/api/v2/transfer/control-plane/import", "post"),
+        ("/api/v2/mihomo/restart", "post"),
+        ("/api/v2/traffic/collect", "post"),
+        ("/s/{token}", "get"),
+    ]:
+        assert operation(schema, path, method)["description"].strip(), (path, method)
+    assert {path for path in schema["paths"] if not path.startswith("/api/v2/")} == {"/s/{token}"}
+    subscription_tag = schema["paths"]["/s/{token}"]["get"]["tags"]
+    assert all(
+        spec["tags"] != subscription_tag
+        for path, methods in schema["paths"].items() if path.startswith("/api/v2/")
+        for spec in methods.values()
+    )
+
+
+def _documented_example(media):
+    if "example" in media:
+        return media["example"]
+    return next(iter(media["examples"].values()))["value"]
+
+
+def test_swagger_examples_match_existing_request_and_response_shapes(schema):
+    from urllib.parse import urlsplit
+
+    from pydantic import StrictBool, TypeAdapter
+    import yaml
+
+    from fwrouter_api.routes.jobs import CreateJobRequest
+    from fwrouter_api.schemas import ApiResponse
+
+    jobs = operation(schema, "/api/v2/jobs", "post")
+    create = jobs["requestBody"]["content"]["application/json"]
+    job = CreateJobRequest.model_validate(_documented_example(create), strict=True)
+    assert job.run_now is False
+    patch = operation(schema, "/api/v2/ui/settings/client-list", "patch")
+    patch_media = patch["requestBody"]["content"]["application/json"]
+    toggle = TypeAdapter(dict[str, StrictBool]).validate_python(_documented_example(patch_media))
+    assert toggle.keys() == {"show_inactive"}
+
+    for path, method, required in [
+        ("/api/v2/health", "get", {"service", "status", "database"}),
+        ("/api/v2/system/summary", "get", {"core", "backend"}),
+        ("/api/v2/subscription/refresh", "post", {"job_id", "accepted", "already_running"}),
+        ("/api/v2/ui/clients", "get", {"clients", "panel_clients", "display_settings"}),
+        ("/api/v2/ui/settings/inventory", "get", {"items"}),
+    ]:
+        media = operation(schema, path, method)["responses"]["200"]["content"]["application/json"]
+        response = ApiResponse.model_validate(_documented_example(media), strict=True)
+        assert response.ok and required <= response.data.keys(), path
+
+    for path in ("/s/{token}", "/api/v2/xray/clients/{client_id}/subscription.txt"):
+        media = operation(schema, path, "get")["responses"]["200"]["content"]
+        for media_type, shape in media.items():
+            value = TypeAdapter(str).validate_python(_documented_example(shape), strict=True)
+            assert shape["schema"]["type"] == "string"
+            if media_type == "text/plain":
+                uri = urlsplit(value)
+                assert uri.scheme == "vless" and uri.hostname == "example.invalid"
+            else:
+                proxies = yaml.safe_load(value)["proxies"]
+                assert proxies and all(proxy["server"] == "example.invalid" for proxy in proxies)

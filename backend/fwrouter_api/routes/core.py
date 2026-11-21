@@ -29,7 +29,7 @@ def _available_actions(state: dict[str, object]) -> dict[str, bool]:
     }
 
 
-@router.get("/core/bypass", response_model=ApiResponse)
+@router.get("/core/bypass", response_model=ApiResponse, summary='Get Core Bypass')
 def get_core_bypass_endpoint() -> ApiResponse:
     state = get_core_bypass_state()
     return ApiResponse(
@@ -41,7 +41,12 @@ def get_core_bypass_endpoint() -> ApiResponse:
     )
 
 
-@router.post("/core/bypass/enable", response_model=ApiResponse)
+@router.post(
+    "/core/bypass/enable",
+    response_model=ApiResponse,
+    summary="Enable Core routing bypass",
+    description="Changes the persisted Core bypass intent and schedules or performs the existing Core apply. Requires confirm_apply=true; affected routing behavior may change.",
+)
 def enable_core_bypass_endpoint(request: CoreBypassActionRequest) -> ApiResponse:
     if not request.confirm_apply:
         return ApiResponse(
@@ -89,7 +94,12 @@ def enable_core_bypass_endpoint(request: CoreBypassActionRequest) -> ApiResponse
     return ApiResponse(ok=True, data={"job": job, "bypass_action": result})
 
 
-@router.post("/core/bypass/disable", response_model=ApiResponse)
+@router.post(
+    "/core/bypass/disable",
+    response_model=ApiResponse,
+    summary="Disable Core routing bypass",
+    description="Changes the persisted Core bypass intent and schedules or performs the existing Core apply. Requires confirm_apply=true; affected routing behavior may change.",
+)
 def disable_core_bypass_endpoint(request: CoreBypassActionRequest) -> ApiResponse:
     if not request.confirm_apply:
         return ApiResponse(
