@@ -1606,24 +1606,38 @@ def check_logical_server_delays(
     results: list[dict[str, Any]] = []
     for logical_id in ordered_ids:
         snapshot = snapshots_by_target.get(runtime_names[logical_id]) or {}
-        imported = _import_runtime_snapshot(
-            logical_id,
-            snapshot,
-            adapter=adapter,
-            probe_reason=probe_reason,
-            probe_lane=probe_lane,
-            record_probe_outcome=True,
-            expected_selection_revision=expected_selection_revision,
-        ) if persist_observation else {
-            "member_id": next((m.get("member_id") for m in (get_logical_topology(logical_id) or {}).get("members", [])
-                               if m.get("runtime_name") == snapshot.get("effective_member_runtime_identity") and m.get("is_active")), None),
-            "member_runtime_name": snapshot.get("effective_member_runtime_identity"),
-        }
-        refreshed = get_logical_topology(logical_id) if persist_observation else None
+        if persist_observation:
+            imported = _import_runtime_snapshot(
+                logical_id,
+                snapshot,
+                adapter=adapter,
+                probe_reason=probe_reason,
+                probe_lane=probe_lane,
+                record_probe_outcome=True,
+                expected_selection_revision=expected_selection_revision,
+            )
+            refreshed = get_logical_topology(logical_id)
+            current_members = (refreshed or {}).get("members", [])
+        else:
+            # Use the fresh native snapshot for health, but map its effective
+            # identity against the current active SQLite topology. The batch
+            # path must not require a persisted observation to prove that the
+            # runtime's effective member is still an owned active member.
+            current_members = (get_logical_topology(logical_id) or {}).get("members", [])
+            effective_runtime = str(snapshot.get("effective_member_runtime_identity") or "")
+            imported_member = next(
+                (member for member in current_members
+                 if member.get("runtime_name") == effective_runtime and member.get("is_active")),
+                None,
+            )
+            imported = {
+                "member_id": imported_member.get("member_id") if imported_member else None,
+                "member_runtime_name": effective_runtime or None,
+            }
         effective = next(
             (
                 member
-                for member in (refreshed or {}).get("members", [])
+                for member in current_members
                 if member.get("member_id") == imported.get("member_id") and member.get("is_active")
             ),
             None,

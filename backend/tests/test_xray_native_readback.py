@@ -28,7 +28,7 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch, tmp_pa
         pytest.fail("FWROUTER_XRAY_TEST_IMAGE must be an immutable local image ID, not a mutable tag")
 
     version = subprocess.run(
-        ["docker", "run", "--pull=never", "--rm", "--network", "none", image, "xray", "version"],
+        ["docker", "run", "--pull=never", "--rm", "--network", "none", image, "version"],
         check=True, capture_output=True, text=True, timeout=10,
     ).stdout
     assert "Xray 26.2.6" in version
@@ -79,7 +79,7 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch, tmp_pa
              "--cpus=0.5", "--memory=128m", "--pids-limit=64", "--cap-drop=ALL",
              "--security-opt=no-new-privileges", "--user", "65534:65534", *ownership_labels,
              "--name", container, "-v", f"{config_path}:/etc/xray/config.json:ro", image,
-             "xray", "run", "-config", "/etc/xray/config.json"],
+             "run", "-config", "/etc/xray/config.json"],
             check=True, capture_output=True, text=True, timeout=10,
         )
         assert started.stdout.strip()

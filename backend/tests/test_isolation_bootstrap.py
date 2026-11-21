@@ -191,3 +191,50 @@ def test_qualified_docker_xray_copy_requires_inspected_reserved_container_and_ow
         assert not isolation_bootstrap._qualified_docker_xray_process_allowed(
             (None, wrong_destination_command, None, None),
         )
+
+
+def test_qualified_docker_xray_allows_only_pinned_version_probe_and_confined_launch(tmp_path: Path) -> None:
+    container_name = "native-xray-readback-test-0123456789ab"
+    image_id = "sha256:" + "c" * 64
+    nonce = "0123456789abcdef" * 2
+    profile = {"container_name": container_name, "suite_nonce": nonce, "image_id": image_id}
+    config = tmp_path / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    labels = ["--label", "io.fwrouter.acceptance.owner=fwrouter-test-harness-v1",
+              "--label", f"io.fwrouter.acceptance.run={nonce}"]
+    launch = ["docker", "run", "--pull=never", "--detach", "--rm", "--network", "none",
+              "--cpus=0.5", "--memory=128m", "--pids-limit=64", "--cap-drop=ALL",
+              "--security-opt=no-new-privileges", "--user", "65534:65534", *labels,
+              "--name", container_name, "-v", f"{config}:/etc/xray/config.json:ro",
+              image_id, "run", "-config", "/etc/xray/config.json"]
+
+    with (mock.patch.object(isolation_bootstrap, "QUALIFIED_DOCKER_XRAY_PROFILE", profile),
+          mock.patch.object(isolation_bootstrap, "QUALIFIED_DOCKER_XRAY_FILE",
+                            "/workspace/backend/tests/test_xray_native_readback.py"),
+          mock.patch.object(isolation_bootstrap, "_qualified_child_test_file",
+                            return_value="/workspace/backend/tests/test_xray_native_readback.py")):
+        version_probe = ["docker", "run", "--pull=never", "--rm", "--network", "none",
+                         image_id, "version"]
+        assert isolation_bootstrap._qualified_docker_xray_process_allowed(
+            (None, version_probe, None, None),
+        )
+        assert isolation_bootstrap._qualified_docker_xray_process_allowed((None, launch, None, None))
+        isolation_bootstrap._deny_unsafe_python_capabilities(
+            "subprocess.Popen", (None, version_probe, None, None),
+        )
+        isolation_bootstrap._deny_unsafe_python_capabilities(
+            "subprocess.Popen", (None, launch, None, None),
+        )
+
+        rejected = [
+            ["docker", "run", "--pull=always", "--rm", "--network", "none", image_id, "version"],
+            ["docker", "run", "--pull=never", "--rm", "--network", "bridge", image_id, "version"],
+            ["docker", "run", "--pull=never", "--rm", "--network", "none", "xray:latest", "version"],
+            [*launch[:-3], "xray", "run", "-config", "/etc/xray/config.json"],
+            [*launch[:21], f"{config}:/etc/xray/config.json:rw", *launch[22:]],
+        ]
+        for command in rejected:
+            with pytest.raises(PermissionError, match="process execution"):
+                isolation_bootstrap._deny_unsafe_python_capabilities(
+                    "subprocess.Popen", (None, command, None, None),
+                )
