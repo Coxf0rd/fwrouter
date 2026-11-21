@@ -877,7 +877,7 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
             assert value.get("plan_id") == expected_apply_id, {"manifest": label, "plan_id": value.get("plan_id")}
             assert (isinstance(routing_state, dict)
                     and routing_state.get("desired_mode") == "selective"
-                    and routing_state.get("applied_mode") == previous_applied_mode
+                    and routing_state.get("applied_mode") == (previous_applied_mode if label == "candidate" else "selective")
                     and routing_state.get("selective_default") == "vpn"), {
                 "manifest": label, "routing": routing_state,
             }
@@ -1650,7 +1650,7 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
         assert applied_manifest.get("plan_id") == selective_apply_id, applied_manifest
         assert (isinstance(applied_routing, dict)
                 and applied_routing.get("desired_mode") == "selective"
-                and applied_routing.get("applied_mode") == initial_routing.get("applied_mode")
+                and applied_routing.get("applied_mode") == "selective"
                 and applied_routing.get("selective_default") == "vpn"), applied_manifest
         rules_source_baseline = global_rules_source_fingerprint(
             selective_apply_id,
