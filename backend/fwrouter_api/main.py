@@ -152,6 +152,12 @@ def create_app(
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
+        description=(
+            "The /api/v2 management API is internal and relies on a trusted transport boundary. "
+            "Restrict access to the trusted management network. Individual operations may require "
+            "additional scoped credentials. The public subscription gateway serves token-based "
+            "subscriptions separately."
+        ),
         debug=settings.debug,
         docs_url=f"{API_PREFIX}/docs",
         redoc_url=f"{API_PREFIX}/redoc",
@@ -209,6 +215,26 @@ def create_app(
     app.include_router(xray_router, prefix=API_PREFIX)
     app.include_router(public_xray_router)
 
+    # Describe existing admission guards without adding authentication dependencies
+    # or changing their request parsing and rejection order.
+    generate_openapi = app.openapi
+
+    def openapi_with_admission_schemes():
+        schema = generate_openapi()
+        schemes = schema.setdefault("components", {}).setdefault("securitySchemes", {})
+        schemes.update({
+            "ScopedClientBearer": {
+                "type": "http", "scheme": "bearer",
+                "description": "API client credential with the scope required by this operation.",
+            },
+            "MaintenanceBearer": {
+                "type": "http", "scheme": "bearer",
+                "description": "Local operator maintenance credential for control-plane import.",
+            },
+        })
+        return schema
+
+    app.openapi = openapi_with_admission_schemes
     return app
 
 

@@ -146,7 +146,46 @@ def _single_header(request: Request, name: bytes) -> str | None:
         return None
 
 
-@router.get("/ui/settings/client-list", response_model=ApiResponse)
+_CLIENT_LIST_ETAG_HEADER = {
+    "description": "Opaque entity tag for the current client-list settings representation.",
+    "schema": {"type": "string", "pattern": '^"cli1-[0-9a-f]{64}"$'},
+}
+
+_CLIENT_LIST_ERROR_RESPONSE = {
+    "description": "The request was rejected or the settings could not be read.",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiResponse"}}},
+}
+
+
+@router.get(
+    "/ui/settings/client-list",
+    response_model=ApiResponse,
+    openapi_extra={
+        "summary": "Read client-list display settings",
+        "description": (
+            "Returns the current settings and an ETag. Send that value as If-None-Match "
+            "to receive 304 when the representation has not changed. This read operation "
+            "does not require a client credential and relies on the trusted management "
+            "transport boundary."
+        ),
+        "parameters": [{
+            "name": "If-None-Match", "in": "header", "required": False,
+            "description": "Return 304 when this validator matches the current representation.",
+            "schema": {"type": "string", "pattern": '^"cli1-[0-9a-f]{64}"$'},
+        }],
+        "responses": {
+            "200": {
+                "description": "Settings returned; ETag contains the current validator.",
+                "headers": {"ETag": _CLIENT_LIST_ETAG_HEADER},
+            },
+            "304": {
+                "description": "The If-None-Match validator matches. The response has no body.",
+                "headers": {"ETag": _CLIENT_LIST_ETAG_HEADER},
+            },
+            "409": _CLIENT_LIST_ERROR_RESPONSE,
+        },
+    },
+)
 def get_client_list_settings_endpoint(request: Request) -> Response:
     try:
         resource = read_client_list_settings()
@@ -161,7 +200,89 @@ def get_client_list_settings_endpoint(request: Request) -> Response:
     )
 
 
-@router.patch("/ui/settings/client-list", response_model=ApiResponse)
+@router.patch(
+    "/ui/settings/client-list",
+    response_model=ApiResponse,
+    openapi_extra={
+        "summary": "Update client-list display settings",
+        "description": (
+            "Accepts exactly the show_inactive boolean field and requires If-Match with "
+            "the current ETag. A stale validator returns 412. A scoped client Bearer "
+            "credential with ui.client-list.write scope is required. Browser web clients must send the configured canonical "
+            "Origin and matching Host. CLI or integration clients must omit Origin and use "
+            "the fixed loopback API origin."
+        ),
+        "security": [{"ScopedClientBearer": []}],
+        "parameters": [
+            {
+                "name": "If-Match", "in": "header", "required": True,
+                "description": "Current ETag returned by GET. Required for optimistic concurrency.",
+                "schema": {"type": "string", "pattern": '^"cli1-[0-9a-f]{64}"$'},
+            },
+            {
+                "name": "Origin", "in": "header", "required": False,
+                "description": (
+                    "Required for browser web clients and must equal the configured canonical origin. "
+                    "CLI/integration clients must omit it and use the fixed loopback API origin."
+                ),
+                "schema": {"type": "string", "format": "uri"},
+            },
+        ],
+        "requestBody": {
+            "required": True,
+            "description": "A JSON object containing exactly one boolean property.",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {"show_inactive": {"type": "boolean"}},
+                        "required": ["show_inactive"],
+                        "additionalProperties": False,
+                        "maxProperties": 1,
+                    },
+                },
+            },
+        },
+        "responses": {
+            "200": {
+                "description": "Settings updated; ETag contains the new validator.",
+                "headers": {"ETag": _CLIENT_LIST_ETAG_HEADER},
+            },
+            "400": _CLIENT_LIST_ERROR_RESPONSE,
+            "401": _CLIENT_LIST_ERROR_RESPONSE,
+            "403": _CLIENT_LIST_ERROR_RESPONSE,
+            "409": _CLIENT_LIST_ERROR_RESPONSE,
+            "412": {
+                **_CLIENT_LIST_ERROR_RESPONSE,
+                "description": "If-Match is syntactically valid but no longer matches the current settings.",
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiResponse"},
+                    "examples": {"staleValidator": {"value": {"ok": False, "data": {}, "error": {
+                        "code": "CLIENT_LIST_REVISION_STALE",
+                        "message": "Client-list settings request was not accepted.",
+                    }}}}}},
+            },
+            "413": _CLIENT_LIST_ERROR_RESPONSE,
+            "415": _CLIENT_LIST_ERROR_RESPONSE,
+            "422": _CLIENT_LIST_ERROR_RESPONSE,
+            "428": {
+                **_CLIENT_LIST_ERROR_RESPONSE,
+                "description": "If-Match is missing.",
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiResponse"},
+                    "examples": {"preconditionRequired": {"value": {"ok": False, "data": {}, "error": {
+                        "code": "CLIENT_LIST_PRECONDITION_REQUIRED",
+                        "message": "Client-list settings request was not accepted.",
+                    }}}}}},
+            },
+            "503": {
+                **_CLIENT_LIST_ERROR_RESPONSE,
+                "headers": {"Retry-After": {
+                    "description": "Present for a retryable SQLite writer-busy response.",
+                    "schema": {"type": "string"},
+                }},
+            },
+        },
+    },
+)
 async def patch_client_list_settings_endpoint(request: Request) -> Response:
     try:
         with verified_presentation_write(request):
@@ -265,7 +386,19 @@ def get_ui_external_ip_endpoint() -> ApiResponse:
     )
 
 
-@router.get("/ui/clients", response_model=ApiResponse)
+@router.get(
+    "/ui/clients",
+    response_model=ApiResponse,
+    openapi_extra={
+        "responses": {
+            "503": {
+                "description": "The display settings changed while the client view was being built.",
+                "headers": {"Retry-After": {"description": "Retry delay in seconds.", "schema": {"type": "string"}}},
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiResponse"}}},
+            },
+        },
+    },
+)
 def get_ui_clients_endpoint() -> ApiResponse:
     for attempt in range(2):
         snapshot = get_ui_display_snapshot()
@@ -299,7 +432,19 @@ def get_ui_settings_workspace_endpoint() -> ApiResponse:
         return _client_list_error(exc)
 
 
-@router.get("/ui/settings/inventory", response_model=ApiResponse)
+@router.get(
+    "/ui/settings/inventory",
+    response_model=ApiResponse,
+    openapi_extra={
+        "responses": {
+            "503": {
+                "description": "The display settings changed while the inventory was being built.",
+                "headers": {"Retry-After": {"description": "Retry delay in seconds.", "schema": {"type": "string"}}},
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiResponse"}}},
+            },
+        },
+    },
+)
 def get_ui_settings_inventory_endpoint(
     role: str = Query(default="all"),
     query: str = Query(default=""),

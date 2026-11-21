@@ -38,7 +38,16 @@ class ControlPlanePlanRequest(BaseModel):
     normalize_runtime_state: bool = True
 
 
-@router.get("/transfer/control-plane/export", response_model=ApiResponse)
+@router.get(
+    "/transfer/control-plane/export",
+    response_model=ApiResponse,
+    summary="Operator only: export a control-plane snapshot",
+    description=(
+        "Requires trusted management transport. This GET writes a snapshot file by default "
+        "(write_file=true). Set write_file=false to return the snapshot without writing a file. "
+        "include_secrets=true includes sensitive configuration in the response and any written file."
+    ),
+)
 def export_control_plane_endpoint(
     include_secrets: bool = Query(default=False),
     write_file: bool = Query(default=True),
@@ -84,7 +93,34 @@ def plan_control_plane_endpoint(request: ControlPlanePlanRequest) -> ApiResponse
     return ApiResponse(ok=plan["ok"], data={"plan": plan, "source": source})
 
 
-@router.post("/transfer/control-plane/import", response_model=ApiResponse)
+@router.post(
+    "/transfer/control-plane/import",
+    response_model=ApiResponse,
+    summary="Operator only: import a control-plane snapshot",
+    description=(
+        "Mutates control-plane state. Requires a maintenance Bearer credential and the fixed "
+        "local API origin (http://127.0.0.1:5000), with a loopback peer. Browser Origin and forwarding headers are rejected. "
+        "Use the local maintenance client. Domain-level import failures can return HTTP 200 with ok=false."
+    ),
+    responses={
+        403: {
+            "description": "Maintenance admission denied.",
+            "content": {"application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {"detail": {
+                        "type": "object",
+                        "required": ["code"],
+                        "properties": {"code": {"const": "CONTROL_PLANE_IMPORT_FORBIDDEN"}},
+                    }},
+                },
+                "example": {"detail": {"code": "CONTROL_PLANE_IMPORT_FORBIDDEN"}},
+            }},
+        },
+    },
+    openapi_extra={"security": [{"MaintenanceBearer": []}]},
+)
 def import_control_plane_endpoint(
     request: ControlPlaneImportRequest,
     _maintenance_admission: None = Depends(require_control_plane_import_admission),

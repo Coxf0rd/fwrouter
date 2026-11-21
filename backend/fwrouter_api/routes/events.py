@@ -12,9 +12,95 @@ from fwrouter_api.services.ordinary_event_read_model import project_recent_event
 
 router = APIRouter()
 
+def _secure_event_error_response(codes: list[str], description: str) -> dict:
+    return {
+        "description": description,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["error_code"],
+                    "properties": {"error_code": {"type": "string", "enum": codes}},
+                    "additionalProperties": False,
+                },
+                "examples": {code: {"value": {"error_code": code}} for code in codes},
+            },
+        },
+    }
 
-@router.get("/events/secure/recent")
-@router.post("/events/secure/recent")
+_SECURE_EVENT_OPENAPI = {
+    "summary": "Read recent registry-scoped events",
+    "description": (
+        "Returns a bounded event page and an opaque next_cursor for pagination. "
+        "Requires a registry-issued client Bearer credential with events.read scope. "
+        "Browser web clients must include the configured canonical Origin and matching Host. "
+        "CLI and integration clients must omit Origin and use the fixed loopback API origin. "
+        "POST is retained for browser Origin semantics and has the same read-only query contract."
+    ),
+    "security": [{"ScopedClientBearer": []}],
+    "parameters": [
+        {"name": "limit", "in": "query", "required": False,
+         "description": "Maximum events in this page. Defaults to 50; maximum is 100.",
+         "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+        {"name": "category", "in": "query", "required": False,
+         "description": "Restrict events to a supported category.",
+         "schema": {"type": "string", "enum": ["audit", "security"]}},
+        {"name": "event_code", "in": "query", "required": False,
+         "description": "Restrict events by a canonical event code.",
+         "schema": {"type": "string", "maxLength": 128,
+                    "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+){1,4}$"}},
+        {"name": "since", "in": "query", "required": False,
+         "description": "Inclusive UTC timestamp in YYYY-MM-DDTHH:MM:SSZ form.",
+         "schema": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"}},
+        {"name": "cursor", "in": "query", "required": False,
+         "description": "Opaque next_cursor returned by the preceding page. It is bound to the filters used there.",
+         "schema": {"type": "string", "maxLength": 1536}},
+        {"name": "Origin", "in": "header", "required": False,
+         "description": (
+             "Required for browser web clients and must equal the configured canonical origin. "
+             "CLI/integration clients must omit it and use the fixed loopback API origin."
+         ),
+         "schema": {"type": "string", "format": "uri"}},
+    ],
+    "responses": {
+        "200": {
+            "description": "A bounded page of events and an optional next cursor.",
+            "content": {"application/json": {"schema": {
+                "type": "object",
+                "required": ["events", "scanned", "next_cursor"],
+                "properties": {
+                    "events": {"type": "array", "items": {"type": "object"}},
+                    "scanned": {"type": "integer", "minimum": 0},
+                    "next_cursor": {"type": ["string", "null"]},
+                },
+                "additionalProperties": True,
+            }}},
+        },
+        "400": _secure_event_error_response(
+            ["EVENTS_QUERY_INVALID", "EVENTS_LIMIT_INVALID", "EVENTS_FILTER_INVALID", "EVENTS_CURSOR_INVALID"],
+            "The query, event filter, or cursor format is invalid.",
+        ),
+        "401": _secure_event_error_response(
+            ["EVENTS_CREDENTIAL_REQUIRED", "EVENTS_CREDENTIAL_INVALID"],
+            "A valid events.read client Bearer credential is required.",
+        ),
+        "403": _secure_event_error_response(
+            ["EVENTS_ORIGIN_REQUIRED", "EVENTS_ORIGIN_INVALID", "EVENTS_SCOPE_FORBIDDEN"],
+            "The caller scope or Origin and Host combination is not permitted.",
+        ),
+        "409": _secure_event_error_response(
+            ["EVENTS_CURSOR_STALE"], "The cursor no longer identifies the same event history anchor.",
+        ),
+        "503": _secure_event_error_response(
+            ["EVENTS_AUTH_CONFIG_UNAVAILABLE", "EVENTS_READ_UNAVAILABLE"],
+            "The client registry or event store is unavailable.",
+        ),
+    },
+}
+
+
+@router.get("/events/secure/recent", openapi_extra=_SECURE_EVENT_OPENAPI)
+@router.post("/events/secure/recent", openapi_extra=_SECURE_EVENT_OPENAPI)
 def secure_recent_events_endpoint(request: Request) -> JSONResponse:
     """Read-only registry-scoped projection; POST supports browser Origin semantics."""
     from fwrouter_api.services.secure_event_read_admission import (

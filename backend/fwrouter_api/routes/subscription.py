@@ -202,7 +202,55 @@ def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
         ),
     )
 
-@router.post("/subscription/refresh", response_model=ApiResponse)
+@router.post(
+    "/subscription/refresh",
+    response_model=ApiResponse,
+    summary="Start a subscription refresh job",
+    description=(
+        "Starts a background job. HTTP 200 acknowledges the request and does not confirm "
+        "successful runtime application. Use data.job_id with GET /api/v2/jobs/{job_id}."
+    ),
+    responses={200: {
+        "description": (
+            "A new job (accepted=true), a reused job (already_running=true), or an "
+            "HTTP 200 business conflict (ok=false, SUBSCRIPTION_OPERATION_IN_PROGRESS)."
+        ),
+        "content": {"application/json": {
+            "schema": {
+                "properties": {
+                    "data": {
+                        "type": "object",
+                        "required": ["accepted", "already_running"],
+                        "properties": {
+                            "job_id": {
+                                "type": "string",
+                                "description": "Job identifier on acceptance or reuse.",
+                            },
+                            "accepted": {"type": "boolean"},
+                            "already_running": {"type": "boolean"},
+                        },
+                    },
+                },
+            },
+            "examples": {
+                "accepted": {"value": {"ok": True, "data": {
+                    "job_id": "example-job-id", "accepted": True, "already_running": False,
+                    "status": "running",
+                }}},
+                "already-running": {"value": {"ok": True, "data": {
+                    "job_id": "example-job-id", "accepted": False, "already_running": True,
+                    "status": "running",
+                }}},
+                "conflict": {"value": {"ok": False, "data": {
+                    "accepted": False, "already_running": True,
+                }, "error": {
+                    "code": "SUBSCRIPTION_OPERATION_IN_PROGRESS",
+                    "message": "A different subscription operation is already running. Try again when it finishes.",
+                }}},
+            },
+        }},
+    }},
+)
 def refresh_subscription_endpoint() -> ApiResponse:
     manager = get_default_job_manager()
     register_subscription_refresh_handler(manager)

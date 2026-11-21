@@ -1555,7 +1555,7 @@
   "reviewed_source_files": [
     {
       "path": "backend/fwrouter_api/main.py",
-      "sha256": "b3539354a6ada5fd4770d9e3986ebb975b02ab5add21d050e21f514064dc8b85"
+      "sha256": "55ceddd30a8fb44e625bf57ffc300d0d8d4116dc19e7af079bdf7501e22c069e"
     },
     {
       "path": "backend/fwrouter_api/routes/core.py",
@@ -1567,7 +1567,7 @@
     },
     {
       "path": "backend/fwrouter_api/routes/events.py",
-      "sha256": "1720972933282f532a91e97275a4e70e5b939d1dd9a5f74b13f7b70ce82e6426"
+      "sha256": "b979361c156e3b3e18716268c8f092ab7430a728c1f463c1f5b20f1254630771"
     },
     {
       "path": "backend/fwrouter_api/routes/jobs.py",
@@ -1623,7 +1623,7 @@
     },
     {
       "path": "backend/fwrouter_api/routes/subscription.py",
-      "sha256": "48d2d7e313599104862162e1199ee94859f24cf5c998e185565338b8c705b734"
+      "sha256": "9660e52cecf2ad52ae23a8efcf04251ce6514b5a0daabdba569abcadeb4bacb5"
     },
     {
       "path": "backend/fwrouter_api/routes/system.py",
@@ -1639,11 +1639,11 @@
     },
     {
       "path": "backend/fwrouter_api/routes/transfer.py",
-      "sha256": "fc1b86d9f5a823e5e409c61f3dd634a0c69c384360ddaaaecb11b1a6f81f9d2b"
+      "sha256": "5b7465391bd8bc41075c9ecb379cbf33ff2e22b53080acfb424e50564d2d2c25"
     },
     {
       "path": "backend/fwrouter_api/routes/ui.py",
-      "sha256": "80f241ac567056f0366865eb964021152b3e9e4c4c4f8dd0b3c590deb6e32ca5"
+      "sha256": "d8b2d3515b5bc23b2dd4b8ea9fdc75ea2fa4761160155e6012f402b459b226ca"
     },
     {
       "path": "backend/fwrouter_api/routes/watchdog.py",
@@ -1651,7 +1651,7 @@
     },
     {
       "path": "backend/fwrouter_api/routes/xray.py",
-      "sha256": "ee0d0a3a29b2481e33c7a07ad14b1a12f611f9b00a5eeb3c2776defe4f787304"
+      "sha256": "fdb20574d25e822db23b3a4442bad97cd3391ae553bee0c5d823f1a7c79efde8"
     }
   ],
   "admission_contracts": [
@@ -1660,7 +1660,7 @@
       "files": [
         {
           "path": "backend/fwrouter_api/main.py",
-          "sha256": "b3539354a6ada5fd4770d9e3986ebb975b02ab5add21d050e21f514064dc8b85"
+          "sha256": "55ceddd30a8fb44e625bf57ffc300d0d8d4116dc19e7af079bdf7501e22c069e"
         }
       ]
     },
@@ -1669,7 +1669,7 @@
       "files": [
         {
           "path": "backend/fwrouter_api/main.py",
-          "sha256": "b3539354a6ada5fd4770d9e3986ebb975b02ab5add21d050e21f514064dc8b85"
+          "sha256": "55ceddd30a8fb44e625bf57ffc300d0d8d4116dc19e7af079bdf7501e22c069e"
         }
       ]
     },
@@ -1704,7 +1704,7 @@
       "files": [
         {
           "path": "backend/fwrouter_api/routes/xray.py",
-          "sha256": "ee0d0a3a29b2481e33c7a07ad14b1a12f611f9b00a5eeb3c2776defe4f787304"
+          "sha256": "fdb20574d25e822db23b3a4442bad97cd3391ae553bee0c5d823f1a7c79efde8"
         },
         {
           "path": "backend/fwrouter_api/services/xray_subscription_service.py",
@@ -1717,7 +1717,7 @@
       "files": [
         {
           "path": "backend/fwrouter_api/routes/xray.py",
-          "sha256": "ee0d0a3a29b2481e33c7a07ad14b1a12f611f9b00a5eeb3c2776defe4f787304"
+          "sha256": "fdb20574d25e822db23b3a4442bad97cd3391ae553bee0c5d823f1a7c79efde8"
         },
         {
           "path": "host/libexec/fwrouter/fwrouter-xray-sub-gateway.py",
@@ -1730,7 +1730,7 @@
       ]
     }
   ],
-  "authority_projection_sha256": "5fa964e4a8cf612bc88ad25b6fb47688e268a9c10a77718f95c0a41edafe220e",
+  "authority_projection_sha256": "c5eca1859a8c08639b12f5b87f28fafc3a34cc0ef8aa04656ec64d97bc26278a",
   "routes": [
     {
       "order": 0,
@@ -1953,7 +1953,7 @@
         "POST"
       ],
       "handler": "fwrouter_api.routes.events:secure_recent_events_endpoint",
-      "handler_source_sha256": "a7546d3f8220ea68259e306d93e7121ec8c506193e795b289e06fee4243da459",
+      "handler_source_sha256": "27437a01cb7f98d89d186f94f6fcf9e2492834f73415fc883affc4c25496b12a",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -1968,7 +1968,7 @@
         "GET"
       ],
       "handler": "fwrouter_api.routes.events:secure_recent_events_endpoint",
-      "handler_source_sha256": "a7546d3f8220ea68259e306d93e7121ec8c506193e795b289e06fee4243da459",
+      "handler_source_sha256": "27437a01cb7f98d89d186f94f6fcf9e2492834f73415fc883affc4c25496b12a",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -2988,7 +2988,7 @@
         "POST"
       ],
       "handler": "fwrouter_api.routes.subscription:refresh_subscription_endpoint",
-      "handler_source_sha256": "138a1bd0dff8dfd5d91c9bb0c1a3ce44a4e7c1ffa81f446c54df1ed1ddfb3f97",
+      "handler_source_sha256": "cc3031dd69a097fcf897757db81a1e26cd29df97a744294882befca54ca82820",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3438,7 +3438,7 @@
         "GET"
       ],
       "handler": "fwrouter_api.routes.transfer:export_control_plane_endpoint",
-      "handler_source_sha256": "a249cd9edc1110bffe6c0ca61b1fd39e6d5c036d638d4172727580da7e552e2a",
+      "handler_source_sha256": "904574c3305c254e7c1530ecb8ff814d3ea9c7e13a5374e270f6f57518d1cc14",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3498,7 +3498,7 @@
         "POST"
       ],
       "handler": "fwrouter_api.routes.transfer:import_control_plane_endpoint",
-      "handler_source_sha256": "3166e2d474cde00943ecfa19d536c1ba5a84f934aef347bb01cd905818700efa",
+      "handler_source_sha256": "956458cd6c2292585bbd06d711092bc653abb1754a436f51b8c1fd1f98bb31c8",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3524,7 +3524,7 @@
         "GET"
       ],
       "handler": "fwrouter_api.routes.ui:get_client_list_settings_endpoint",
-      "handler_source_sha256": "18e48153224ed63ba01879978769c178e03d666a3ccc000231ae18116e5714fb",
+      "handler_source_sha256": "1703fa865d50c48fa366231749d9aa73b14f893f8d1bcc0aa17aed7416bcebb6",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3539,7 +3539,7 @@
         "PATCH"
       ],
       "handler": "fwrouter_api.routes.ui:patch_client_list_settings_endpoint",
-      "handler_source_sha256": "e014302974a79cab1f5accadfbf62be9367c9a3e516db53aab106041ef73c633",
+      "handler_source_sha256": "e837360faaa9922478bbfa64960339850ccafc755e9cf384c14867fedb338229",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3584,7 +3584,7 @@
         "GET"
       ],
       "handler": "fwrouter_api.routes.ui:get_ui_clients_endpoint",
-      "handler_source_sha256": "7b25d1a268f5b3eb6bb271ea1c399e83e374a2e3d5e103f39eef59d397404c1d",
+      "handler_source_sha256": "b89187ea1b085a082d4b212e4f70f6e7051984198e0be4cf46cc76cb19fa338d",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3614,7 +3614,7 @@
         "GET"
       ],
       "handler": "fwrouter_api.routes.ui:get_ui_settings_inventory_endpoint",
-      "handler_source_sha256": "a3ec6f3228e4c73723ef801804f71fab680ccb090fb62adaaa9fee93e87e71f3",
+      "handler_source_sha256": "764fcf8f7a884da401c5aabb55248e6df5745be5a916e504d06be663445743b1",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3914,7 +3914,7 @@
         "GET"
       ],
       "handler": "fwrouter_api.routes.xray:export_xray_subscription_text_endpoint",
-      "handler_source_sha256": "bb984ab7c6517be594c9dd4d5c0bb30bc91a97443a9f01b497df058e5de5d318",
+      "handler_source_sha256": "49e6e527a976b31f96138d6c6990b3db801e9c1542f37b22957f6cf98ca11b0c",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
@@ -3929,7 +3929,7 @@
         "GET"
       ],
       "handler": "fwrouter_api.routes.xray:export_public_subscription_endpoint",
-      "handler_source_sha256": "e4c5b8d4f50352c4f4a46921b4f72e356f089c83a300bacd3fa375e558e9f89a",
+      "handler_source_sha256": "c8687c6bd6591689cb7ed9d3f96d97df2aaf9c5f6030df57f6c6a9e91f4ee900",
       "include_in_schema": true,
       "route_kind": "APIRoute",
       "application_dependencies": [],
