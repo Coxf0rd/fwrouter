@@ -2589,6 +2589,50 @@ def test_legacy_recovery_checks_resources_without_claiming_historical_proof(
         deploy._discover_stable_baseline(paths, selection, {"last_verified_install": last}, None, None)
 
 
+def test_identity_reader_accepts_only_the_verified_historical_stable_pin(deployment_fixture) -> None:
+    deploy, paths, *_ = deployment_fixture
+    paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record = deploy._identity_record_base(paths)
+    source_sha, owner_sha, digest = "a" * 40, "b" * 40, "c" * 64
+    pin = {
+        "source_sha": source_sha,
+        "qualification": _qualification(source_sha),
+        "lifecycle_owner_sha": owner_sha,
+        "provenance": "UNKNOWN",
+        "native_acceptance": "NOT_VERIFIED",
+        "installed_content": {
+            "backend_sha256": digest,
+            "ui_sha256": digest,
+            "host_pair_sha256": {row[0]: digest for row in deploy.HOST_ROWS},
+        },
+    }
+    record["lifecycle_owners"] = {owner_sha: {
+        "qualification": _qualification(owner_sha),
+        "updater_sha256": digest,
+        "lifecycle_sha256": digest,
+        "lock_sha256": digest,
+        "timer_sha256": {unit: digest for unit in (
+            "fwrouter-jobs-retention-dry-run.timer", "fwrouter-maintenance.timer",
+            "fwrouter-subscription-refresh.timer", "fwrouter-traffic-collect.timer",
+        )},
+    }}
+    record["stable_current"] = pin
+    deploy._write_identity(paths, record)
+    assert deploy._read_identity(paths)["stable_current"] == pin
+
+    for invalid_fields in (
+        {"qualification": _qualification(owner_sha)},
+        {"lifecycle_owner_sha": source_sha},
+        {"native_acceptance": "PASS"},
+        {"proof_sha256": digest},
+        {"installed_content": {}},
+    ):
+        record["stable_current"] = {**pin, **invalid_fields}
+        deploy._write_identity(paths, record)
+        with pytest.raises(deploy.DeploymentError, match="Stable rollback"):
+            deploy._read_identity(paths)
+
+
 def test_legacy_rollback_can_use_its_verified_historical_schema_inspector(
         deployment_fixture, monkeypatch) -> None:
     deploy, paths, source, *_ = deployment_fixture

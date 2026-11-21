@@ -1966,7 +1966,9 @@ def _development_deploy_inner(paths: Paths, result: dict, *, source_path: Path,
     if pending_dev is not None:
         metadata = dict(pending_dev["requested_source"])
         metadata["retire_paths"] = operation.get("retire_paths", [])
-    elif admission is not None and not (supersede_incomplete and source_path is not None):
+    elif admission is not None and not (supersede_incomplete and source_path.is_dir()):
+        # The admitted capsule remains the recovery source if the original
+        # explicit checkout has since been removed.
         metadata = dict(admission)
     else:
         superseding = admission is not None

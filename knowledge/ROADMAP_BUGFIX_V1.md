@@ -88,7 +88,9 @@ The owned-generation fixture now stops after an Xray reload with no persisted co
 
 The two external-client API regressions assumed the DELETE response contained a terminal result. The API can return a queued or running job with a null result. Both failures reproduce with a queued response and real job workers. The tests now await the terminal deletion result before retrying or inspecting data, and the failure-path fixture also waits for client creation. The same forced-async cases pass with the original outcome assertions intact.
 
-Local component, schema, cross-process writer and private Docker Xray evidence remains separate from installed DEV acceptance. On the inspected host, D1 exposes no DEV mode. Native acceptance policy and a qualified Stable rollback record are absent. The installed database passes integrity and foreign-key checks and matches the known legacy schema 27 profile, while the strict validator in this branch rejects it. DEV acceptance stays **BLOCKED** until the supported D2 updater, exact schema admission, independently approved image policy and verified Stable recovery are available. Full native staged rollback and LAN/TUN continuity remain **NOT_VERIFIED**.
+The initial DEV preflight stopped on the D1 updater, schema 27 admission and missing recovery evidence. The D2 lifecycle now admits the exact legacy schema profile, verifies historical Stable rollback resources, and preserves incomplete DEV evidence when admitting a replacement.
+
+Installed DEV at source `bb05dee643677f952ac1b6c7530305c0b061cdf5` passed native acceptance for generation 210. D2 closed the pending operation and retained the verified rollback to `96b6f7b125761041b971dbec73e12dbbb654e061`. API, UI, Gateway, DNS, Mihomo, Xray, SQLite integrity and all four timers passed. The installed Main-qualified wrapper still requires a qualified update to read that historical Stable pin. Full native staged rollback and LAN/TUN continuity remain **NOT_VERIFIED**.
 
 ## Boundaries
 
