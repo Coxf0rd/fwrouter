@@ -388,6 +388,18 @@ def test_core_readback_only_allows_explicit_exact_receipt_pin_for_stale_ip_bindi
     proof = native_proof._core_readback(db, _expected_stale_receipt_sha256=receipt_sha)
     assert proof["native_ip_semantics_sha256"] == "c" * 64
 
+    # Identical policy digests do not make a changing host snapshot suitable
+    # evidence for a single capture, including explicit legacy reattestation.
+    disabled_facts = {"semantic_sha256": "c" * 64, "checks": {"required": True}}
+    snapshots = iter([
+        {**disabled_facts, "observed": {"ipv6_host": {"interface_indexes": {"lo": 1}}}},
+        {**disabled_facts, "observed": {"ipv6_host": {"interface_indexes": {"lo": 1, "veth-new": 31}}}},
+    ])
+    with monkeypatch.context() as capture:
+        capture.setattr(native_proof, "_core_ip_facts", lambda: next(snapshots))
+        with pytest.raises(RuntimeError, match="CORE_RUNTIME_CONTEXT_CHANGED"):
+            native_proof._core_readback(db, _expected_stale_receipt_sha256=receipt_sha)
+
     # The narrow exception does not bypass nft owner validation or accept a
     # different receipt byte sequence.
     monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", lambda: "d" * 64)
@@ -1867,18 +1879,41 @@ def test_core_ip_facts_accepts_proven_disabled_ipv6_only_without_relaxing_mark_r
     assert result["checks"]["-6_disabled_mode_proven"] is True
     assert result["checks"]["-6_policy_enforced"] is True
     baseline_semantics = result["semantic_sha256"]
+    baseline_observed_ipv6 = result["observed"]["ipv6_host"]
 
-    monkeypatch.setattr(native_proof, "_ipv6_host_facts", lambda: {
-        "mode": "disabled", "interfaces": ["eth0", "lo"],
-        "interface_indexes": {"eth0": 2, "lo": 1},
-        "disable_ipv6": {"all": 1, "default": 1, "eth0": 1, "lo": 1},
+    expanded_disabled_host = {
+        "mode": "disabled", "interfaces": ["veth-new", "lo"],
+        "interface_indexes": {"veth-new": 31, "lo": 1},
+        "disable_ipv6": {"all": 1, "default": 1, "veth-new": 1, "lo": 1},
         "addresses": [], "routes": [],
-    })
-    assert native_proof._core_ip_facts()["semantic_sha256"] != baseline_semantics
+    }
+    monkeypatch.setattr(native_proof, "_ipv6_host_facts", lambda: expanded_disabled_host)
+    expanded = native_proof._core_ip_facts()
+    assert expanded["semantic_sha256"] == baseline_semantics
+    assert expanded["observed"]["ipv6_host"] != baseline_observed_ipv6
+
+    reindexed_disabled_host = {
+        **expanded_disabled_host,
+        "interfaces": ["lo", "veth-new"],
+        "interface_indexes": {"lo": 1, "veth-new": 47},
+    }
+    monkeypatch.setattr(native_proof, "_ipv6_host_facts", lambda: reindexed_disabled_host)
+    reindexed = native_proof._core_ip_facts()
+    assert reindexed["semantic_sha256"] == baseline_semantics
+    assert reindexed["observed"]["ipv6_host"] != expanded["observed"]["ipv6_host"]
 
     fixtures["-6"]["rules"] = fixtures["-6"]["rules"][:1]
     with pytest.raises(ValueError, match="CORE_IP_POLICY_MISMATCH"):
         native_proof._core_ip_facts()
+
+    # Disabled IPv6 does not make the actual policy rules or routes incidental.
+    fixtures["-6"]["rules"] = [
+        {"priority": 100, "fwmark": "0x100", "table": 100},
+        {"priority": 101, "fwmark": "0x102", "table": 100},
+    ]
+    fixtures["-4"]["routes"].append({"dst": "192.0.2.0/24", "dev": "eth0", "table": 100})
+    changed_policy = native_proof._core_ip_facts()
+    assert changed_policy["semantic_sha256"] != baseline_semantics
 
 
 def test_ipv6_host_disabled_mode_requires_exact_stable_inventory_and_empty_network_state(

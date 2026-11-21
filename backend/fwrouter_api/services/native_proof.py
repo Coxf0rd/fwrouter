@@ -1171,9 +1171,19 @@ def _core_ip_facts() -> dict[str, Any]:
                 if key not in {"-6_local_default_route", "-6_disabled_mode_proven"})
             or not required["-6_policy_enforced"]):
         raise ValueError("CORE_IP_POLICY_MISMATCH")
+    # In disabled mode, _ipv6_host_facts has already verified that every
+    # current interface has disable_ipv6=1 and that no IPv6 addresses/routes
+    # remain. The interface inventory and kernel indexes are host topology,
+    # not policy; Docker veth churn must not invalidate an otherwise identical
+    # disabled-IPv6 receipt. Keep the complete snapshot in `observed` below so
+    # the before/after readback fence still detects changes during capture.
+    ipv6_semantics = {"mode": "disabled"} if ipv6_host["mode"] == "disabled" else ipv6_host
+    semantic_sha256 = hashlib.sha256(
+        _canonical_json({"ip": observed, "ipv6_host": ipv6_semantics})
+    ).hexdigest()
     return {
         "checks": required,
-        "semantic_sha256": hashlib.sha256(_canonical_json({"ip": observed, "ipv6_host": ipv6_host})).hexdigest(),
+        "semantic_sha256": semantic_sha256,
         "observed": {"ip": observed, "ipv6_host": ipv6_host},
     }
 
