@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_PATH = REPO_ROOT / "knowledge/audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.json"
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
 # An authority edit requires an explicit test/reference review, not just regenerating JSON.
-REVIEWED_AUTHORITY_SHA256 = "5fa964e4a8cf612bc88ad25b6fb47688e268a9c10a77718f95c0a41edafe220e"
+REVIEWED_AUTHORITY_SHA256 = "c5eca1859a8c08639b12f5b87f28fafc3a34cc0ef8aa04656ec64d97bc26278a"
 AUTHORITY_PROJECTION_FIELDS = (
     "order", "path", "methods", "handler", "handler_source_sha256", "include_in_schema",
     "route_kind", "authority_class", "admission_contract", "application_dependencies", "dependencies",
@@ -576,3 +576,116 @@ def test_whole_application_and_router_modules_match_reviewed_source() -> None:
     for item in document["reviewed_source_files"]:
         source = (REPO_ROOT / item["path"]).read_bytes()
         assert hashlib.sha256(source).hexdigest() == item["sha256"], item["path"]
+
+
+@pytest.fixture(scope="module")
+def schema():
+    # Generate metadata without starting the application or any background job.
+    from fwrouter_api.main import create_app
+
+    return create_app(enable_startup_tasks=False).openapi()
+
+
+def operation(schema, path, method):
+    return schema["paths"][path][method]
+
+
+def parameters(operation):
+    return {(parameter["in"], parameter["name"].lower()): parameter
+            for parameter in operation.get("parameters", [])}
+
+
+def test_management_scope_and_operation_ids(schema):
+    assert "trusted transport boundary" in schema["info"]["description"]
+    assert "security" not in schema
+    schemes = schema["components"]["securitySchemes"]
+    for name in ("ScopedClientBearer", "MaintenanceBearer"):
+        assert schemes[name]["type"] == "http"
+        assert schemes[name]["scheme"] == "bearer"
+    assert operation(schema, "/api/v2/health", "get").get("security") is None
+
+    # Paths and methods are separately pinned by the endpoint authority inventory.
+    # Preserve FastAPI's established client-facing IDs from the handler names.
+    inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+    expected = {
+        (row["path"], method.lower()): re.sub(
+            r"\W", "_", row["handler"].split(":")[-1] + row["path"],
+        ) + "_" + method.lower()
+        for row in inventory["routes"] if row["include_in_schema"]
+        for method in row["methods"] if method not in {"HEAD", "OPTIONS"}
+    }
+    actual = {(path, method): spec["operationId"] for path, methods in schema["paths"].items()
+              for method, spec in methods.items() if method in {"get", "post", "delete", "patch", "put"}}
+    assert actual == expected
+    assert len(set(actual.values())) == len(actual)
+
+
+def test_client_list_conditional_request_and_responses(schema):
+    path = "/api/v2/ui/settings/client-list"
+    get = operation(schema, path, "get")
+    patch = operation(schema, path, "patch")
+    assert "security" not in get
+    assert ("header", "if-none-match") in parameters(get)
+    assert set(get["responses"]["304"]) == {"description", "headers"}
+    for reply in (get["responses"]["200"], get["responses"]["304"], patch["responses"]["200"]):
+        assert "ETag" in reply["headers"]
+    assert patch["security"] == [{"ScopedClientBearer": []}]
+    assert parameters(patch)["header", "if-match"]["required"] is True
+    assert ("header", "origin") in parameters(patch)
+    body = patch["requestBody"]
+    assert body["required"] is True
+    shape = body["content"]["application/json"]["schema"]
+    assert shape["required"] == ["show_inactive"]
+    assert shape["properties"]["show_inactive"]["type"] == "boolean"
+    assert shape["additionalProperties"] is False
+    assert {"400", "401", "403", "412", "413", "415", "422", "428"} <= patch["responses"].keys()
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_secure_event_parameters_and_errors(schema, method):
+    spec = operation(schema, "/api/v2/events/secure/recent", method)
+    assert spec["security"] == [{"ScopedClientBearer": []}]
+    assert {name for location, name in parameters(spec) if location == "query"} == {
+        "limit", "category", "event_code", "since", "cursor",
+    }
+    assert ("header", "origin") in parameters(spec)
+    for status in ("400", "401", "403"):
+        assert "application/json" in spec["responses"][status]["content"]
+
+
+def test_transfer_and_refresh_contracts(schema):
+    export = operation(schema, "/api/v2/transfer/control-plane/export", "get")
+    assert "Operator only" in export["summary"]
+    assert "writes a snapshot file by default" in export["description"]
+    assert parameters(export)["query", "write_file"]["schema"]["default"] is True
+    assert parameters(export)["query", "include_secrets"]["schema"]["default"] is False
+
+    import_ = operation(schema, "/api/v2/transfer/control-plane/import", "post")
+    assert import_["security"] == [{"MaintenanceBearer": []}]
+    forbidden = import_["responses"]["403"]["content"]["application/json"]
+    assert forbidden["example"] == {"detail": {"code": "CONTROL_PLANE_IMPORT_FORBIDDEN"}}
+    assert "loopback" in import_["description"] and "Browser Origin" in import_["description"]
+
+    refresh = operation(schema, "/api/v2/subscription/refresh", "post")
+    success = refresh["responses"]["200"]["content"]["application/json"]
+    fields = success["schema"]["properties"]["data"]["properties"]
+    assert {"job_id", "accepted", "already_running"} <= fields.keys()
+    conflict = success["examples"]["conflict"]["value"]
+    assert conflict["ok"] is False
+    assert conflict["error"]["code"] == "SUBSCRIPTION_OPERATION_IN_PROGRESS"
+
+
+@pytest.mark.parametrize("path", ["/s/{token}", "/api/v2/xray/clients/{client_id}/subscription.txt"])
+def test_subscription_content_is_text_or_yaml(schema, path):
+    spec = operation(schema, path, "get")
+    assert set(spec["responses"]["200"]["content"]) == {"text/plain", "application/yaml"}
+    assert set(spec["responses"]["404"]["content"]) == {"text/plain"}
+    assert parameters(spec)["query", "format"]["schema"]["default"] == "auto"
+    assert not spec.get("security")
+
+
+@pytest.mark.parametrize("path", ["/api/v2/ui/clients", "/api/v2/ui/settings/inventory"])
+def test_inventory_can_retry_a_stale_snapshot(schema, path):
+    response = operation(schema, path, "get")["responses"]["503"]
+    assert "Retry-After" in response["headers"]
+    assert "application/json" in response["content"]

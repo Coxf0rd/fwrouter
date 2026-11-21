@@ -428,7 +428,33 @@ def export_xray_subscription_endpoint(client_id: str) -> ApiResponse:
         },
     )
 
-@router.get("/xray/clients/{client_id}/subscription.txt")
+_SUBSCRIPTION_TEXT_RESPONSES = {
+    200: {
+        "description": "Rendered subscription. The media type depends on the selected format.",
+        "content": {
+            "text/plain": {"schema": {"type": "string"}},
+            "application/yaml": {"schema": {"type": "string"}},
+        },
+    },
+    404: {
+        "description": "Subscription export failed.",
+        "content": {"text/plain": {"schema": {"type": "string"}}},
+    },
+}
+
+
+@router.get(
+    "/xray/clients/{client_id}/subscription.txt",
+    response_class=Response,
+    responses=_SUBSCRIPTION_TEXT_RESPONSES,
+    summary="Export a legacy subscription by client ID",
+    description=(
+        "Trusted management transport only. The client ID identifies a client and is not "
+        "a public capability. The format parameter defaults to auto (client detection). "
+        "Clash format returns YAML. For VLESS output, base64_encode controls encoding. "
+        "Happ user agents receive raw VLESS lines for that format."
+    ),
+)
 def export_xray_subscription_text_endpoint(
     client_id: str,
     request: Request,
@@ -484,7 +510,17 @@ def export_xray_subscription_text_endpoint(
     )
 
 
-@public_router.get("/s/{token}")
+@public_router.get(
+    "/s/{token}",
+    response_class=Response,
+    responses=_SUBSCRIPTION_TEXT_RESPONSES,
+    summary="Download a subscription through the public gateway",
+    description=(
+        "Use the configured public subscription gateway, not the management UI origin. "
+        "The path token grants subscription access and should be kept secret. "
+        "The format parameter defaults to auto (client detection)."
+    ),
+)
 def export_public_subscription_endpoint(
     token: str,
     request: Request,
