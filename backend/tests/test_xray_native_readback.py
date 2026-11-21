@@ -149,6 +149,7 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch, tmp_pa
                     "client_uuid": replacement_identity[0], "email": replacement_identity[1],
                 }]}, adapter=adapter, runtime_identity_reader=qualified_runtime_identity)
 
+            checkpoint_bytes = config_path.read_bytes()
             old_incarnation = adapter.get_runtime_incarnation()
             staged_path = root / "config.next.json"
             staged_path.write_text(json.dumps(replacement), encoding="utf-8")
@@ -208,6 +209,29 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch, tmp_pa
             else:
                 pytest.fail(f"restarted isolated Xray did not return an empty HandlerService user list ({last_error})")
             assert adapter.get_runtime_config_sha256() == empty_sha
+
+            empty_incarnation = adapter.get_runtime_incarnation()
+            restored_path = root / "config.restored.json"
+            restored_path.write_bytes(checkpoint_bytes)
+            restored_path.chmod(0o644)
+            os.replace(restored_path, config_path)
+            subprocess.run(
+                ["docker", "restart", container], check=True, capture_output=True,
+                text=True, timeout=10,
+            )
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    if adapter.list_loaded_client_identities() == [expected]:
+                        break
+                except XrayAdapterError as exc:
+                    if exc.code not in {"XRAY_API_READBACK_FAILED", "XRAY_API_READBACK_TIMEOUT"}:
+                        raise
+                time.sleep(0.2)
+            else:
+                pytest.fail("isolated Xray did not restore the checkpoint's loaded identities")
+            assert adapter.get_runtime_incarnation() != empty_incarnation
+            assert adapter.get_runtime_config_sha256() == hashlib.sha256(checkpoint_bytes).hexdigest()
         finally:
             subprocess.run(["docker", "stop", container], check=False, capture_output=True, timeout=8)
 

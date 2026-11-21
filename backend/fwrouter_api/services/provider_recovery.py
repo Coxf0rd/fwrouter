@@ -810,8 +810,6 @@ def _try_verified_reentry(controller: Any, *, timeout_ms: int, reason: str) -> d
     # The preflight is a potentially slow network/runtime probe and always runs
     # before entering the shared writer guard.
     probe = controller.probe(update_ping_state=True, timeout_ms=timeout_ms, reason=reason)
-    if not probe or not probe.get("ok"):
-        return {"ok": False, "status": "emergency_direct", "action": "none", "effective_override": "emergency_direct"}
 
     # Revalidate all ownership immediately before Core apply. Keep the guard
     # through apply/readback so a concurrent intent cannot be overwritten.
@@ -822,6 +820,9 @@ def _try_verified_reentry(controller: Any, *, timeout_ms: int, reason: str) -> d
         if not _recovery_context_matches(controller, snapshot):
             return {"ok": False, "status": "provider_recovery_stale", "action": "none",
                     "effective_override": "emergency_direct", "error_code": "provider_recovery_stale"}
+        if not probe or not probe.get("ok"):
+            return {"ok": False, "status": "emergency_direct", "action": "none",
+                    "effective_override": "emergency_direct"}
         if not _cas_pending(pending, claimed):
             return {"ok": False, "status": "provider_reentry_in_progress", "action": "none",
                     "effective_override": "emergency_direct", "outcome": "deferred"}

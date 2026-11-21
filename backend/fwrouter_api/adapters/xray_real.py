@@ -52,6 +52,31 @@ from fwrouter_api.services.xray_subscription import configured_xray_public_endpo
 DOCKER_CLI_STATE_DIR = Path("/run/fwrouter-v2/docker-cli")
 
 
+def _xray_json_equivalent(active: str, candidate: str) -> bool:
+    """Ignore JSON layout while preserving all typed values and array order."""
+    def unique_keys(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        keys = {key.casefold() for key, _ in items}
+        if len(keys) != len(items):
+            raise ValueError("ambiguous_json_keys")
+        return dict(items)
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("invalid_json_constant")
+
+    def parse(text: str) -> Any:
+        return json.loads(
+            text, object_pairs_hook=unique_keys, parse_constant=reject_constant,
+            parse_int=lambda value: ("int", value), parse_float=lambda value: ("float", value),
+        )
+
+    if max(len(active), len(candidate)) > 4 * 1024 * 1024:
+        return False
+    try:
+        return parse(active) == parse(candidate)
+    except (ValueError, RecursionError):
+        return False
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     from fwrouter_api.adapters import xray as xray_facade
 
@@ -352,10 +377,41 @@ class RealXrayAdapter(XrayAdapter):
             details={"reload": reload_result.details},
         )
 
+    def _verified_mounted_config(self, expected_sha256: str) -> str | None:
+        try:
+            incarnation = self.get_runtime_incarnation()
+            mounted = self.get_runtime_config_sha256()
+            if (
+                incarnation and mounted == expected_sha256
+                and self.get_runtime_incarnation() == incarnation
+                and hashlib.sha256(self.config_path.read_bytes()).hexdigest() == expected_sha256
+            ):
+                return incarnation
+        except (OSError, XrayAdapterError):
+            pass
+        return None
+
+    def _effective_config_text(self, text: str) -> str:
+        try:
+            with self.config_path.open("rb") as active_file:
+                active = active_file.read(4 * 1024 * 1024 + 1)
+            if len(active) > 4 * 1024 * 1024:
+                return text
+            active_text = active.decode("utf-8")
+        except (OSError, UnicodeError):
+            return text
+        if active_text == text:
+            return text
+        if _xray_json_equivalent(active_text, text) and self._verified_mounted_config(
+            hashlib.sha256(active).hexdigest(),
+        ):
+            return active_text
+        return text
+
     def _active_config_matches(self, text: str) -> bool:
         try:
-            return self.config_path.read_text(encoding="utf-8") == text
-        except FileNotFoundError:
+            return self.config_path.read_bytes() == self._effective_config_text(text).encode("utf-8")
+        except OSError:
             return False
 
     def _resolve_client(self, client_id: str) -> tuple[dict[str, Any], dict[str, Any], list[XrayClient], XrayClient]:
@@ -1200,8 +1256,9 @@ class RealXrayAdapter(XrayAdapter):
             handoff_assignments=handoff_assignments,
         )
         resolved_path = candidate_path or self._candidate_path()
-        _atomic_write_text(resolved_path, _json_dump(payload))
-        staged_text = resolved_path.read_text(encoding="utf-8")
+        generated_text = _json_dump(payload)
+        staged_text = self._effective_config_text(generated_text)
+        _atomic_write_text(resolved_path, staged_text)
         staged_sha256 = hashlib.sha256(staged_text.encode("utf-8")).hexdigest()
         validation = self.test_config(str(resolved_path))
         if not validation.ok:
@@ -1224,6 +1281,7 @@ class RealXrayAdapter(XrayAdapter):
                 "stage": "validated",
                 "candidate_path": str(resolved_path),
                 "candidate_sha256": staged_sha256,
+                "effective_config": "serialization_only" if staged_text != generated_text else "generated",
                 "desired_clients_count": len(desired_by_email),
                 "metadata_applied_count": metadata_count,
                 "routing_applied_count": routing_count,
@@ -1244,28 +1302,56 @@ class RealXrayAdapter(XrayAdapter):
     ) -> XrayApplyResult:
         """Apply bytes previously validated by `stage_subscription_generation`."""
         try:
-            text = Path(candidate_path).read_text(encoding="utf-8")
+            raw = Path(candidate_path).read_bytes()
+            text = raw.decode("utf-8")
             payload = json.loads(text)
         except Exception as exc:
             return XrayApplyResult(ok=False, message="Staged Xray candidate is unavailable.", error_code="XRAY_STAGE_CANDIDATE_UNREADABLE", details={"error": str(exc)})
         if not isinstance(payload, dict):
             return XrayApplyResult(ok=False, message="Staged Xray candidate is invalid.", error_code="XRAY_STAGE_CANDIDATE_INVALID")
-        if hashlib.sha256(text.encode("utf-8")).hexdigest() != str(expected_sha256 or ""):
+        if hashlib.sha256(raw).hexdigest() != str(expected_sha256 or ""):
             return XrayApplyResult(ok=False, message="Staged Xray candidate changed after validation.", error_code="XRAY_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION")
         if self.config_path.exists() and hashlib.sha256(self.config_path.read_bytes()).hexdigest() == expected_sha256:
+            incarnation = self._verified_mounted_config(expected_sha256)
             return XrayApplyResult(
-                ok=True,
-                message="Staged Xray candidate already matches the active config.",
-                details={"stage": "unchanged", "reload": {"skipped": True, "reason": "config_unchanged"}},
+                ok=bool(incarnation),
+                message=("Staged Xray candidate already matches the running mount." if incarnation
+                         else "The active Xray config could not be verified against the running mount."),
+                error_code=None if incarnation else "XRAY_STAGE_ACTIVE_RUNTIME_UNVERIFIED",
+                details={
+                    "stage": "unchanged" if incarnation else "readback",
+                    "runtime_action": "none",
+                    "runtime_incarnation": incarnation,
+                    "mounted_config_verified": bool(incarnation),
+                    "reload": {"skipped": True, "reason": "config_unchanged" if incarnation else "runtime_unverified"},
+                },
             )
         self._remember_active_config()
         _atomic_write_text(self.config_path, text)
         reload_result = self.reload()
+        incarnation = self._verified_mounted_config(expected_sha256) if reload_result.ok else None
+        if not reload_result.ok:
+            stage = "reload"
+            error_code = reload_result.error_code or "XRAY_RELOAD_FAILED"
+        elif incarnation is None:
+            stage = "readback"
+            error_code = "XRAY_STAGE_ACTIVE_RUNTIME_UNVERIFIED"
+        else:
+            stage = "applied"
+            error_code = None
         return XrayApplyResult(
-            ok=reload_result.ok,
-            message="Staged Xray generation applied." if reload_result.ok else "Staged Xray generation reload failed.",
-            error_code=None if reload_result.ok else reload_result.error_code or "XRAY_RELOAD_FAILED",
-            details={"stage": "applied" if reload_result.ok else "reload", "reload": reload_result.details},
+            ok=error_code is None,
+            message=("Staged Xray generation applied and its mount was verified." if error_code is None
+                     else "Staged Xray generation could not be verified after restart."),
+            error_code=error_code,
+            details={
+                "stage": stage,
+                "runtime_action": "restart",
+                "reason": "effective_config_changed",
+                "reload": reload_result.details,
+                "runtime_incarnation": incarnation,
+                "mounted_config_verified": bool(incarnation),
+            },
         )
 
     @xray_writer_guarded

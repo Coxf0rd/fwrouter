@@ -425,6 +425,7 @@ assert.strictEqual(unknownAuditEn.details.legacy_raw_message, "unlocalized backe
 i18n.setLocale("ru");
 
 const phase2EventTitles = {
+  "job.terminal_outcome": ["Задание завершено", "Job finished"],
   "subscription.source_added": ["Источник подписки добавлен", "Subscription source added"],
   "subscription.source_delete_requested": ["Удаление источника подписки запрошено", "Subscription source deletion requested"],
   "subscription.configuration_changed": ["Настройки подписки изменены", "Subscription settings changed"],

@@ -960,6 +960,9 @@ def _batch_materialize_xray_subject_bindings(
 
 def _apply_staged_mihomo_candidate(
     candidate_path: str, expected_sha256: str, *, inventory_admission: Any = None,
+    runtime_noop_proof_required: bool = False,
+    runtime_noop_expected_incarnation: str | None = None,
+    runtime_noop_transition_proof: dict[str, str] | None = None,
     candidate_input_fingerprint: dict[str, Any] | None = None,
     fixed_routing_snapshot: dict[str, Any] | None = None,
     fixed_workflow_revision: int | None = None,
@@ -1012,7 +1015,16 @@ def _apply_staged_mihomo_candidate(
                 "last_good_retained": True}
 
     active_path = Path(mihomo_config._resolved_base_config_path())
-    if active_path.exists() and hashlib.sha256(active_path.read_bytes()).hexdigest() == expected_sha256:
+    active_matches_candidate = (
+        active_path.exists()
+        and hashlib.sha256(active_path.read_bytes()).hexdigest() == expected_sha256
+    )
+    if runtime_noop_proof_required and not active_matches_candidate:
+        return {"ok": False, "stage": "runtime_readback",
+                "error_code": "MIHOMO_SEMANTIC_NOOP_RUNTIME_UNVERIFIED",
+                "runtime_verified": False, "last_good_retained": True,
+                "container": {"ok": False, "action": "none", "reason": "active_generation_changed"}}
+    if active_matches_candidate:
         unchanged_revision_ok = (
             fixed_workflow_revision is None and ordinary_fixed_context is None
             or (type(expected_selection_revision) is int
@@ -1027,11 +1039,71 @@ def _apply_staged_mihomo_candidate(
                 fixed_routing_snapshot, None,
                 expected_selection_revision=expected_selection_revision,
                 ordinary_fixed_context=ordinary_fixed_context)
+        runtime_noop_verified = True
+        if unchanged_revision_ok and runtime_noop_proof_required:
+            # A semantic comparison only authorizes representative bytes. At
+            # apply time, independently prove that this exact active generation
+            # is still the one recorded as loaded by the current runtime.
+            from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+            from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+                _current_runtime_incarnation, _load_state,
+                mihomo_input_receipt_snapshot_matches,
+                mihomo_udp_policy_receipt_matches,
+            )
+            try:
+                active_hash = hashlib.sha256(active_path.read_bytes()).hexdigest()
+                incarnation = _current_runtime_incarnation()
+                runtime_proof = _native_udp_policy_proof()
+                readback_ok = bool(
+                    runtime_proof.get("ok") is True
+                    and runtime_proof.get("native_top_level_rules_match") is True
+                    and runtime_proof.get("selector_membership_matches") is True
+                    and runtime_proof.get("guarded_rules_match") is True
+                )
+                if isinstance(runtime_noop_transition_proof, dict):
+                    # The immediately preceding staged transition itself was
+                    # accepted by the lifecycle owner. Reuse its exact SHA and
+                    # incarnation, then require fresh native readback here;
+                    # historical persisted receipts may not exist yet.
+                    runtime_noop_verified = bool(
+                        runtime_noop_transition_proof.get("sha256") == expected_sha256 == active_hash
+                        and runtime_noop_transition_proof.get("incarnation")
+                        and runtime_noop_transition_proof.get("incarnation") == incarnation
+                        and readback_ok
+                        and hashlib.sha256(active_path.read_bytes()).hexdigest() == active_hash
+                        and _current_runtime_incarnation() == incarnation
+                    )
+                else:
+                    runtime_state = _load_state()
+                    runtime_noop_verified = bool(
+                        isinstance(runtime_state, dict)
+                        and runtime_state.get("active_config_hash") == active_hash == expected_sha256
+                        and incarnation
+                        and runtime_state.get("runtime_incarnation") == incarnation
+                        and (runtime_noop_expected_incarnation is None
+                             or incarnation == runtime_noop_expected_incarnation)
+                        and mihomo_input_receipt_snapshot_matches(runtime_state)
+                        and mihomo_udp_policy_receipt_matches(runtime_state)
+                        and readback_ok
+                        and hashlib.sha256(active_path.read_bytes()).hexdigest() == active_hash
+                        and _current_runtime_incarnation() == incarnation
+                    )
+            except Exception:
+                runtime_noop_verified = False
+            unchanged_revision_ok = unchanged_revision_ok and runtime_noop_verified
         return {
             "ok": unchanged_revision_ok,
-            "stage": "unchanged" if unchanged_revision_ok else "fixed_routing_snapshot",
-            "error_code": None if unchanged_revision_ok else "FIXED_XRAY_SELECTION_REVISION_UNVERIFIED",
+            "stage": "unchanged" if unchanged_revision_ok else (
+                "runtime_readback" if runtime_noop_proof_required and not runtime_noop_verified
+                else "fixed_routing_snapshot"
+            ),
+            "error_code": None if unchanged_revision_ok else (
+                "MIHOMO_SEMANTIC_NOOP_RUNTIME_UNVERIFIED"
+                if runtime_noop_proof_required and not runtime_noop_verified
+                else "FIXED_XRAY_SELECTION_REVISION_UNVERIFIED"
+            ),
             "selection_revision": expected_selection_revision,
+            "runtime_verified": runtime_noop_verified if runtime_noop_proof_required else None,
             "container": {"ok": unchanged_revision_ok, "action": "none", "reason": "config_unchanged"},
         }
     if not _fixed_xray_generation_context_matches(
@@ -1956,7 +2028,24 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
             return {"ok": False, "status": "pending", "stage": "fixed_generation_recovery_fence",
                     "error_code": "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN",
                     "runtime_verified": False}
+        verification = checkpoint.get("pre_publication_verification")
+        if isinstance(verification, dict) and verification.get("error_code") == "VPN_AUTO_HEALTH_UNCONFIRMED":
+            from fwrouter_api.services.selector import get_vpn_auto_target_health
+
+            routing = get_routing_global_state(expire_ttl=False) or {}
+            active_server_id = str(routing.get("active_auto_server_id") or "")
+            if get_vpn_auto_target_health(active_server_id) != "healthy":
+                return {
+                    "ok": False, "status": "pending", "stage": "selection_verification",
+                    "reason": "vpn_auto_health_unconfirmed",
+                    "error_code": "VPN_AUTO_HEALTH_UNCONFIRMED", "last_good_retained": True,
+                }
         checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
+        restore_actions = checkpoint.get("restore_actions") if isinstance(checkpoint.get("restore_actions"), dict) else {}
+        owned_restore_journal = bool(
+            checkpoint_phase in {"restore_failed", "restore_started"}
+            and restore_actions.get("source_phase")
+        )
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
         inventory_state = get_subscription_native_generation_state()
         checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
@@ -1975,15 +2064,18 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
             }
             and inventory_state.get("status") in {"pending", "verified"}
         )
-        if checkpoint_phase in {"restore_failed", "restore_started"} or current_projection_recoverable:
-            if not checkpoint_inventory_bound:
-                return {"ok": False, "status": "pending", "stage": "generation_recovery",
-                        "error_code": "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED",
-                        "last_good_retained": True}
+        if checkpoint_phase in {"restore_failed", "restore_started"} and not checkpoint_inventory_bound:
+            return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                    "error_code": "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED",
+                    "last_good_retained": True}
+        if (
+            checkpoint_phase in {"restore_failed", "restore_started"} and not owned_restore_journal
+        ) or (current_projection_recoverable and not owned_restore_journal):
             recovered = _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
         else:
             recovered = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-            if not recovered.get("ok") and recovered.get("recovered") == "stale_checkpoint_declined":
+            if (not owned_restore_journal and not recovered.get("ok")
+                    and recovered.get("recovered") == "stale_checkpoint_declined"):
                 recovered = (
                     _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
                     if _checkpoint_inventory_generation_matches(checkpoint_path)
@@ -2312,11 +2404,12 @@ def _write_xray_generation_checkpoint(
 def _update_xray_generation_checkpoint(
     checkpoint_path: Path, *, phase: str, selection_revision: int | None = None,
     xray_runtime_incarnation: str | None = None, xray_mounted_config_sha256: str | None = None,
-) -> None:
+) -> str | None:
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     data["phase"] = phase
     from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
-    data["mihomo_runtime_incarnation"] = get_mihomo_runtime_incarnation()
+    mihomo_incarnation = get_mihomo_runtime_incarnation()
+    data["mihomo_runtime_incarnation"] = mihomo_incarnation
     if selection_revision is not None:
         if type(selection_revision) is not int or selection_revision < int(data.get("selection_revision", 0)):
             raise ValueError("Generation checkpoint cannot adopt an invalid or older selection revision.")
@@ -2326,6 +2419,7 @@ def _update_xray_generation_checkpoint(
     if xray_mounted_config_sha256 is not None:
         data["xray_mounted_config_sha256_after"] = xray_mounted_config_sha256
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
+    return mihomo_incarnation
 
 
 def _record_xray_generation_selection_revision(
@@ -3301,12 +3395,26 @@ def _finalize_nonstaged_profile_publication(pending: dict[str, Any], verificatio
     return _build_publication_result(values, promoted, verification)
 
 
+def _checkpoint_runtime_preimage_verified(
+    *, expected_sha256: str | None, runtime_sha256: str | None,
+    expected_incarnation: str | None, runtime_incarnation: str | None,
+    native_readback_ok: bool,
+) -> bool:
+    """Require exact checkpoint content, incarnation ownership, and fresh readback."""
+    return bool(
+        expected_sha256 and runtime_sha256 == expected_sha256
+        and expected_incarnation and runtime_incarnation == expected_incarnation
+        and native_readback_ok is True
+    )
+
+
 @xray_writer_guarded
 def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
     from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
     from fwrouter_api.services import mihomo_config
     from fwrouter_api.services.artifacts import atomic_write_text
     from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+    from fwrouter_api.adapters.xray_common import XrayApplyResult
 
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     mode = _checkpoint_operation_mode(data)
@@ -3335,7 +3443,18 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
                 "reason": "supersession_preimage_unproven"}
     # Refuse stale recovery before the first file write/reload. The checkpoint
     # must still own both the runtime incarnation and the selection fence.
-    expected_incarnation = str(data.get("mihomo_runtime_incarnation") or "")
+    phase = str(data.get("phase") or "")
+    restore_actions = data.get("restore_actions") if isinstance(data.get("restore_actions"), dict) else {}
+    if phase in {"restore_started", "restore_failed"} and not restore_actions.get("source_phase"):
+        return {"ok": False, "recovered": "stale_checkpoint_declined",
+                "reason": "restore_action_ownership_unavailable"}
+    expected_incarnation = str(
+        restore_actions.get("mihomo_runtime_incarnation")
+        if phase in {"restore_started", "restore_failed"} and restore_actions.get("mihomo_completed")
+        else restore_actions.get("mihomo_source_runtime_incarnation")
+        if phase in {"restore_started", "restore_failed"} and restore_actions.get("source_phase")
+        else data.get("mihomo_runtime_incarnation") or ""
+    )
     from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
     current_incarnation = get_mihomo_runtime_incarnation()
     from fwrouter_api.db.connection import db_session
@@ -3361,7 +3480,9 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     staged = data.get("staged_generation") if isinstance(data.get("staged_generation"), dict) else {}
     phase = str(data.get("phase") or "")
     mihomo_expected_hash = (
-        staged.get("mihomo_final_sha256") if phase in {"runtime_applied", "inventory_synced", "bindings_written", "projections_cleaned", "selection_verified"}
+        restore_actions.get("mihomo_source_config_sha256")
+        if phase in {"restore_started", "restore_failed"} and restore_actions.get("source_phase")
+        else staged.get("mihomo_final_sha256") if phase in {"runtime_applied", "inventory_synced", "bindings_written", "projections_cleaned", "selection_verified"}
         else None
     )
     if phase in {"transition_applied", "xray_applied"}:
@@ -3378,7 +3499,11 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     if mihomo_expected_hash:
         active_path = Path(mihomo_config._resolved_base_config_path())
         actual_hash = hashlib.sha256(active_path.read_bytes()).hexdigest() if active_path.is_file() else None
-        if actual_hash != mihomo_expected_hash:
+        allowed_restore_hashes = {
+            str(restore_actions.get("mihomo_source_config_sha256") or ""),
+            str(restore_actions.get("mihomo_config_sha256") or ""),
+        } if phase in {"restore_started", "restore_failed"} and restore_actions.get("source_phase") else set()
+        if actual_hash != mihomo_expected_hash and actual_hash not in allowed_restore_hashes:
             return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "active_mihomo_generation_changed"}
 
     # Own the current Xray side as well as Mihomo before any fence, file, or DB write.
@@ -3430,25 +3555,49 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     applied_xray_phases = {"xray_applied", "runtime_applied", "inventory_synced", "bindings_written",
                            "projections_cleaned", "selection_verified", "snapshots_published"}
     expected_current_xray_sha = (
-        str(staged_xray.get("xray_candidate_sha256") or "") if phase in applied_xray_phases
+        str(restore_actions.get("xray_config_sha256") or "")
+        if phase in {"restore_started", "restore_failed"} and restore_actions.get("xray_completed")
+        else str(restore_actions.get("xray_source_config_sha256") or "")
+        if phase in {"restore_started", "restore_failed"} and restore_actions.get("source_phase")
+        else str(staged_xray.get("xray_candidate_sha256") or "") if phase in applied_xray_phases
         else hashlib.sha256(xray_before_bytes).hexdigest()
     )
     expected_current_xray_incarnation = (
-        str(data.get("xray_runtime_incarnation_after") or "") if phase in applied_xray_phases
+        str(restore_actions.get("xray_runtime_incarnation") or "")
+        if phase in {"restore_started", "restore_failed"} and restore_actions.get("xray_completed")
+        else str(restore_actions.get("xray_source_runtime_incarnation") or "")
+        if phase in {"restore_started", "restore_failed"} and restore_actions.get("source_phase")
+        else str(data.get("xray_runtime_incarnation_after") or "") if phase in applied_xray_phases
         else str(data.get("xray_runtime_incarnation_before") or "")
     )
     try:
         current_xray_sha = hashlib.sha256(Path(adapter.config_path).read_bytes()).hexdigest()
         current_mounted_xray_sha = adapter.get_runtime_config_sha256()
         current_xray_incarnation = adapter.get_runtime_incarnation()
+        allowed_restore_xray_hashes = {
+            str(restore_actions.get("xray_source_config_sha256") or ""),
+            str(restore_actions.get("xray_config_sha256") or ""),
+        } if phase in {"restore_started", "restore_failed"} and restore_actions.get("source_phase") else set()
+        xray_content_owned = (
+            current_xray_sha == expected_current_xray_sha
+            and current_mounted_xray_sha == expected_current_xray_sha
+        ) or (
+            bool(allowed_restore_xray_hashes)
+            and current_xray_sha == current_mounted_xray_sha
+            and current_xray_sha in allowed_restore_xray_hashes
+        )
         if (not expected_current_xray_sha or not expected_current_xray_incarnation
-                or current_xray_sha != expected_current_xray_sha
-                or current_mounted_xray_sha != expected_current_xray_sha
+                or not xray_content_owned
                 or current_xray_incarnation != expected_current_xray_incarnation):
             return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "xray_runtime_ownership_changed"}
         expected_current_ids = (
             data.get("expected_client_identities")
-            if phase in applied_xray_phases else None
+            if (phase in applied_xray_phases
+                or (phase in {"restore_started", "restore_failed"}
+                    and not restore_actions.get("xray_completed")
+                and str(restore_actions.get("source_phase") or "") in applied_xray_phases)
+                )
+            else None
         )
         if expected_current_ids is None:
             expected_current_payload = json.loads(xray_before_text)
@@ -3503,6 +3652,78 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             for client in ((inbound.get("settings") or {}).get("clients") or [])
             if isinstance(client, dict) and client.get("id") and client.get("email")
         )
+        restored_mihomo_text = (artifacts.get("mihomo_config") or {}).get("text")
+        expected_restore_mihomo_sha = (
+            hashlib.sha256(base64.b64decode(restored_mihomo_text, validate=True)).hexdigest()
+            if isinstance(restored_mihomo_text, str) else None
+        )
+        # Reuse an already-converged component only when its checkpoint-bound
+        # incarnation and exact content agree. Mihomo additionally needs the
+        # existing runtime receipt and fresh controller proof; bytes alone do
+        # not establish that its loaded policy matches.
+        previously_completed = (
+            restore_actions if phase in {"restore_started", "restore_failed"} else {}
+        )
+        xray_runtime_already_matches = _checkpoint_runtime_preimage_verified(
+            expected_sha256=restore_candidate_sha,
+            runtime_sha256=current_xray_sha if current_xray_sha == current_mounted_xray_sha else None,
+            expected_incarnation=(
+                current_xray_incarnation == str(data.get("xray_runtime_incarnation_before") or "")
+                and str(data.get("xray_runtime_incarnation_before") or "")
+            ) or (
+                str(previously_completed.get("xray_runtime_incarnation") or "")
+                if previously_completed.get("xray_completed") is True else None
+            ),
+            runtime_incarnation=current_xray_incarnation,
+            native_readback_ok=(
+                sorted(adapter.list_loaded_client_identities()) == restore_payload_ids
+                and (
+                    phase not in {"restore_started", "restore_failed"}
+                    or previously_completed.get("xray_completed") is True
+                )
+            ),
+        )
+        mihomo_runtime_already_matches = False
+        if expected_restore_mihomo_sha and current_mihomo_sha == expected_restore_mihomo_sha:
+            try:
+                from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+                from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+                    _current_runtime_incarnation, _load_state,
+                    mihomo_input_receipt_snapshot_matches,
+                    mihomo_udp_policy_receipt_matches,
+                )
+                receipt = _load_state()
+                native = _native_udp_policy_proof()
+                current_mihomo_runtime = _current_runtime_incarnation()
+                witnessed_restore = bool(
+                    previously_completed.get("mihomo_completed") is True
+                    and previously_completed.get("mihomo_config_sha256") == expected_restore_mihomo_sha
+                    and previously_completed.get("mihomo_runtime_incarnation") == current_mihomo_runtime
+                )
+                mihomo_runtime_already_matches = _checkpoint_runtime_preimage_verified(
+                    expected_sha256=expected_restore_mihomo_sha,
+                    runtime_sha256=(
+                        expected_restore_mihomo_sha
+                        if current_mihomo_sha == expected_restore_mihomo_sha and witnessed_restore
+                        else str(receipt.get("active_config_hash") or "")
+                        if isinstance(receipt, dict)
+                        and current_mihomo_sha == expected_restore_mihomo_sha
+                        and receipt.get("runtime_incarnation") == current_mihomo_runtime
+                        and mihomo_input_receipt_snapshot_matches(receipt)
+                        and mihomo_udp_policy_receipt_matches(receipt)
+                        else None
+                    ),
+                    expected_incarnation=expected_incarnation,
+                    runtime_incarnation=current_mihomo_runtime,
+                    native_readback_ok=(
+                        native.get("ok") is True
+                        and native.get("native_top_level_rules_match") is True
+                        and native.get("selector_membership_matches") is True
+                        and native.get("guarded_rules_match") is True
+                    ),
+                )
+            except Exception:
+                mihomo_runtime_already_matches = False
     except Exception:
         return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "xray_preimage_invalid"}
 
@@ -3604,32 +3825,126 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
         )
     if rollback_revision is None:
         return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "selection_fence_changed"}
+    source_restore_actions = (
+        restore_actions if phase in {"restore_started", "restore_failed"} else {}
+    )
     if isinstance(after_selection, dict):
         after_selection["selection_revision"] = rollback_revision
         data["auto_selection_after"] = after_selection
     data["selection_revision"] = rollback_revision
     data["phase"] = "restore_started"
+    data["restore_actions"] = {
+        "source_phase": str(source_restore_actions.get("source_phase") or phase),
+        "xray_source_config_sha256": str(
+            source_restore_actions.get("xray_source_config_sha256") or current_xray_sha
+        ),
+        "xray_source_runtime_incarnation": str(
+            source_restore_actions.get("xray_source_runtime_incarnation") or current_xray_incarnation
+        ),
+        "mihomo_source_config_sha256": str(
+            source_restore_actions.get("mihomo_source_config_sha256") or current_mihomo_sha
+        ),
+        "mihomo_source_runtime_incarnation": str(
+            source_restore_actions.get("mihomo_source_runtime_incarnation") or current_incarnation
+        ),
+        "xray_action": "noop" if xray_runtime_already_matches else "reload",
+        "mihomo_action": "noop" if mihomo_runtime_already_matches else "force_recreate",
+        "xray_completed": xray_runtime_already_matches,
+        "mihomo_completed": mihomo_runtime_already_matches,
+        "xray_config_sha256": restore_candidate_sha,
+        "mihomo_config_sha256": expected_restore_mihomo_sha,
+        **({"xray_runtime_incarnation": current_xray_incarnation}
+           if xray_runtime_already_matches else {}),
+        **({"mihomo_runtime_incarnation": current_incarnation}
+           if mihomo_runtime_already_matches else {}),
+    }
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
+
+    def record_restore_component(component: str, *, incarnation: str) -> bool:
+        """Durably record one witnessed component action for idempotent resume."""
+        try:
+            current_data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if (current_data.get("generation_id") != data.get("generation_id")
+                    or current_data.get("phase") != "restore_started"
+                    or current_data.get("selection_revision") != rollback_revision
+                    or not incarnation):
+                return False
+            actions = current_data.get("restore_actions")
+            if not isinstance(actions, dict):
+                return False
+            actions[f"{component}_completed"] = True
+            actions[f"{component}_runtime_incarnation"] = incarnation
+            actions[f"{component}_config_sha256"] = (
+                restore_candidate_sha if component == "xray" else expected_restore_mihomo_sha
+            )
+            _atomic_write_private_checkpoint(checkpoint_path, json.dumps(current_data, sort_keys=True))
+            return True
+        except Exception:
+            return False
+
     artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
     for key in ("xray_config", "mihomo_config", "xray_bindings"):
         artifact = artifacts.get(key) if isinstance(artifacts.get(key), dict) else {}
         text_value = artifact.get("text")
         target = Path(artifact.get("path") or "")
         if not isinstance(text_value, str):
-            target.unlink(missing_ok=True)
+            if target.exists():
+                target.unlink()
             continue
         raw = (restore_candidate_text.encode("utf-8") if key == "xray_config"
                else base64.b64decode(text_value))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(target, raw.decode("utf-8"))
-    xray_restore = adapter.reload()
-    mihomo_restore = restart_mihomo_container(
-        action="force_recreate", selection_fenced=True,
-        expected_selection_revision=rollback_revision,
+        try:
+            artifact_unchanged = target.is_file() and target.read_bytes() == raw
+        except OSError:
+            artifact_unchanged = False
+        if not artifact_unchanged:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(target, raw.decode("utf-8"))
+    try:
+        xray_restore = (
+            XrayApplyResult(ok=True, message="checkpoint runtime already verified")
+            if xray_runtime_already_matches else adapter.reload()
+        )
+    except Exception as exc:
+        xray_restore = XrayApplyResult(ok=False, message=f"reload raised {type(exc).__name__}")
+    try:
+        xray_restore_incarnation = adapter.get_runtime_incarnation() if xray_restore.ok else ""
+    except Exception:
+        xray_restore_incarnation = ""
+    xray_restore_recorded = bool(
+        xray_restore.ok and (
+            xray_runtime_already_matches
+            or record_restore_component("xray", incarnation=xray_restore_incarnation)
+        )
+    )
+    try:
+        mihomo_restore = (
+            {"ok": True, "action": "noop", "reason": "checkpoint_runtime_already_verified"}
+            if mihomo_runtime_already_matches else restart_mihomo_container(
+                action="force_recreate", selection_fenced=True,
+                expected_selection_revision=rollback_revision,
+            )
+        )
+    except Exception as exc:
+        mihomo_restore = {"ok": False, "action": "failed", "reason": type(exc).__name__}
+    try:
+        restored_mihomo_incarnation_witness = (
+            get_mihomo_runtime_incarnation() if mihomo_restore.get("ok") else ""
+        )
+    except Exception:
+        restored_mihomo_incarnation_witness = ""
+    mihomo_restore_recorded = bool(
+        mihomo_restore.get("ok") and (
+            mihomo_runtime_already_matches
+            or record_restore_component("mihomo", incarnation=restored_mihomo_incarnation_witness)
+        )
     )
     # Physical operations can be slow. Revalidate the owned revision and the
     # exact post-generation DB scope again before restoring any derived rows.
-    pre_db_restore_ok = bool(xray_restore.ok and mihomo_restore.get("ok"))
+    pre_db_restore_ok = bool(
+        xray_restore.ok and xray_restore_recorded
+        and mihomo_restore.get("ok") and mihomo_restore_recorded
+    )
     try:
         with db_session() as connection:
             physical_fence = read_selection_fence(connection)
@@ -3666,12 +3981,18 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             and physical_snapshots == current_snapshots
             and selection_semantics(physical_selection) == selection_semantics(expected_selection)
             and actual_restore_xray_sha == restore_candidate_sha == actual_restore_mounted_sha
-            and actual_restore_xray_incarnation != current_xray_incarnation
+            and actual_restore_xray_incarnation == xray_restore_incarnation
+            and (actual_restore_xray_incarnation == current_xray_incarnation
+                 if xray_runtime_already_matches
+                 else actual_restore_xray_incarnation != current_xray_incarnation)
             and actual_restore_ids == restore_payload_ids
             and expected_restore_mihomo_sha is not None
             and actual_restore_mihomo_sha == expected_restore_mihomo_sha
             and bool(actual_restore_mihomo_incarnation)
-            and actual_restore_mihomo_incarnation != current_incarnation
+            and actual_restore_mihomo_incarnation == restored_mihomo_incarnation_witness
+            and (actual_restore_mihomo_incarnation == current_incarnation
+                 if mihomo_runtime_already_matches
+                 else actual_restore_mihomo_incarnation != current_incarnation)
         )
     except Exception:
         pre_db_restore_ok = False
@@ -3749,7 +4070,7 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             mode_readback = _verify_active_config_client_modes(restored_modes)
             xray_runtime_readback = {
                 "ok": (restored_config_hash == restore_candidate_sha == mounted_hash
-                       and restored_incarnation != current_xray_incarnation
+                       and restored_incarnation == xray_restore_incarnation
                        and loaded_identities == restore_payload_ids
                        and bool(binding_readback.get("ok")) and bool(mode_readback.get("ok"))),
                 "loaded_identity_count": len(loaded_identities),
@@ -3772,7 +4093,11 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             mihomo_runtime_readback = {
                 "ok": (expected_mihomo_hash is not None and active_mihomo_hash == expected_mihomo_hash
                        and bool(mihomo_after_incarnation)
-                       and mihomo_after_incarnation != current_incarnation and listeners_ready),
+                       and mihomo_after_incarnation == restored_mihomo_incarnation_witness
+                       and (mihomo_after_incarnation == current_incarnation
+                            if mihomo_runtime_already_matches
+                            else mihomo_after_incarnation != current_incarnation)
+                       and listeners_ready),
             }
         except Exception as exc:
             xray_runtime_readback = {"ok": False, "reason": type(exc).__name__}
@@ -3808,8 +4133,11 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
                 "native_config_validated": True,
                 "sha256": mihomo_preimage_proof.get("sha256"),
             },
-            "xray_reload": xray_restore.ok,
-            "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok,
+            "xray_reload": bool(xray_restore.ok and not xray_runtime_already_matches),
+            "xray_action": "noop" if xray_runtime_already_matches else "reload",
+            "mihomo_restart": bool(mihomo_restore.get("ok") and not mihomo_runtime_already_matches),
+            "mihomo_action": "noop" if mihomo_runtime_already_matches else "force_recreate",
+            "derived_rows_restored": derived_restore_ok,
             "selection_readback": selection_readback, "xray_runtime_readback": xray_runtime_readback,
             "mihomo_runtime_readback": mihomo_runtime_readback,
             "selection_restore_revision": owned_selection_revision}
@@ -4077,6 +4405,14 @@ def reconcile_xray_subscription_profile_nodes(
         if verification.get("ok"):
             _mark_generation_selection_verification_required(checkpoint_path)
             _record_xray_generation_derived_rows(checkpoint_path, phase="selection_verified")
+        elif verification.get("error_code") == "VPN_AUTO_HEALTH_UNCONFIRMED":
+            # A matching eligible target with missing health evidence is not a
+            # runtime failure. Leave publication pending under the existing
+            # generation owner and retain the checkpoint for guarded recovery.
+            return {"ok": False, "status": "pending", "stage": "selection_verification",
+                    "error_code": "VPN_AUTO_HEALTH_UNCONFIRMED",
+                    "error_message": verification.get("error_message"),
+                    "last_good_retained": True}
         else:
             restored = _restore_xray_generation_checkpoint(_xray_adapter(), checkpoint_path)
             return {"ok": False, "status": "failed", "stage": "selection_verification",
@@ -4458,6 +4794,12 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             transition,
             staged_generation["native_validation"]["transition"]["candidate_sha256"],
             inventory_admission=_inventory_admission,
+            runtime_noop_proof_required=bool(
+                staged_generation["native_validation"]["transition"].get("runtime_noop_proof_required")
+            ),
+            runtime_noop_expected_incarnation=(
+                staged_generation["native_validation"]["transition"].get("runtime_noop_expected_incarnation")
+            ),
             candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
             fixed_routing_snapshot=_fixed_routing_snapshot,
             fixed_workflow_revision=_fixed_workflow_revision,
@@ -4478,10 +4820,21 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                     "details": _strip_raw_payload(applied_transition),
                     **({"runtime_verified": False, "generation_recovery": restored}
                        if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else {})}
-        _update_xray_generation_checkpoint(
+        transition_incarnation = _update_xray_generation_checkpoint(
             checkpoint_path, phase="transition_applied",
             selection_revision=transition_selection_revision,
         )
+        transition_runtime_proof = None
+        final_write = staged_generation["native_validation"]["final"].get("write") or {}
+        if final_write.get("effective_candidate_reused") is True:
+            if not transition_incarnation:
+                return {"ok": False, "status": "pending", "stage": "mihomo_transition_apply",
+                        "error_code": "MIHOMO_SEMANTIC_NOOP_RUNTIME_UNVERIFIED",
+                        "runtime_verified": False}
+            transition_runtime_proof = {
+                "sha256": staged_generation["native_validation"]["transition"]["candidate_sha256"],
+                "incarnation": transition_incarnation,
+            }
         if _fixed_workflow_revision is not None:
             fixed_stage_selection_revision = transition_selection_revision
         if not _fixed_xray_generation_context_matches(
@@ -4521,6 +4874,13 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             final_path,
             staged_generation["native_validation"]["final"]["candidate_sha256"],
             inventory_admission=_inventory_admission,
+            runtime_noop_proof_required=bool(
+                staged_generation["native_validation"]["final"].get("runtime_noop_proof_required")
+            ),
+            runtime_noop_expected_incarnation=(
+                staged_generation["native_validation"]["final"].get("runtime_noop_expected_incarnation")
+            ),
+            runtime_noop_transition_proof=transition_runtime_proof,
             candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
             fixed_routing_snapshot=_fixed_routing_snapshot,
             fixed_workflow_revision=_fixed_workflow_revision,

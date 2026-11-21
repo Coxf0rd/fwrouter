@@ -646,7 +646,7 @@ def _mihomo_readback(
     expected_handoffs = build_xray_handoff_assignments(expected_bindings)
     routing = servers.get_routing_global_state(expire_ttl=False)
     expected_config = mihomo_config.build_mihomo_config(routing, xray_handoff_assignments=expected_handoffs)
-    if not _configs_equal(parsed, expected_config):
+    if not _mihomo_effective_configs_match(parsed, expected_config, _configs_equal):
         raise ValueError("MIHOMO_DURABLE_CONFIG_PROJECTION_MISMATCH")
     profiles = mihomo_input_fingerprint_profiles(routing)
     generation_profile = next(
@@ -720,6 +720,29 @@ def _mihomo_readback(
         "native_rule_count": len(rules),
         **checks,
     }
+
+
+def _mihomo_effective_configs_match(
+    actual: dict[str, Any], expected: dict[str, Any], compare: Any,
+) -> bool:
+    """Ignore only the bounded FWRouter listener-sanitization diagnostic."""
+    actual_meta = actual.get("fwrouter")
+    expected_meta = expected.get("fwrouter")
+    if not isinstance(actual_meta, dict) or not isinstance(expected_meta, dict):
+        return compare(actual, expected)
+
+    field = "sanitized_managed_listeners"
+    values = tuple(meta[field] for meta in (actual_meta, expected_meta) if field in meta)
+    if any(
+        not isinstance(value, list) or len(value) > 4096
+        or any(not isinstance(item, str) or len(item) > 512 for item in value)
+        for value in values
+    ):
+        return False
+
+    normalized_actual = {**actual, "fwrouter": {**actual_meta, field: []}}
+    normalized_expected = {**expected, "fwrouter": {**expected_meta, field: []}}
+    return compare(normalized_actual, normalized_expected)
 
 
 def _mihomo_generation_owner_snapshot_matches(
@@ -1183,8 +1206,25 @@ def _core_readback(
             or live_mode.get("mode") != routing.get("applied_mode")):
         raise ValueError("CORE_NATIVE_STATE_MISMATCH")
     manifest_routing = manifest.get("routing_global_state")
+    manifest_mode_status = "MATCH"
     if not _routing_manifest_matches(manifest_routing, routing):
-        raise ValueError("CORE_APPLIED_MANIFEST_MISMATCH")
+        # A known historical apply bug can leave only applied_mode stale in
+        # the manifest. Treat that field as diagnostic when current durable
+        # desired/applied state and the fresh runtime probe already agree.
+        # The manifest bytes and owner receipt remain pinned and verified
+        # below, as do the effective nftables and IP policy checks.
+        stale_manifest_mode = (
+            isinstance(manifest_routing, dict)
+            and manifest_routing.get("applied_mode") in {"direct", "selective", "vpn"}
+            and manifest_routing.get("applied_mode") != routing.get("applied_mode")
+            and routing.get("desired_mode") == routing.get("applied_mode") == live_mode.get("mode")
+            and _routing_manifest_matches(
+                {**manifest_routing, "applied_mode": routing.get("applied_mode")}, routing,
+            )
+        )
+        if not stale_manifest_mode:
+            raise ValueError("CORE_APPLIED_MANIFEST_MISMATCH")
+        manifest_mode_status = "STALE_MANIFEST"
     nft_path = dataplane_global.get_settings().paths.generated_dir / "dataplane" / "applied.nft"
     nft_sha = _hash_regular_file(nft_path)
     receipt_raw = _read_regular_file(core_native_proof_path(), maximum_bytes=64 * 1024)
@@ -1231,6 +1271,7 @@ def _core_readback(
         "core_intent_revision": db["core_revision"],
         "selection_revision": (db.get("selection") or {}).get("revision"),
         "applied_manifest_stable": True,
+        "applied_manifest_mode_status": manifest_mode_status,
         "applied_nft_stable": True,
         "native_rule_semantics_match_owner_receipt": True,
         "native_rule_semantics_sha256": semantic_sha_before,

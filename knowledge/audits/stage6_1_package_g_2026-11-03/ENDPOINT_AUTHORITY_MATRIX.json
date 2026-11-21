@@ -1708,7 +1708,7 @@
         },
         {
           "path": "backend/fwrouter_api/services/xray_subscription_service.py",
-          "sha256": "5415ac35865aa9c13f15cb8bb0aa6e9f92b0771d6b63409b6ca9afca5289d707"
+          "sha256": "842172d11e441e333df66369bd42c53000b82aa533fc977fada0804e5b56e3c0"
         }
       ]
     },

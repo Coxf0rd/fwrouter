@@ -935,6 +935,50 @@ def test_native_effective_member_controls_persisted_active_and_logical_latency(m
     assert runtime.local_probes == []
 
 
+def test_readonly_native_probe_batch_verifies_active_member_without_persisting(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-batch-readonly", "Read only batch", [("member-a", 1001)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    before = logical_topology.get_logical_topology("logical-batch-readonly")
+    active_member = next(member for member in before["members"] if member["is_active"])
+    snapshot = _snapshot(
+        "Read only batch", active_member["runtime_name"],
+        [(active_member["runtime_name"], "healthy", 23, "2026-09-20T00:00:00+00:00")],
+    )
+    runtime = _NativeRuntime({"Read only batch": snapshot})
+    _register_native_runtime(monkeypatch, runtime, bulk=True)
+
+    result = logical_topology.check_logical_server_delays(
+        ["logical-batch-readonly"], persist_observation=False,
+    )
+
+    assert result is not None and len(result) == 1
+    assert result[0]["ok"] is True
+    assert result[0]["status"] == "success"
+    assert result[0]["member_id"] == active_member["member_id"]
+    assert result[0]["member_runtime_name"] == active_member["runtime_name"]
+    assert result[0]["latency_ms"] == 23
+    assert result[0]["pending_observation"]["kind"] == "runtime_snapshot"
+    after = logical_topology.get_logical_topology("logical-batch-readonly")
+    assert after["members"] == before["members"], "read-only batch probe persisted health state"
+
+    # A healthy sample for an unowned runtime member is insufficient proof.
+    runtime.probe_snapshots["Read only batch"] = _snapshot(
+        "Read only batch", "unowned-runtime-member",
+        [("unowned-runtime-member", "healthy", 19, "2026-09-20T00:00:01+00:00")],
+    )
+    rejected = logical_topology.check_logical_server_delays(
+        ["logical-batch-readonly"], persist_observation=False,
+    )
+    assert rejected is not None and rejected[0]["ok"] is False
+    assert rejected[0]["status"] == "failed"
+    assert rejected[0]["member_id"] is None
+    assert logical_topology.get_logical_topology("logical-batch-readonly")["members"] == before["members"]
+
+
 def test_provider_generation_probe_keeps_automatic_health_and_refresh_admission(monkeypatch, tmp_path: Path) -> None:
     assert server_ping._normalize_ping_source(
         "provider_validation", checked_by="manual"

@@ -2486,6 +2486,7 @@ def test_get_vpn_auto_state_does_not_accept_manual_ping_as_auto_health(monkeypat
     assert state["active_auto_target_valid"] is True
     assert state["active_auto_server_valid"] is False
     assert state["problem_code"] == "active_auto_server_invalid"
+    assert state["active_auto_health_state"] == "unknown"
 
 
 def test_get_vpn_auto_state_keeps_unknown_health_separate_from_mapped_target(monkeypatch, tmp_path: Path) -> None:
@@ -2509,6 +2510,66 @@ def test_get_vpn_auto_state_keeps_unknown_health_separate_from_mapped_target(mon
     assert state["active_auto_target_valid"] is True
     assert state["active_auto_server_valid"] is False
     assert state["candidate_scores"][0]["ping_status"] == "unknown"
+    assert state["active_auto_health_state"] == "unknown"
+    assert state["selection_revision"] is not None
+
+
+def test_selector_health_classification_requires_fresh_automatic_evidence() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    assert selector_service._candidate_auto_health_state({"ping": {
+        "status": "success", "source": "watchdog", "checked_at": now.isoformat(),
+    }}) == "healthy"
+    assert selector_service._candidate_auto_health_state({"ping": {
+        "status": "failed", "source": "selector", "checked_at": now.isoformat(),
+    }}) == "unhealthy"
+    assert selector_service._candidate_auto_health_state({"ping": {
+        "status": "failed", "source": "selector", "checked_at": (now - timedelta(seconds=121)).isoformat(),
+    }}) == "unknown"
+    assert selector_service._candidate_auto_health_state({"ping": {
+        "status": "success", "source": "manual", "checked_at": now.isoformat(),
+    }}) == "unknown"
+    assert selector_service._candidate_auto_health_state({"ping": {
+        "status": "success", "source": "watchdog", "checked_at": None,
+    }}) == "unknown"
+
+
+def test_subscription_selection_preserves_eligible_active_target_when_health_is_unknown(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-unknown")
+    _seed_global_auto_state("srv-unknown")
+    runtime = SimpleNamespace(
+        health=lambda: SimpleNamespace(
+            runtime_state="running",
+            active_server_id="srv-unknown",
+            details={"selectors": {"vpn_auto_now": "srv-unknown", "vpn_auto_targets": ["srv-unknown"]}},
+        ),
+        list_servers=lambda: [SimpleNamespace(server_id="srv-unknown")],
+        apply_server=lambda _target: pytest.fail("unknown health must not cause a selector write"),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        runtime,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.check_server_delays",
+        lambda *_args, **_kwargs: pytest.fail("unknown health must not trigger an immediate probe"),
+    )
+
+    result = select_vpn_auto_server(
+        apply=True,
+        reason="subscription_refresh_auto_select",
+        origin="subscription",
+        check_on_demand=True,
+        post_check=True,
+    )
+
+    assert result["ok"] is True
+    assert result["selection_outcome"] == "noop"
+    assert result["health_state"] == "unknown"
+    assert result["selector_readback_matches"] is True
 
 
 def test_get_vpn_auto_state_reports_stale_traffic_signal(monkeypatch, tmp_path: Path) -> None:

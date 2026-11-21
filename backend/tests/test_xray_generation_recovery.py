@@ -221,6 +221,25 @@ def _stub_verified_mihomo_recovery_receipt(monkeypatch, *, proof_ok: bool):
     return proof_calls, receipt_calls
 
 
+@pytest.mark.parametrize("overrides", [
+    {},
+    {"runtime_sha256": "different-content"},
+    {"runtime_incarnation": "different-instance"},
+    {"native_readback_ok": False},
+])
+def test_checkpoint_runtime_noop_requires_exact_content_incarnation_and_native_readback(overrides):
+    evidence = {
+        "expected_sha256": "a" * 64,
+        "runtime_sha256": "a" * 64,
+        "expected_incarnation": "runtime-7",
+        "runtime_incarnation": "runtime-7",
+        "native_readback_ok": True,
+    }
+    evidence.update(overrides)
+
+    assert service._checkpoint_runtime_preimage_verified(**evidence) is (not overrides)
+
+
 def _write_supersession_candidate_proof(adapter: _Adapter, checkpoint: Path) -> dict[str, Any]:
     """Build internally consistent persisted proof fields for the ownership predicate unit test."""
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
@@ -929,6 +948,54 @@ def test_stale_checkpoint_uses_current_intent_recovery_before_normal_generation(
     assert result["details"]["reason"] == "fixture_stop"
     assert calls == {"restore": int(restore_declines), "current": 1}
     assert checkpoint.exists()
+
+
+@pytest.mark.parametrize("inventory_bound,owned_journal,restore_result,expected_restore_calls,expected_current_calls", [
+    (True, True, {"ok": True, "recovered": "restored_last_good"}, 1, 0),
+    (True, True, {"ok": False, "recovered": "stale_checkpoint_declined"}, 1, 0),
+    (False, True, {"ok": True, "recovered": "restored_last_good"}, 0, 0),
+    (True, False, {"ok": False, "recovered": "current_projection_unproven"}, 0, 1),
+])
+def test_owned_restore_journal_resolver_resumes_only_its_bound_restore(
+    monkeypatch, tmp_path: Path, inventory_bound, owned_journal, restore_result,
+    expected_restore_calls, expected_current_calls,
+):
+    adapter, checkpoint = _setup(monkeypatch, tmp_path)
+    checkpoint.write_text(json.dumps({
+        "generation_id": "restore-journal-generation",
+        "phase": "restore_started",
+        "restore_actions": ({
+            "source_phase": "runtime_applied",
+            "xray_source_config_sha256": "a" * 64,
+            "mihomo_source_config_sha256": "b" * 64,
+        } if owned_journal else {}),
+    }, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    calls = {"restore": 0, "current": 0}
+    monkeypatch.setattr(service, "_xray_adapter", lambda: adapter)
+    monkeypatch.setattr(service, "_checkpoint_inventory_generation_matches", lambda *_a: inventory_bound)
+    from fwrouter_api.services import subscription
+    monkeypatch.setattr(subscription, "get_subscription_native_generation_state", lambda: {"status": "verified"})
+    monkeypatch.setattr(
+        service, "_restore_xray_generation_checkpoint",
+        lambda *_a: calls.__setitem__("restore", calls["restore"] + 1) or restore_result,
+    )
+    monkeypatch.setattr(
+        service, "_recover_checkpoint_from_current_projection",
+        lambda *_a: calls.__setitem__("current", calls["current"] + 1)
+        or {"ok": False, "recovered": "current_projection_unproven"},
+    )
+
+    result = service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert calls == {"restore": expected_restore_calls, "current": expected_current_calls}
+    if inventory_bound and owned_journal and restore_result["ok"]:
+        assert result["ok"] is True
+    else:
+        assert result["ok"] is False
+        if not inventory_bound:
+            assert result["error_code"] == "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED"
+    assert checkpoint.exists()  # The resolver delegates closure to the real restore owner.
 
 
 @pytest.mark.parametrize("failure,reason", [

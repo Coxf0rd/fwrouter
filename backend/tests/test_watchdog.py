@@ -4134,3 +4134,28 @@ def test_watchdog_marks_module_degraded_when_runtime_convergence_is_unhealthy(
     assert module is not None
     assert module["runtime_state"] == "degraded"
     assert module["error_code"] == "DNSMASQ_SELECTIVE_CONTRACT_INCOMPLETE"
+
+
+def test_watchdog_defers_failover_when_probe_health_is_unknown(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-unconfirmed")
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state", lambda: {
+        "active_auto_target_valid": True,
+        "active_auto_server_valid": False,
+        "active_auto_server_id": "srv-unconfirmed",
+    })
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.check_server_delay", lambda **_kwargs: {
+        "ok": False, "status": "unknown", "error_code": "VPN_HEALTH_PROBE_BACKOFF",
+    })
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **_kwargs: pytest.fail("unknown health triggered failover"),
+    )
+
+    result = run_vpn_watchdog_check(traffic_attempts_observed=True, allow_switch=True)
+
+    assert result["status"] == "selection_deferred"
+    assert result["active_check"]["status"] == "unknown"
+    assert result["allow_switch"] is False
+    assert result["selector"] is None

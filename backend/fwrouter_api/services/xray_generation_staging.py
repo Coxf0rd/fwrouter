@@ -62,6 +62,46 @@ __all__ = [
     "validate_mihomo_preimage",
 ]
 
+
+def _copy_effectively_equal_mihomo_candidate(source: Path, target: Path) -> bool:
+    """Reuse validated representative bytes when bounded YAML equivalence is proven."""
+    from fwrouter_api.services.mihomo_config_yaml import (
+        compare_mihomo_yaml_files, hash_mihomo_yaml_file,
+    )
+    try:
+        source_hash_before = hash_mihomo_yaml_file(source)
+        target_hash_before = hash_mihomo_yaml_file(target)
+    except (OSError, ValueError):
+        return False
+    # Byte-identical stages need no representative rewrite or semantic marker;
+    # the existing exact-candidate NOOP path owns that case.
+    if source_hash_before == target_hash_before:
+        return False
+    if not compare_mihomo_yaml_files(source, target):
+        return False
+    try:
+        if (hash_mihomo_yaml_file(source) != source_hash_before
+                or hash_mihomo_yaml_file(target) != target_hash_before):
+            return False
+    except (OSError, ValueError):
+        return False
+    from fwrouter_api.services.artifacts import atomic_copy_file
+    temporary = target.with_name(f".{target.name}.semantic-copy")
+    try:
+        atomic_copy_file(source, temporary)
+        if (hash_mihomo_yaml_file(source) != source_hash_before
+                or hash_mihomo_yaml_file(temporary) != source_hash_before):
+            return False
+        os.replace(temporary, target)
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
 def prepare_native_candidates(
     *,
     adapter: Any,
@@ -159,6 +199,65 @@ def prepare_native_candidates(
 
     transition_context = None
     transition_written = None
+    transition_candidate_path: Path | None = None
+    def reuse_active_bytes_when_proven(candidate_path: Path) -> dict[str, Any] | None:
+        """Return a runtime fence only when the current exact active config is proven loaded."""
+        from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+        from fwrouter_api.services.mihomo_config_yaml import compare_mihomo_yaml_files, hash_mihomo_yaml_file
+        from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+        from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+            _load_state, _current_runtime_incarnation,
+            mihomo_input_receipt_snapshot_matches, mihomo_udp_policy_receipt_matches,
+        )
+        active_path = Path(_resolved_base_config_path())
+        if not compare_mihomo_yaml_files(active_path, candidate_path):
+            return None
+        state = _load_state()
+        if not isinstance(state, dict) or not mihomo_input_receipt_snapshot_matches(state):
+            return None
+        active_hash = hash_mihomo_yaml_file(active_path)
+        incarnation = _current_runtime_incarnation()
+        if (state.get("active_config_hash") != active_hash or not incarnation
+                or state.get("runtime_incarnation") != incarnation
+                or not mihomo_udp_policy_receipt_matches(state)):
+            return None
+        proof = _native_udp_policy_proof()
+        if not (proof.get("ok") is True
+                and proof.get("native_top_level_rules_match") is True
+                and proof.get("selector_membership_matches") is True
+                and proof.get("guarded_rules_match") is True):
+            return None
+        if (not mihomo_input_receipt_snapshot_matches(state)
+                or not mihomo_udp_policy_receipt_matches(state)
+                or hash_mihomo_yaml_file(active_path) != active_hash
+                or _current_runtime_incarnation() != incarnation):
+            return None
+        from fwrouter_api.services.artifacts import atomic_copy_file
+        atomic_copy_file(active_path, candidate_path)
+        return {"state": state, "active_path": active_path,
+                "active_hash": active_hash, "incarnation": incarnation}
+
+    def active_reuse_fence_holds(fence: dict[str, Any] | None) -> bool:
+        if not isinstance(fence, dict):
+            return True
+        from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
+        from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+        from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+            mihomo_input_receipt_snapshot_matches, mihomo_udp_policy_receipt_matches,
+            _current_runtime_incarnation,
+        )
+        state = fence["state"]
+        if (not mihomo_input_receipt_snapshot_matches(state)
+                or not mihomo_udp_policy_receipt_matches(state)
+                or hash_mihomo_yaml_file(fence["active_path"]) != fence["active_hash"]
+                or _current_runtime_incarnation() != fence["incarnation"]):
+            return False
+        proof = _native_udp_policy_proof()
+        return bool(proof.get("ok") is True
+                    and proof.get("native_top_level_rules_match") is True
+                    and proof.get("selector_membership_matches") is True
+                    and proof.get("guarded_rules_match") is True)
+
     for name, handoffs in (("transition", transition_assignments), ("final", assignments)):
         candidate_path = stage_dir / f"mihomo-{name}.candidate.yaml"
         context_before = candidate_input_context()
@@ -180,6 +279,28 @@ def prepare_native_candidates(
                 xray_handoff_assignments=handoffs,
                 include_internal_config=True,
             )
+        # The final stage follows the transition stage at runtime. If both
+        # render the same effective Mihomo config, validate the exact bytes
+        # already used for the transition. This keeps the downstream native
+        # receipt and checkpoint SHA bindings exact while allowing formatting
+        # and map-order-only differences to avoid a second container recreate.
+        active_reuse_fence = None
+        runtime_noop_proof_required = False
+        if (name == "final" and transition_candidate_path is not None
+                and context_before is not None and transition_context == context_before):
+            if _copy_effectively_equal_mihomo_candidate(transition_candidate_path, candidate_path):
+                written = dict(written)
+                written["effective_candidate_reused"] = True
+                runtime_noop_proof_required = True
+        # The final stage runs after transition and Xray application. Reusing
+        # bytes from the pre-operation active config here could erase a real
+        # transition (for example, union handoffs) or claim a stale NOOP.
+        # Active-config representatives are safe only for the transition stage;
+        # final reuse is limited to the exact validated transition candidate.
+        if (name == "transition"
+                and not (isinstance(written, dict) and written.get("effective_candidate_reused") is True)):
+            active_reuse_fence = reuse_active_bytes_when_proven(candidate_path)
+            runtime_noop_proof_required = active_reuse_fence is not None
         if name == "transition":
             context_after = candidate_input_context()
             transition_context = context_before if context_before is not None and context_before == context_after else None
@@ -190,6 +311,7 @@ def prepare_native_candidates(
                     after=context_after,
                 )
             transition_written = written
+            transition_candidate_path = candidate_path
         candidate_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
         if write_reused and candidate_hash != expected_transition_hash:
             return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"}
@@ -255,6 +377,9 @@ def prepare_native_candidates(
                     "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"}
         if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_hash:
             return {"ok": False, "stage": f"mihomo_{name}_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"}
+        if not active_reuse_fence_holds(active_reuse_fence):
+            return {"ok": False, "stage": f"mihomo_{name}_candidate",
+                    "error_code": "MIHOMO_SEMANTIC_NOOP_RUNTIME_FENCE_CHANGED"}
         if cached_native_validation is None and native_validator_identity is not None:
             validated_native_candidates[native_cache_key] = dict(native_validation)
         native[name] = {
@@ -262,6 +387,11 @@ def prepare_native_candidates(
             "candidate_sha256": candidate_hash,
             "validation": _strip_raw_payload(validation),
             "write": _strip_raw_payload(written),
+            "runtime_noop_proof_required": runtime_noop_proof_required,
+            "runtime_noop_expected_incarnation": (
+                active_reuse_fence.get("incarnation")
+                if isinstance(active_reuse_fence, dict) else None
+            ),
         }
         staged_mihomo[name] = str(candidate_path)
     return {

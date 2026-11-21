@@ -297,6 +297,35 @@ def test_core_readback_binds_large_manifest_bytes_and_rejects_cross_fence_replac
     result = native_proof._core_readback(db)
     assert result["applied_manifest_stable"] is True
     assert result["applied_manifest_sha256"] == __import__("hashlib").sha256(applied_bytes).hexdigest()
+    assert result["applied_manifest_mode_status"] == "MATCH"
+
+    stale_routing = {**routing, "applied_mode": "selective"}
+    manifest_path.write_text(json.dumps({"plan_id": "fixture-apply", "routing_global_state": stale_routing,
+                                         "padding": "s" + padding[1:]}, sort_keys=True), encoding="utf-8")
+    stale_bytes = manifest_path.read_bytes()
+    receipt["applied_manifest_sha256"] = __import__("hashlib").sha256(stale_bytes).hexdigest()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    stale = native_proof._core_readback(db)
+    assert stale["applied_manifest_stable"] is True
+    assert stale["applied_manifest_mode_status"] == "STALE_MANIFEST"
+    assert stale["native_ip_semantics_sha256"] == ip_facts["semantic_sha256"]
+
+    invalid_routing = {**stale_routing, "selective_default": "vpn"}
+    manifest_path.write_text(json.dumps({"plan_id": "fixture-apply", "routing_global_state": invalid_routing,
+                                         "padding": "i" + padding[1:]}, sort_keys=True), encoding="utf-8")
+    invalid_bytes = manifest_path.read_bytes()
+    receipt["applied_manifest_sha256"] = __import__("hashlib").sha256(invalid_bytes).hexdigest()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(ValueError, match="CORE_APPLIED_MANIFEST_MISMATCH"):
+        native_proof._core_readback(db)
+
+    manifest_path.write_bytes(stale_bytes)
+    receipt["applied_manifest_sha256"] = __import__("hashlib").sha256(stale_bytes).hexdigest()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(dataplane_live, "_probe_live_global_mode_uncached", lambda: {"ok": True, "mode": "vpn"})
+    with pytest.raises(ValueError, match="CORE_NATIVE_STATE_MISMATCH"):
+        native_proof._core_readback(db)
+    monkeypatch.setattr(dataplane_live, "_probe_live_global_mode_uncached", lambda: {"ok": True, "mode": "direct"})
 
     applied_bytes = write_manifest("y")
     receipt["applied_manifest_sha256"] = __import__("hashlib").sha256(applied_bytes).hexdigest()
@@ -1148,6 +1177,55 @@ def test_mihomo_readback_accepts_20mb_config_and_binds_parsed_bytes_to_hash(
     assert result["config_sha256"] == __import__("hashlib").sha256(content).hexdigest()
     assert result["semantic_config_sha256"] == result["durable_semantic_config_sha256"]
     assert result["config_stable"] is True
+
+
+@pytest.mark.parametrize("difference", [
+    "sanitization_metadata", "missing_sanitization_metadata", "invalid_sanitization_metadata", "listener_port",
+])
+def test_mihomo_readback_compares_effective_config_and_keeps_listener_checks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, difference: str,
+) -> None:
+    import copy
+
+    from fwrouter_api.services import mihomo_config, mihomo_config_status
+    compare_configs = mihomo_config_status._configs_equal
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "mode: rule\n"
+        "listeners:\n"
+        "  - name: fwrouter-test\n"
+        "    type: mixed\n"
+        "    listen: 127.0.0.1\n"
+        "    port: 5200\n"
+        "    proxy: GLOBAL\n"
+        "    rule: \"\"\n"
+        "fwrouter:\n"
+        "  sanitized_managed_listeners: [legacy-listener]\n",
+        encoding="utf-8",
+    )
+    adapter, runtime = _prepare_mihomo_readback_dependencies(monkeypatch, config)
+    parsed = __import__("fwrouter_api.adapters.mihomo", fromlist=["MihomoHttpAdapter"]).MihomoHttpAdapter._parse_vpn_udp_policy_config(
+        config.read_text(encoding="utf-8"),
+    )
+    expected = copy.deepcopy(parsed)
+    monkeypatch.setattr(mihomo_config_status, "_configs_equal", compare_configs)
+    if difference == "sanitization_metadata":
+        expected["fwrouter"]["sanitized_managed_listeners"] = []
+    elif difference == "missing_sanitization_metadata":
+        expected["fwrouter"].pop("sanitized_managed_listeners")
+    elif difference == "invalid_sanitization_metadata":
+        expected["fwrouter"]["sanitized_managed_listeners"] = [1]
+    else:
+        expected["listeners"][0]["port"] = 5201
+    monkeypatch.setattr(mihomo_config, "build_mihomo_config", lambda *_args, **_kwargs: expected)
+
+    if difference in {"sanitization_metadata", "missing_sanitization_metadata"}:
+        result = native_proof._mihomo_readback({}, adapter=adapter, runtime_identity_reader=lambda: runtime)
+        assert result["config_stable"] is True
+    else:
+        with pytest.raises(ValueError, match="MIHOMO_DURABLE_CONFIG_PROJECTION_MISMATCH"):
+            native_proof._mihomo_readback({}, adapter=adapter, runtime_identity_reader=lambda: runtime)
 
 
 @pytest.mark.parametrize("kind", ["oversized", "symlink"])

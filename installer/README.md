@@ -119,34 +119,17 @@ DEV admission requires compatible installer, backend and schema contracts and th
 
 Stable supports backend, UI and selective host publication. Database admission checks both the installed and selected schema contracts, SQLite integrity and foreign keys. The canonical schema and the exact `legacy_migrated_schema27_manual_ping_additive` fingerprint are supported. The legacy profile covers the historical additive declarations on `modules`, `server_custom_https_proxy`, `server_ping_state` and `server_preferences`. The command is read-only and other schema mismatches block publication.
 
-Before replacing an installation with a legacy `UNKNOWN` identity, Stable uses its recorded source and component hashes to reconstruct the previous exact Main release. It requires a matching historical Main CI bundle and a fresh native proof of the installed candidate. Provenance stays `UNKNOWN` in the original install record. The separate accepted rollback pin records the newly verified evidence. Missing or expired historical evidence and failed native proof block the transition. Qualified Stable backend changes use the existing managed SQLite backup owner when no approved matching external backup exists. UI-only changes, checks and content NOOP create no database backup.
+When replacing a legacy `UNKNOWN` install, D2 verifies rollback resources against the recorded source and component hashes, exact historical Main CI evidence, and SQLite compatibility. Historical origin stays `UNKNOWN` and historical native acceptance stays `NOT_VERIFIED`. A qualified D2 owner provides the rollback lifecycle and timer contract. The first eligible DEV operation can pin these recovery resources without reinstalling the legacy application. A backend replacement still requires a verified SQLite recovery backup before publication.
 
-#### One-time native acceptance approval
+Image admission compares the local configured image references against both installed running instances. An immutable reference must be available locally. A mismatch fails and missing evidence leaves the result incomplete. Deployment performs no image upgrades. An existing `/etc/fwrouter/deploy-acceptance.json` can still supply explicit runtime expectations, a UI probe endpoint, and an independently managed SQLite backup pin. Normal image admission can use local configuration directly.
 
-The runtime owner verifies the Xray and Mihomo image configuration IDs against the approved runtime inputs and reviews the local UI probe endpoint. The owner supplies the approved policy artifact through a trusted channel. Public CI and the locally observed running images provide evidence for verification, so approval must come from the runtime owner. Keep the received artifact in a root-owned, mode-0600 regular file in a trusted directory.
-
-During an authorized release, after the D1 bootstrap and CLI readback, initialize the policy once from that approved artifact.
-
-```bash
-sudo fwrouter-deploy --initialize-acceptance-policy "$FWROUTER_APPROVED_POLICY_FILE"
-sudo fwrouter-deploy --stable --check --json
-```
-
-The deployment CLI validates the artifact and installs `/etc/fwrouter/deploy-acceptance.json` as root-owned mode 0600. Reapplying an equivalent policy is a NOOP. An existing different policy stays in force until the runtime owner handles its rotation. Stable and DEV reuse the installed approval automatically. Missing approval or unavailable image readback is `INCOMPLETE`. An image mismatch is `FAIL`. Native proof still requires fresh owner receipts and independent readback.
-
-
-| Field | Value |
-| --- | --- |
-| `schema` | `fwrouter-deploy-acceptance/v1` |
-| `xray_image`, `mihomo_image` | Independently approved immutable Docker image configuration IDs, prefixed with `sha256:` |
-| `ui_port`, `ui_path` | Loopback HTTP endpoint for the installed UI index |
-| `recovery` | Optional external backup pin with `backup_path`, `backup_sha256` and `installed_backend_sha256` from the approved recovery plan |
+Post-installation acceptance separately verifies installed content, API, UI, Gateway, DNS, runtime health, timers and native proof. If the local UI endpoint cannot be determined, or fresh native proof is missing, the result remains `INCOMPLETE`. The read-only check never adopts a recovery baseline or creates a backup.
 
 #### Release sequence after merge
 
-1. Resolve current Main and wait for its exact push-to-Main Release Acceptance and sealed evidence. Use the documented one-time D1 bootstrap above, then verify the D2 updater with `--stable --check --json`.
-2. Provision the runtime owner's approval as described above if it is missing. Confirm image and recovery readiness. Under separate deployment authorization, run `sudo fwrouter-deploy --stable` and verify its installed-content, lifecycle, health and native results.
-3. Confirm the local DEV backend and installer satisfy schema and dependency admission while preserving all developer files. Under separate DEV authorization, run `sudo fwrouter-deploy --dev --acknowledge-stable-replacement`, verify acceptance, then run `sudo fwrouter-deploy --stable` and verify the return to qualified Main. Stop on a failed or incomplete mandatory stage.
+1. Resolve current Main and wait for its exact push-to-Main Release Acceptance and sealed evidence. If D1 is installed, use the documented one-time bootstrap above and verify the D2 updater with `--stable --check --json`.
+2. Verify local admission with `--check`. Under separate authorization for the selected mode, run `fwrouter-deploy --stable` or `fwrouter-deploy --dev --acknowledge-stable-replacement`. Confirm the final installed-content and native acceptance results.
+3. Use `fwrouter-deploy --rollback` only when a qualified rollback source, lifecycle owner and compatible recovery resources are available.
 
 The updater verifies schema, SQLite integrity, foreign keys and the content hash before backend publication. The managed snapshot uses SQLite's online backup and is bound to the preceding source and backend manifest. Before changing the backend in DEV, the deployment protects the accepted Stable baseline with an exact verified backup. It reuses an approved or managed backup when available. A new DEV baseline backup is reserved separately so that the previous Stable release keeps its recovery backup. The owner verifies retained recovery data before retiring a backup after accepted return to Stable. UI-only, NOOP and status checks create no database backup. An external backup remains under its owner's retention policy.
 
@@ -154,7 +137,7 @@ Stable records the current and previous **accepted** source independently of the
 
 Storage preflight checks the filesystems used for staging, publication and recovery before installation. Fresh Main retains the Git ancestry required by the evidence verifier. An accepted rollback stages only the pinned target and installed-side source. Following acceptance, the updater retires catalogued obsolete resources whose exact ownership and references can be checked. Resources with unknown ownership are preserved. A private staging lease lets later accepted runs remove expired abandoned staging while skipping active or unrecognised directories. The lease expires after 24 hours. Reports show active and rollback versions, backup state, space estimates, cleanup results and protected resources.
 
-The updater checks UI availability and calls the installed read-only native proof owner with independently approved runtime pins. Missing pins, an unavailable probe, or missing current owner receipts leave acceptance incomplete. Qualification, file identity, lifecycle, health and native acceptance are reported independently, including on a content NOOP. The default CLI flushes progress to stdout as stages run and sends diagnostic errors to stderr. `--json` reserves stdout for the structured report, and `--verbose` includes diagnostic details. The explicit modes use exit 0 for success or a fully accepted NOOP, 1 for failure, 2 for invalid arguments, 3 for incomplete verification and 130 for interruption. `--check` inspects local state without fetching, cleanup or persistent writes.
+The updater checks UI availability and calls the installed read-only native proof owner with the verified runtime image identities. Missing image evidence, an unavailable probe, or missing current owner receipts leave acceptance incomplete. Qualification, file identity, lifecycle, health and native acceptance are reported independently, including on a content NOOP. The default CLI flushes progress to stdout as stages run and sends diagnostic errors to stderr. `--json` reserves stdout for the structured report, and `--verbose` includes diagnostic details. The explicit modes use exit 0 for success or a fully accepted NOOP, 1 for failure, 2 for invalid arguments, 3 for incomplete verification and 130 for interruption. `--check` inspects local state without fetching, cleanup or persistent writes.
 
 During Stable resume, the existing lifecycle owner restores previously active timers after verifying their stock units and discarding missed calendar triggers. The old traffic timer is migrated to a nonpersistent minute schedule because starting its elapsed boot timer could immediately run collection. Enablement is preserved and previously inactive timers stay inactive. The legacy configured-source and explicit timer catch-up commands remain available for D1 operations.
 
@@ -234,3 +217,39 @@ python3 installer/ui_publication.py \
 The source digest must equal the requested release digest. Missing/corrupt releases, a different UI source, or backend-manifest mismatch fail closed before pointer change. The command does not decide whether a rollback is operationally appropriate; it supplies only the same atomic UI publication primitive under the existing deployment lifecycle owner.
 
 The controlled backend lifecycle CLI uses its separate durable rollout lock only for the duration of that CLI operation; that lock is released before the installer is invoked. Do not treat it as nested or held during installer execution. The UI publication helper does not install or stop services, mutate host networking, reset bootstrap state, or download source.
+
+#### Validate a local D2 updater in DEV
+
+Stage the exact source commit as a clean, root-controlled temporary Git
+checkout. Install its local updater without replacing the Main-qualified
+updater or wrapper.
+
+```bash
+sudo /usr/bin/python3 -I -B "$FWROUTER_TEMP_SOURCE/installer/local_deploy.py" \
+  --install-dev-updater --acknowledge-local-deployer
+FWROUTER_DEV_UPDATER=/var/lib/fwrouter-v2/state/controlled-rollout/dev-updater/local_deploy.py
+sudo /usr/bin/python3 -I -B "$FWROUTER_DEV_UPDATER" --dev --source "$FWROUTER_TEMP_SOURCE" --check
+```
+
+The local updater is retained with its exact Git SHA, module digest and
+Main-qualified updater digest. It may run DEV and the existing qualified
+application rollback for DEV. Use that same retained updater for interrupted
+DEV or its rollback. Historical recovery pins recorded by the local updater
+need an updater that understands their format.
+
+For the exact D1 release `96b6f7b12576`, the lifecycle owner can repair
+the mode of its four stock timer fragments without changing their contents
+or running systemd commands. From a trusted checkout containing the repair,
+run `sudo /usr/bin/python3 -I -B installer/controlled_backend_lifecycle.py normalize-legacy-timers`.
+The owner checks all four recorded D1 blobs and refuses a pending lifecycle
+operation. A retry after interruption leaves already repaired fragments
+alone.
+
+If DEV is admitted and a baseline backup failed before publication, the
+same acknowledged installer can update the retained local updater. It
+verifies the original captured snapshot, the installed Stable content and
+the unfinished backup reservation. The updater and its SQLite backup owner
+are retained from exact Git blobs. Resume with the retained updater's
+`--dev --acknowledge-stable-replacement` command, which reuses the admitted
+snapshot. Do not select a different source or remove SQLite sidecars to
+force a retry.

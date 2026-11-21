@@ -444,6 +444,7 @@ def _import_runtime_snapshot(
     update_active: bool = True,
     record_probe_outcome: bool = False,
     effective_only: bool = False,
+    expected_selection_revision: int | None = None,
 ) -> dict[str, Any]:
     topology = get_logical_topology(logical_server_id)
     if topology is None:
@@ -460,6 +461,32 @@ def _import_runtime_snapshot(
     if effective_only:
         observations = [item for item in observations if str(item.get("runtime_identity") or "") == effective_runtime]
     with db_session() as connection:
+        if expected_selection_revision is not None:
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+            connection.execute("BEGIN IMMEDIATE")
+            if read_selection_revision(connection) != expected_selection_revision:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_STALE_STATE"}
+            current_members = connection.execute(
+                "SELECT member_id, member_runtime_name FROM logical_server_members WHERE logical_server_id = ? AND is_active = 1",
+                (logical_server_id,),
+            ).fetchall()
+            current_runtime_names = {str(row["member_runtime_name"]) for row in current_members}
+            if any(
+                str(item.get("runtime_identity") or "") not in current_runtime_names
+                for item in observations
+                if str(item.get("runtime_identity") or "")
+            ):
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_TOPOLOGY_CHANGED"}
+            if record_probe_outcome:
+                seen = connection.execute(
+                    "SELECT checked_at FROM logical_server_group_probe_outcome "
+                    "WHERE logical_server_id = ? AND provider_role = ?",
+                    (logical_server_id, PROVIDER_ROLE_VPN_DATAPLANE),
+                ).fetchone()
+                sampled_at = _canonical_timestamp(snapshot.get("checked_at") or snapshot.get("observed_at"))
+                if seen and sampled_at and str(seen["checked_at"]) >= sampled_at:
+                    return {"ok": True, "reused": True}
         if record_probe_outcome:
             _persist_group_probe_outcome(connection, logical_server_id, snapshot, adapter)
         for observation in observations:
@@ -534,6 +561,76 @@ def _import_runtime_snapshot(
         "error_code": snapshot.get("error_code"),
         "error_message": snapshot.get("error_message"),
     }
+
+
+def persist_logical_server_probe_result(
+    logical_server_id: str,
+    pending: dict[str, Any],
+    *,
+    adapter_id: str,
+    probe_reason: str,
+    probe_lane: str,
+    expected_selection_revision: int | None,
+) -> dict[str, Any]:
+    """Persist an automatic probe only after its caller revalidates ownership."""
+    if str(pending.get("kind") or "") == "runtime_snapshot":
+        return _import_runtime_snapshot(
+            logical_server_id,
+            pending.get("snapshot") if isinstance(pending.get("snapshot"), dict) else {},
+            adapter={"adapter_id": adapter_id},
+            probe_reason=probe_reason,
+            probe_lane=probe_lane,
+            record_probe_outcome=True,
+            expected_selection_revision=expected_selection_revision,
+        )
+    if str(pending.get("kind") or "") != "member_health":
+        return {"ok": False, "error_code": "LOGICAL_PROBE_RESULT_UNAVAILABLE"}
+
+    with db_session() as connection:
+        if expected_selection_revision is not None:
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+            connection.execute("BEGIN IMMEDIATE")
+            if read_selection_revision(connection) != expected_selection_revision:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_STALE_STATE"}
+        member = connection.execute(
+            "SELECT member_runtime_name FROM logical_server_members WHERE logical_server_id = ? AND member_id = ? AND is_active = 1",
+            (logical_server_id, pending.get("member_id")),
+        ).fetchone()
+        if member is None or str(member["member_runtime_name"]) != str(pending.get("member_runtime_name")):
+            return {"ok": False, "error_code": "VPN_AUTO_SELECTION_TOPOLOGY_CHANGED"}
+        seen = connection.execute(
+            "SELECT checked_at FROM logical_server_member_health "
+            "WHERE logical_server_id = ? AND member_id = ? AND provider_role = ?",
+            (logical_server_id, pending["member_id"], PROVIDER_ROLE_VPN_DATAPLANE),
+        ).fetchone()
+        sampled_at = _canonical_timestamp(pending.get("checked_at"))
+        if seen and sampled_at and str(seen["checked_at"] or "") >= sampled_at:
+            return {"ok": True, "reused": True}
+        _persist_member_health(
+            connection,
+            logical_server_id=logical_server_id,
+            member_id=str(pending["member_id"]),
+            status=str(pending.get("status") or "unknown"),
+            latency_ms=pending.get("latency_ms"),
+            error_code=pending.get("error_code"),
+            error_message=pending.get("error_message"),
+            evidence={
+                "adapter_id": adapter_id,
+                "provider_role": PROVIDER_ROLE_VPN_DATAPLANE,
+                "evidence_source": pending.get("evidence_source") or "local_fallback",
+                "probe_reason": probe_reason,
+                "probe_lane": probe_lane,
+                "runtime_name": pending.get("member_runtime_name"),
+            },
+            checked_at=pending.get("checked_at"),
+        )
+        if pending.get("status") == "healthy":
+            connection.execute(
+                "UPDATE logical_server_topology SET active_member_id = ?, updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?",
+                (str(pending["member_id"]), logical_server_id),
+            )
+    return {"ok": True, "member_id": str(pending["member_id"])}
 
 
 def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
@@ -1272,6 +1369,8 @@ def check_logical_server_delay(
     timeout_ms: int = 10000,
     probe_reason: str = "logical_ping",
     probe_lane: str = "manual",
+    persist_observation: bool = True,
+    expected_selection_revision: int | None = None,
 ) -> dict[str, Any]:
     topology = get_logical_topology(logical_server_id)
     if topology is None:
@@ -1323,34 +1422,49 @@ def check_logical_server_delay(
                 error_code=_probe_error_code(exc, "RUNTIME_LOGICAL_PROBE"),
                 error_message=str(exc),
             )
-        imported = _import_runtime_snapshot(
-            logical_server_id,
-            snapshot,
-            adapter=adapter,
-            probe_reason=probe_reason,
-            probe_lane=probe_lane,
-            record_probe_outcome=True,
+        if persist_observation:
+            imported = _import_runtime_snapshot(
+                logical_server_id, snapshot, adapter=adapter,
+                probe_reason=probe_reason, probe_lane=probe_lane,
+                record_probe_outcome=True,
+                expected_selection_revision=expected_selection_revision,
+            )
+            refreshed = get_logical_topology(logical_server_id)
+            effective = next(
+                (member for member in (refreshed or {}).get("members", [])
+                 if member.get("member_id") == imported.get("member_id") and member.get("is_active")),
+                None,
+            )
+        else:
+            effective_runtime = str(snapshot.get("effective_member_runtime_identity") or "")
+            effective = next(
+                (member for member in active_members if str(member.get("runtime_name") or "") == effective_runtime),
+                None,
+            )
+            imported = {
+                "member_id": effective.get("member_id") if effective else None,
+                "member_runtime_name": effective_runtime or None,
+            }
+        effective_status = next(
+            (str(item.get("status") or "unknown") for item in snapshot.get("members", [])
+             if str(item.get("runtime_identity") or "") == str(snapshot.get("effective_member_runtime_identity") or "")),
+            "unknown",
         )
-        refreshed = get_logical_topology(logical_server_id)
-        effective = next(
-            (
-                member
-                for member in (refreshed or {}).get("members", [])
-                if member.get("member_id") == imported.get("member_id") and member.get("is_active")
-            ),
-            None,
+        sampled_effective = next(
+            (item for item in snapshot.get("members", [])
+             if str(item.get("runtime_identity") or "") == str(snapshot.get("effective_member_runtime_identity") or "")),
+            {},
         )
         ok = bool(
             snapshot.get("ok")
             and effective
-            and effective.get("fresh")
-            and effective.get("status") == "healthy"
+            and (effective.get("fresh") and effective.get("status") == "healthy" if persist_observation else effective_status == "healthy")
         )
         return {
             "ok": ok,
             "logical_server_id": logical_server_id,
             "status": "success" if ok else "failed",
-            "latency_ms": effective.get("latency_ms") if ok and effective else None,
+            "latency_ms": (effective.get("latency_ms") if persist_observation and effective else sampled_effective.get("latency_ms")) if ok else None,
             "member_id": imported.get("member_id"),
             "member_runtime_name": imported.get("member_runtime_name"),
             "error_code": None if ok else snapshot.get("error_code") or (effective or {}).get("error_code") or "RUNTIME_LOGICAL_PROBE_FAILED",
@@ -1359,6 +1473,7 @@ def check_logical_server_delay(
             "group_delay": None,
             "probe_backend": "runtime_native",
             "runtime_adapter_id": adapter.get("adapter_id"),
+            "pending_observation": {"kind": "runtime_snapshot", "snapshot": snapshot} if not persist_observation else None,
         }
     if not callable(getattr(operations, "check_delay", None)):
         return {
@@ -1441,6 +1556,8 @@ def check_logical_server_delays(
     timeout_ms: int = 10000,
     probe_reason: str = "logical_ping",
     probe_lane: str = "manual",
+    persist_observation: bool = True,
+    expected_selection_revision: int | None = None,
 ) -> list[dict[str, Any]] | None:
     ordered_ids = list(dict.fromkeys(str(item) for item in logical_server_ids if str(item).strip()))
     adapter, operations, capabilities = _runtime_context()
@@ -1489,19 +1606,38 @@ def check_logical_server_delays(
     results: list[dict[str, Any]] = []
     for logical_id in ordered_ids:
         snapshot = snapshots_by_target.get(runtime_names[logical_id]) or {}
-        imported = _import_runtime_snapshot(
-            logical_id,
-            snapshot,
-            adapter=adapter,
-            probe_reason=probe_reason,
-            probe_lane=probe_lane,
-            record_probe_outcome=True,
-        )
-        refreshed = get_logical_topology(logical_id)
+        if persist_observation:
+            imported = _import_runtime_snapshot(
+                logical_id,
+                snapshot,
+                adapter=adapter,
+                probe_reason=probe_reason,
+                probe_lane=probe_lane,
+                record_probe_outcome=True,
+                expected_selection_revision=expected_selection_revision,
+            )
+            refreshed = get_logical_topology(logical_id)
+            current_members = (refreshed or {}).get("members", [])
+        else:
+            # Use the fresh native snapshot for health, but map its effective
+            # identity against the current active SQLite topology. The batch
+            # path must not require a persisted observation to prove that the
+            # runtime's effective member is still an owned active member.
+            current_members = (get_logical_topology(logical_id) or {}).get("members", [])
+            effective_runtime = str(snapshot.get("effective_member_runtime_identity") or "")
+            imported_member = next(
+                (member for member in current_members
+                 if member.get("runtime_name") == effective_runtime and member.get("is_active")),
+                None,
+            )
+            imported = {
+                "member_id": imported_member.get("member_id") if imported_member else None,
+                "member_runtime_name": effective_runtime or None,
+            }
         effective = next(
             (
                 member
-                for member in (refreshed or {}).get("members", [])
+                for member in current_members
                 if member.get("member_id") == imported.get("member_id") and member.get("is_active")
             ),
             None,
@@ -1509,15 +1645,22 @@ def check_logical_server_delays(
         ok = bool(
             snapshot.get("ok")
             and effective
-            and effective.get("fresh")
-            and effective.get("status") == "healthy"
+            and (effective.get("fresh") and effective.get("status") == "healthy" if persist_observation else any(
+                item.get("runtime_identity") == snapshot.get("effective_member_runtime_identity") and item.get("status") == "healthy"
+                for item in snapshot.get("members", [])
+            ))
+        )
+        sampled_effective = next(
+            (item for item in snapshot.get("members", [])
+             if item.get("runtime_identity") == snapshot.get("effective_member_runtime_identity")),
+            {},
         )
         results.append(
             {
                 "ok": ok,
                 "logical_server_id": logical_id,
                 "status": "success" if ok else "failed",
-                "latency_ms": effective.get("latency_ms") if ok and effective else None,
+                "latency_ms": (effective.get("latency_ms") if persist_observation and effective else sampled_effective.get("latency_ms")) if ok else None,
                 "member_id": imported.get("member_id"),
                 "member_runtime_name": imported.get("member_runtime_name"),
                 "error_code": None if ok else snapshot.get("error_code") or (effective or {}).get("error_code") or "RUNTIME_LOGICAL_PROBE_FAILED",
@@ -1526,6 +1669,7 @@ def check_logical_server_delays(
                 "group_delay": None,
                 "probe_backend": "runtime_native",
                 "runtime_adapter_id": adapter.get("adapter_id"),
+                "pending_observation": {"kind": "runtime_snapshot", "snapshot": snapshot} if not persist_observation else None,
             }
         )
     return results

@@ -199,6 +199,7 @@ def get_live_probe_cache(
     ttl_seconds: float,
     loader: Callable[[], Any],
     force_refresh: bool = False,
+    wait_timeout_seconds: float | None = None,
 ) -> Any:
     now = monotonic()
     if not force_refresh:
@@ -215,6 +216,10 @@ def get_live_probe_cache(
     retired: list[tuple[float, Any, int]] = []
     with _CACHE_LOCK:
         _sweep_expired_locked(now, retired, requested_key=key)
+        cached = _CACHE.get(key) if not force_refresh else None
+        if cached is not None and cached[0] > now:
+            _CACHE.move_to_end(key)
+            return cached[1]
         inflight = _INFLIGHT.get(key)
         if inflight is None:
             event = Event()
@@ -229,7 +234,8 @@ def get_live_probe_cache(
     if not leader:
         if holder.get("owner_thread_id") == get_ident():
             raise RuntimeError("LIVE_PROBE_CACHE_REENTRANT_LOAD")
-        event.wait()
+        if not event.wait(timeout=wait_timeout_seconds):
+            raise TimeoutError("LIVE_PROBE_CACHE_WAIT_TIMEOUT")
         if "error" in holder:
             raise holder["error"]
         return holder.get("value")
@@ -281,6 +287,93 @@ def get_live_probe_cache(
             if current is not None and current[0] is event and current[1] is holder:
                 _INFLIGHT.pop(key, None)
         event.set()
+
+
+def get_live_probe_cache_many(
+    keys: list[str],
+    *,
+    ttl_seconds: float,
+    loader: Callable[[list[str]], dict[str, Any]],
+    wait_timeout_seconds: float | None = None,
+    include_cached_keys: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], set[str]]:
+    """Coalesce overlapping target sets while allowing one native batch load."""
+    unique_keys = list(dict.fromkeys(str(key) for key in keys if str(key)))
+    if not unique_keys:
+        return ({}, set()) if include_cached_keys else {}
+
+    now = monotonic()
+    retired: list[tuple[float, Any, int]] = []
+    cached_values: dict[str, Any] = {}
+    owned: dict[str, tuple[Event, dict[str, Any]]] = {}
+    waiting: dict[str, tuple[Event, dict[str, Any]]] = {}
+    reused_keys: set[str] = set()
+    with _CACHE_LOCK:
+        _sweep_expired_locked(now, retired)
+        for key in unique_keys:
+            cached = _CACHE.get(key)
+            if cached is not None and cached[0] > now:
+                _CACHE.move_to_end(key)
+                cached_values[key] = cached[1]
+                reused_keys.add(key)
+                continue
+            if cached is not None:
+                _remove_cache_entry_locked(key, retired)
+            inflight = _INFLIGHT.get(key)
+            if inflight is None:
+                event = Event()
+                holder: dict[str, Any] = {"owner_thread_id": get_ident()}
+                _INFLIGHT[key] = (event, holder)
+                owned[key] = (event, holder)
+            else:
+                waiting[key] = inflight
+    retired.clear()
+
+    try:
+        if owned:
+            loaded = loader(list(owned))
+            if not isinstance(loaded, dict) or any(key not in loaded for key in owned):
+                raise ValueError("LIVE_PROBE_CACHE_BATCH_RESULT_INCOMPLETE")
+            finished_at = monotonic()
+            expires_at = finished_at + max(float(ttl_seconds), 0.0)
+            for key, (event, holder) in owned.items():
+                value = loaded[key]
+                holder["value"] = value
+                try:
+                    retained_bytes = _value_size_bytes(value) + str.__sizeof__(key) + _CACHE_ENTRY_OVERHEAD_BYTES
+                except Exception:
+                    retained_bytes = _MAX_ENTRY_BYTES + 1
+                with _CACHE_LOCK:
+                    current = _INFLIGHT.get(key)
+                    if current is not None and current[0] is event and current[1] is holder:
+                        _sweep_expired_locked(monotonic(), retired)
+                        _admit_cache_entry_locked(key, expires_at, value, retained_bytes, retired)
+                cached_values[key] = value
+        deadline = None if wait_timeout_seconds is None else monotonic() + max(0.0, wait_timeout_seconds)
+        for key, (event, holder) in waiting.items():
+            if holder.get("owner_thread_id") == get_ident():
+                raise RuntimeError("LIVE_PROBE_CACHE_REENTRANT_LOAD")
+            remaining = None if deadline is None else max(0.0, deadline - monotonic())
+            if not event.wait(timeout=remaining):
+                continue
+            if "error" in holder:
+                raise holder["error"]
+            if "value" in holder:
+                cached_values[key] = holder["value"]
+                reused_keys.add(key)
+    except BaseException as exc:
+        for event, holder in owned.values():
+            holder["error"] = exc
+        raise
+    finally:
+        with _CACHE_LOCK:
+            for key, (event, holder) in owned.items():
+                current = _INFLIGHT.get(key)
+                if current is not None and current[0] is event and current[1] is holder:
+                    _INFLIGHT.pop(key, None)
+                event.set()
+        retired.clear()
+    return (cached_values, reused_keys) if include_cached_keys else cached_values
 
 
 def peek_live_probe_cache(key: str) -> Any | None:

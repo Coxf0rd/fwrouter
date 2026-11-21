@@ -322,3 +322,111 @@ def test_ping_sweep_uses_selected_probe_backend_for_each_logical_server(monkeypa
     assert result["checked_count"] == 2
     assert result["success_count"] == 2
     assert calls == [("server-a", None), ("server-b", None)]
+
+
+def test_selector_ping_batch_reuses_short_lived_shared_probe_result(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("server-b1-cache")
+    clear_live_probe_cache()
+    calls: list[list[str]] = []
+    operations = SimpleNamespace(runtime_incarnation=lambda: "runtime-b1-cache")
+    monkeypatch.setattr(server_ping, "active_runtime_adapter", lambda _role: {"adapter_id": "b1-cache"})
+    monkeypatch.setattr(server_ping, "runtime_adapter_operations", lambda _adapter: operations)
+    monkeypatch.setattr(
+        server_ping,
+        "check_logical_server_delays",
+        lambda ids, **_kwargs: calls.append(list(ids)) or [{
+            "ok": True,
+            "latency_ms": 24,
+            "error_code": None,
+            "error_message": None,
+            "member_id": "member-b1-cache",
+            "member_runtime_name": "member-b1-cache",
+            "probe_backend": "test",
+            "runtime_adapter_id": "b1-cache",
+        } for _ in ids],
+    )
+
+    first = server_ping.check_server_delays(["server-b1-cache"], source="selector", checked_by="selector:first")
+    second = server_ping.check_server_delays(
+        ["server-b1-cache"], source="selector", checked_by="watchdog:second", update_state=True,
+    )
+
+    assert calls == [["server-b1-cache"]]
+    assert first[0]["updated_state"] is False
+    assert second[0]["updated_state"] is True
+    assert second[0]["checked_by"] == "selector:first"
+    assert server_ping.get_server_ping_state("server-b1-cache")["runtime"]["status"] == "success"
+
+
+def test_automatic_probe_failure_backoff_is_bounded_and_unknown_does_not_extend(monkeypatch) -> None:
+    key = "b1-backoff-test"
+    now = [100.0]
+    monkeypatch.setattr(server_ping, "monotonic", lambda: now[0])
+    with server_ping._AUTOMATIC_PROBE_FAILURES_LOCK:
+        server_ping._AUTOMATIC_PROBE_FAILURES.pop(key, None)
+    server_ping._record_probe_outcome(key, "failed")
+    assert server_ping._probe_backoff_active(key)
+    first_until = server_ping._AUTOMATIC_PROBE_FAILURES[key][1]
+    server_ping._record_probe_outcome(key, "unknown")
+    assert server_ping._AUTOMATIC_PROBE_FAILURES[key][1] == first_until
+    now[0] = first_until + 0.01
+    assert not server_ping._probe_backoff_active(key)
+
+
+def test_automatic_batch_discards_probe_when_selection_revision_changed(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("server-b1-stale")
+    before = server_ping.get_server_ping_state("server-b1-stale")
+    operations = SimpleNamespace(runtime_incarnation=lambda: "stable-runtime")
+    monkeypatch.setattr(server_ping, "active_runtime_adapter", lambda _role: {"adapter_id": "b1-stale"})
+    monkeypatch.setattr(server_ping, "runtime_adapter_operations", lambda _adapter: operations)
+    monkeypatch.setattr(server_ping, "check_logical_server_delays", lambda ids, **_kwargs: [{
+        "ok": True, "latency_ms": 12, "member_id": "m", "member_runtime_name": "m",
+        "runtime_adapter_id": "b1-stale", "probe_backend": "test",
+    } for _ in ids])
+
+    result = server_ping.check_server_delays(
+        ["server-b1-stale"], source="watchdog", checked_by="watchdog:test",
+        expected_selection_revision=999,
+    )
+
+    assert result[0]["status"] == "unknown"
+    assert result[0]["stale_observation"] is True
+    assert result[0]["updated_state"] is False
+    assert server_ping.get_server_ping_state("server-b1-stale") == before
+
+
+def test_automatic_batch_discards_probe_when_runtime_incarnation_changes(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("server-b1-incarnation")
+    before = server_ping.get_server_ping_state("server-b1-incarnation")
+    incarnation = ["before"]
+    monkeypatch.setattr(server_ping, "active_runtime_adapter", lambda _role: {"adapter_id": "b1-fence"})
+    monkeypatch.setattr(
+        server_ping, "runtime_adapter_operations",
+        lambda _adapter: SimpleNamespace(runtime_incarnation=lambda: incarnation[0]),
+    )
+
+    def probe(ids, **kwargs):
+        assert kwargs["persist_observation"] is False
+        incarnation[0] = "after"
+        return [{"ok": True, "latency_ms": 12, "runtime_adapter_id": "b1-fence"} for _ in ids]
+
+    monkeypatch.setattr(server_ping, "check_logical_server_delays", probe)
+    result = server_ping.check_server_delays(["server-b1-incarnation"], source="selector", update_state=True)
+
+    assert result[0]["status"] == "unknown"
+    assert result[0]["stale_observation"] is True
+    assert server_ping.get_server_ping_state("server-b1-incarnation") == before

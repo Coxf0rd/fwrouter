@@ -344,6 +344,74 @@ def test_cleanup_jobs_retention_preserves_apply_versions_fk_integrity(
     assert fk_violations == []
 
 
+def test_retention_reserves_writer_before_reading_while_refresh_writer_finishes(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A competing WAL writer must finish before retention establishes its read snapshot."""
+    from threading import Event, Thread
+
+    from fwrouter_api.services import jobs_retention as retention
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    job = create_job("legacy")
+    mark_job_running(job["job_id"])
+    mark_job_success(job["job_id"], result={"ok": True})
+    with db_session() as connection:
+        connection.execute(
+            "DELETE FROM operational_logs WHERE event_type = ?", ("job.terminal_outcome",),
+        )
+        _age_job(connection, job["job_id"])
+
+    writer_has_lock = Event()
+    release_writer = Event()
+    retention_reached_snapshot = Event()
+    writer_errors: list[BaseException] = []
+
+    def refresh_writer() -> None:
+        connection = sqlite3.connect(get_settings().paths.db_path, timeout=2)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("UPDATE rules_state SET updated_at = CURRENT_TIMESTAMP WHERE id = 1")
+            writer_has_lock.set()
+            if not release_writer.wait(3):
+                raise TimeoutError("test did not release concurrent writer")
+            connection.commit()
+        except BaseException as exc:
+            connection.rollback()
+            writer_errors.append(exc)
+        finally:
+            connection.close()
+
+    original_snapshot_writer = retention._write_terminal_snapshot
+
+    def observe_snapshot(*args, **kwargs):
+        retention_reached_snapshot.set()
+        return original_snapshot_writer(*args, **kwargs)
+
+    monkeypatch.setattr(retention, "_write_terminal_snapshot", observe_snapshot)
+    writer = Thread(target=refresh_writer)
+    writer.start()
+    assert writer_has_lock.wait(1), "competing refresh writer did not acquire SQLite writer lock"
+
+    outcome: list[dict[str, object]] = []
+    cleanup = Thread(target=lambda: outcome.append(cleanup_jobs_retention(dry_run=False)))
+    cleanup.start()
+    # Under a deferred transaction, retention can read through the other
+    # connection's uncommitted WAL write and reaches this point with a stale
+    # read snapshot. Releasing that writer then makes its later write upgrade
+    # fail with SQLITE_BUSY. BEGIN IMMEDIATE instead waits before reading.
+    reached_before_release = retention_reached_snapshot.wait(0.5)
+    release_writer.set()
+    writer.join(2)
+    cleanup.join(3)
+
+    assert not writer.is_alive() and not cleanup.is_alive()
+    assert writer_errors == []
+    assert reached_before_release is False
+    assert len(outcome) == 1 and outcome[0]["deleted_jobs_count"] == 1
+
+
 def test_nested_job_context_uses_child_job_id_and_preserves_parent_correlation(
     monkeypatch, tmp_path: Path,
 ) -> None:

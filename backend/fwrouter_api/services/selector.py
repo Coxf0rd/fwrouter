@@ -687,6 +687,24 @@ def get_vpn_auto_state(*, read_only: bool = False, cache_runtime: bool = False) 
     active_auto_server_valid = bool(
         active_auto_target_valid and _candidate_has_auto_health(active_auto_candidate)
     )
+    active_auto_ping = (
+        active_auto_candidate.get("ping")
+        if isinstance(active_auto_candidate, dict) and isinstance(active_auto_candidate.get("ping"), dict)
+        else {}
+    )
+    active_auto_health_state = _candidate_auto_health_state(active_auto_candidate)
+    try:
+        with db_session() as connection:
+            selection_revision = read_selection_fence(connection)["revision"]
+    except (ValueError, KeyError, TypeError):
+        selection_revision = None
+    runtime_incarnation = None
+    incarnation_reader = getattr(runtime_operations, "runtime_incarnation", None)
+    if callable(incarnation_reader):
+        try:
+            runtime_incarnation = str(incarnation_reader() or "").strip() or None
+        except Exception:
+            runtime_incarnation = None
     config_consistent = set(auto_selectable_candidate_target_names).issubset(
         set(runtime_vpn_auto_server_targets)
     )
@@ -762,6 +780,11 @@ def get_vpn_auto_state(*, read_only: bool = False, cache_runtime: bool = False) 
         "active_auto_server_id": active_auto_server_id,
         "active_auto_target_valid": active_auto_target_valid,
         "active_auto_server_valid": active_auto_server_valid,
+        "active_auto_health_state": active_auto_health_state,
+        "active_auto_health_source": active_auto_ping.get("source") or "unknown",
+        "active_auto_health_checked_at": active_auto_ping.get("checked_at"),
+        "selection_revision": selection_revision,
+        "runtime_incarnation": runtime_incarnation,
         "server_mode": str(routing.get("server_mode") or "auto"),
         "global_mode": str(routing.get("desired_mode") or routing.get("applied_mode") or "direct"),
         "watchdog_enabled": _watchdog_enabled(),
@@ -1384,15 +1407,47 @@ def _candidate_effective_ping(candidate: dict[str, Any]) -> float | None:
 
 
 def _candidate_has_auto_health(candidate: dict[str, Any] | None) -> bool:
+    return _candidate_auto_health_state(candidate) == "healthy"
+
+
+def _candidate_auto_health_state(candidate: dict[str, Any] | None) -> str:
+    """Classify only current, automatic probe evidence as confirmed health."""
     if not candidate:
-        return False
+        return "unknown"
     ping = candidate.get("ping") if isinstance(candidate.get("ping"), dict) else {}
-    if str(ping.get("status") or "").strip().lower() != "success":
-        return False
     source = str(ping.get("source") or "").strip().lower()
     if source == "manual" or _is_manual_ping(ping):
-        return False
-    return True
+        return "unknown"
+    status = str(ping.get("status") or "unknown").strip().lower()
+    checked_at = _parse_checked_at(ping.get("checked_at"))
+    if checked_at is None:
+        return "unknown"
+    now = datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    age_seconds = max(0.0, (now - checked_at.astimezone(timezone.utc)).total_seconds())
+    # Match the existing canonical member observation policy. A failed result
+    # has a shorter validity window than a healthy latency observation.
+    freshness_limit = 120 if status in {"failed", "unhealthy"} else 1800
+    if age_seconds > freshness_limit:
+        return "unknown"
+    if status in {"success", "healthy"}:
+        return "healthy"
+    if status in {"failed", "unhealthy"}:
+        return "unhealthy"
+    return "unknown"
+
+
+def get_vpn_auto_target_health(server_id: str) -> str:
+    """Return current cached probe evidence without querying runtime or network."""
+    target_id = str(server_id or "").strip()
+    if not target_id:
+        return "unknown"
+    candidate = next(
+        (item for item in _load_selector_candidates() if str(item.get("server_id") or "") == target_id),
+        None,
+    )
+    return _candidate_auto_health_state(candidate)
 
 
 def _is_manual_ping(ping: dict[str, Any]) -> bool:
@@ -1828,6 +1883,56 @@ def select_vpn_auto_server(
         active_runtime_target, all_candidates
     )
 
+    if apply and _safe_selection_origin(origin) == "subscription" and candidate_server_id is None:
+        persisted_active_id = str(selection_fence.get("active_server_id") or "").strip()
+        persisted_candidate = next(
+            (item for item in candidates if str(item.get("server_id") or "") == persisted_active_id),
+            None,
+        )
+        persisted_target = str(
+            (persisted_candidate or {}).get("runtime_target")
+            or (persisted_candidate or {}).get("server_id")
+            or ""
+        ).strip()
+        if (
+            persisted_candidate is not None
+            and is_auto_eligible(
+                vpn_auto=persisted_candidate.get("vpn_auto"),
+                vpn_auto_priority=persisted_candidate.get("vpn_auto_priority"),
+                inventory_state=persisted_candidate.get("inventory_state"),
+                manually_deleted_at=persisted_candidate.get("manually_deleted_at"),
+                provider_managed_legacy=persisted_candidate.get("provider_managed_legacy", False),
+                provider_internal_member=persisted_candidate.get("provider_internal_member", False),
+            )
+            and active_runtime_target == persisted_target
+            and active_runtime_target in {
+                str(target) for target in (health_selectors.get("vpn_auto_targets") or []) if target
+            }
+            and _candidate_auto_health_state(persisted_candidate) in {"unknown", "unhealthy"}
+        ):
+            health_state = _candidate_auto_health_state(persisted_candidate)
+            return {
+                "ok": True,
+                "reason": reason,
+                "apply": True,
+                "applied": False,
+                "noop": True,
+                "noop_reason": f"active_target_health_{health_state}_preserved",
+                "selection_outcome": "noop",
+                "selected_server_id": persisted_active_id,
+                "active_before": persisted_active_id,
+                "active_after": persisted_active_id,
+                "active_before_runtime_target": active_runtime_target,
+                "active_after_runtime_target": active_runtime_target,
+                "selector_readback_matches": True,
+                "health_state": health_state,
+                "selected_ping": dict(persisted_candidate.get("ping") or {}),
+                "selection_revision": selection_fence["revision"],
+                "runtime_adapter_id": runtime_adapter_id,
+                "runtime_generation": runtime_generation,
+                "operation_id": selection_operation_id,
+            }
+
     if exclude_active and active_runtime_target:
         candidates = [
             candidate
@@ -1867,17 +1972,18 @@ def select_vpn_auto_server(
             source="selector",
             timeout_ms=timeout_ms,
             fallback_check=check_server_delay,
+            expected_selection_revision=int(selection_fence["revision"]),
         )
         on_demand_results = []
         for candidate, ping in zip(shortlist, pings):
             updated = dict(candidate)
             updated["ping"] = {
-                "status": ping["status"],
-                "last_ping_ms": ping["last_ping_ms"],
-                "checked_at": None,
-                "error_code": ping["error_code"],
-                "error_message": ping["error_message"],
-                "latency_label": ping["latency_label"],
+                "status": "unknown" if ping.get("stale_observation") else ping["status"],
+                "last_ping_ms": None if ping.get("stale_observation") else ping["last_ping_ms"],
+                "checked_at": None if ping.get("stale_observation") else ping.get("checked_at"),
+                "error_code": ping.get("error_code") or ("VPN_HEALTH_OBSERVATION_STALE" if ping.get("stale_observation") else None),
+                "error_message": ping.get("error_message"),
+                "latency_label": ping.get("latency_label") or "n/a",
                 "updated_state": ping["updated_state"],
             }
             updated["on_demand_ping"] = ping
@@ -2372,6 +2478,8 @@ def select_vpn_auto_server(
                 checked_by=f"selector_post_check:{reason}",
                 source="selector",
                 timeout_ms=timeout_ms,
+                expected_selection_revision=result.get("selection_revision"),
+                force_refresh=True,
             )
             result["post_switch_check"] = post_check_result
             result["post_check_failed_no_rollback"] = post_check_result["ok"] is not True

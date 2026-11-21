@@ -585,6 +585,14 @@ def run_apply_pipeline(
                     _require_job_running(job_id, phase="promote_manifest")
                     phase_tracker.begin("promote_manifest")
                     applied_manifest = dict(manifest)
+                    routing = manifest.get("routing_global_state")
+                    if isinstance(routing, dict) and not bypass_requested and fast_subject_apply is None:
+                        # The candidate describes intent before applying, including the
+                        # previous applied mode. Publish the verified mode only in the
+                        # applied artifact consumed by the native proof owner.
+                        applied_manifest["routing_global_state"] = {
+                            **routing, "applied_mode": apply_mode,
+                        }
                     applied_manifest["runtime_enforcement"] = result_runtime_enforcement
                     applied_manifest["global_preflight"] = applied_preflight
                     promote_last_good(

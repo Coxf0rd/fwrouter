@@ -734,6 +734,29 @@ def test_reentry_requires_pre_and_post_probe_and_exact_saved_target(
     assert apply_calls == expected_apply_calls
 
 
+def test_reentry_reports_stale_when_probe_detects_changed_ownership(monkeypatch):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    controller = _RecoveryController([])
+    ownership_current = True
+
+    def probe(**_kwargs):
+        nonlocal ownership_current
+        ownership_current = False
+        return {"ok": False, "stale_observation": True}
+
+    monkeypatch.setattr(controller, "probe", probe)
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args: ownership_current)
+    monkeypatch.setattr(provider_recovery, "_cas_pending", lambda *_args: pytest.fail("stale claim"))
+    monkeypatch.setattr(provider_recovery, "_apply_override", lambda **_kwargs: pytest.fail("stale apply"))
+
+    result = provider_recovery.try_verified_reentry(controller, timeout_ms=1500, reason="test")
+    assert result["status"] == result["error_code"] == "provider_recovery_stale"
+    assert result["effective_override"] == "emergency_direct"
+    assert provider_recovery.get_recovery_pending() == pending
+
+
 @pytest.mark.parametrize("locale", ["ru", "en"])
 @pytest.mark.parametrize("code", ["provider_operation_verified", "provider_operation_unconfirmed", "provider_emergency_direct", "provider_vpn_reentry"])
 def test_provider_events_use_shared_localization(code, locale):

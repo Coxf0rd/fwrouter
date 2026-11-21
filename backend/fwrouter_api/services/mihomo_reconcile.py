@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import filecmp
 import hashlib
 import inspect
 import math
@@ -39,8 +38,7 @@ from fwrouter_api.services.mihomo_config_yaml import (
     MAX_MIHOMO_CONFIG_BYTES,
     MAX_MIHOMO_YAML_DEPTH,
     MAX_MIHOMO_YAML_NODES,
-    MihomoYamlError,
-    load_mihomo_yaml_mapping,
+    compare_mihomo_yaml_files,
 )
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     _file_hash,
@@ -331,16 +329,7 @@ def _yaml_value_is_json_safe(value: Any) -> bool:
 
 def _semantic_config_files_equal(active_path: str, candidate_path: str) -> bool:
     """Compare only bounded, unambiguous YAML; every uncertain case falls back to apply."""
-    parsed: list[dict[str, Any]] = []
-    for path in (active_path, candidate_path):
-        try:
-            parsed.append(load_mihomo_yaml_mapping(path, max_bytes=MAX_SEMANTIC_CONFIG_BYTES))
-        except (MihomoYamlError, OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
-            return False
-    try:
-        return _configs_equal(parsed[0], parsed[1])
-    except (TypeError, ValueError):
-        return False
+    return compare_mihomo_yaml_files(active_path, candidate_path, max_bytes=MAX_SEMANTIC_CONFIG_BYTES)
 
 
 def promote_mihomo_candidate_config(
@@ -839,7 +828,7 @@ def restore_mihomo_reconcile_checkpoint(
     expected_revision: int | None = None,
     operation_id: str | None = None,
 ) -> dict[str, Any]:
-    """CAS-restore and restart the previously active config from this reconcile."""
+    """Verify or restore the owned preimage of this Mihomo reconcile."""
     checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
     if not checkpoint.get("ok"):
         return {"ok": False, "recovered": False, "reason": checkpoint.get("reason") or "checkpoint_unavailable"}
@@ -857,27 +846,74 @@ def restore_mihomo_reconcile_checkpoint(
         return {"ok": False, "recovered": False, "reason": "rollback_context_missing_or_mismatched"}
     base = Path(str(checkpoint.get("base_path") or ""))
     backup = Path(str(checkpoint.get("backup_path") or ""))
+
+    def restored_runtime_verified(revision: int, incarnation: str, expected_hash: str) -> bool:
+        try:
+            proof = _native_udp_policy_proof()
+            with db_session() as connection:
+                return bool(
+                    proof.get("ok") is True
+                    and proof.get("native_top_level_rules_match") is True
+                    and proof.get("selector_membership_matches") is True
+                    and proof.get("guarded_rules_match") is True
+                    and read_selection_revision(connection) == revision
+                    and _file_hash(str(base)) == expected_hash
+                    and _mihomo_incarnation() == incarnation
+                )
+        except Exception:
+            return False
+
     with xray_writer_guard(timeout_seconds=30.0):
         expected_incarnation = str(checkpoint.get("runtime_incarnation_after") or "")
         observed_incarnation = _mihomo_incarnation()
+        active_hash = _file_hash(str(base))
+        before_hash = checkpoint.get("before_hash")
         if (
             not expected_incarnation
             or not observed_incarnation
             or observed_incarnation != expected_incarnation
-            or not base.is_file()
-            or not backup.is_file()
-            or _file_hash(str(base)) != checkpoint.get("candidate_hash")
+            or not active_hash
         ):
             return {"ok": False, "recovered": False, "reason": "active_config_changed"}
         with db_session() as connection:
             current_revision = read_selection_revision(connection)
-            if current_revision != int(expected_revision):
-                return {"ok": False, "recovered": False, "reason": "selection_revision_changed", "expected_revision": expected_revision, "current_revision": current_revision}
+        if current_revision != int(expected_revision):
+            return {"ok": False, "recovered": False, "reason": "selection_revision_changed",
+                    "expected_revision": expected_revision, "current_revision": current_revision}
+        if active_hash == before_hash:
+            from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches
+
+            verified = False
+            if (
+                observed_incarnation == checkpoint.get("runtime_incarnation_before")
+                and mihomo_udp_policy_receipt_matches()
+            ):
+                verified = (
+                    restored_runtime_verified(current_revision, observed_incarnation, before_hash)
+                    and mihomo_udp_policy_receipt_matches()
+                )
+            return {
+                "ok": verified, "recovered": verified, "runtime_verified": verified,
+                "reason": "verified_preimage_current" if verified else "preimage_runtime_unverified",
+                "operation_id": checkpoint_operation,
+                "restoration_required": False, "restored_components": [],
+                "runtime_modified": False, "selection_revision": current_revision,
+            }
+        if active_hash != checkpoint.get("candidate_hash"):
+            return {"ok": False, "recovered": False, "reason": "active_config_changed"}
+        try:
+            preimage = backup.read_bytes()
+            if hashlib.sha256(preimage).hexdigest() != before_hash:
+                return {"ok": False, "recovered": False, "reason": "restore_hash_mismatch"}
+            restored_text = preimage.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return {"ok": False, "recovered": False, "reason": "backup_unavailable"}
+        with db_session() as connection:
             rollback_revision = advance_selection_revision(connection, expected_revision=current_revision)
         if rollback_revision is None:
             return {"ok": False, "recovered": False, "reason": "selection_revision_changed"}
         try:
-            atomic_write_text(base, backup.read_text(encoding="utf-8"))
+            atomic_write_text(base, restored_text)
         except (OSError, UnicodeDecodeError) as exc:
             return {"ok": False, "recovered": False, "reason": "restore_write_failed", "error_message": str(exc), "selection_revision": rollback_revision}
         restored_hash = _file_hash(str(base))
@@ -892,13 +928,18 @@ def restore_mihomo_reconcile_checkpoint(
         except Exception as exc:
             return {"ok": False, "recovered": False, "reason": "restore_restart_failed", "error_message": str(exc), "selection_revision": rollback_revision}
         rollback_incarnation = _mihomo_incarnation()
-        verified = bool(
-            restarted.get("ok")
-            and rollback_incarnation
-            and rollback_incarnation != expected_incarnation
-            and _file_hash(str(base)) == checkpoint.get("before_hash")
-        )
-        return {"ok": verified, "recovered": verified, "restart": restarted, "selection_revision": rollback_revision}
+        runtime_changed = rollback_incarnation != expected_incarnation if rollback_incarnation else None
+        verified = bool(restarted.get("ok") and runtime_changed and restored_hash == before_hash)
+        if verified:
+            verified = restored_runtime_verified(rollback_revision, rollback_incarnation, before_hash)
+        return {
+            "ok": verified, "recovered": verified, "runtime_verified": verified,
+            "reason": "restored_and_verified" if verified else "restored_runtime_unverified",
+            "operation_id": checkpoint_operation,
+            "restoration_required": True,
+            "restored_components": ["mihomo"] if restarted.get("ok") and runtime_changed else [],
+            "runtime_modified": runtime_changed, "restart": restarted, "selection_revision": rollback_revision,
+        }
 
 
 def reconcile_mihomo_runtime(
@@ -1342,13 +1383,20 @@ def reconcile_mihomo_runtime(
         return result
 
     files_match = False
+    effective_config = "unproven"
     if os.path.exists(base_path) and os.path.exists(candidate_path):
-        try:
-            files_match = filecmp.cmp(base_path, candidate_path, shallow=False)
-        except OSError:
-            files_match = False
-        if not files_match:
-            files_match = _semantic_config_files_equal(base_path, candidate_path)
+        active_digest = _file_hash(base_path)
+        candidate_digest = _file_hash(candidate_path)
+        files_match = bool(active_digest and active_digest == candidate_digest)
+        if files_match:
+            effective_config = "byte_identical"
+        elif active_digest and candidate_digest:
+            files_match = (
+                _semantic_config_files_equal(base_path, candidate_path)
+                and _file_hash(base_path) == active_digest
+                and _file_hash(candidate_path) == candidate_digest
+            )
+            effective_config = "serialization_only" if files_match else "changed"
     else:
         try:
             status = get_mihomo_config_status(include_config=True)
@@ -1402,16 +1450,10 @@ def reconcile_mihomo_runtime(
             },
             "reconcile_action": "none",
             "reconcile_reason": "unchanged_config",
+            "effective_config": effective_config,
             "state_consistency_ok": True,
             "config": status_summary,
         }
-        _write_mihomo_reconcile_logs(
-            ok=bool(result["ok"]),
-            event_type="mihomo_reconcile_skipped" if result["ok"] else "mihomo_reconcile_failed",
-            message="Mihomo reconcile skipped because active config already matches candidate.",
-            details=result,
-            operational_level="debug",
-        )
         if result["ok"]:
             with xray_writer_guard(timeout_seconds=30.0):
                 inventory_block = _inventory_candidate_promotion_blocked(_inventory_admission)
@@ -1507,6 +1549,14 @@ def reconcile_mihomo_runtime(
                         result.update({"ok": False, "stage": "native_udp_policy_receipt",
                                        "reconcile_reason": "input_fingerprint_unavailable",
                                        "last_good_retained": True})
+        _write_mihomo_reconcile_logs(
+            ok=bool(result["ok"]),
+            event_type="mihomo_reconcile_skipped" if result["ok"] else "mihomo_reconcile_failed",
+            message=("Mihomo runtime was verified without replacing its config." if result["ok"]
+                     else "Mihomo unchanged-config verification failed."),
+            details=result,
+            operational_level="debug",
+        )
         return result
 
     restart_action = "force_recreate"

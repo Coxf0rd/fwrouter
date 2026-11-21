@@ -318,3 +318,108 @@ def test_staged_candidate_rejects_changed_inputs_even_with_inventory_admission(m
     assert result["last_good_retained"] is True
     assert calls == {"promote": 0, "restart": 0}
     assert not candidate.exists()
+
+
+def test_staged_semantic_noop_refreshes_runtime_proof_at_apply(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+    from fwrouter_api.services import xray_subscription_service
+
+    active = tmp_path / "active.yaml"
+    staged = tmp_path / "staged.yaml"
+    payload = b"proven active representative"
+    active.write_bytes(payload)
+    staged.write_bytes(payload)
+    digest = __import__("hashlib").sha256(payload).hexdigest()
+    fingerprint = {"hash": "a" * 64, "payload": {}}
+    state = {"active_config_hash": digest, "runtime_incarnation": "mihomo-7"}
+    calls = {"proof": 0, "restart": 0}
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: str(active))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda *_a: fingerprint)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_load_state", lambda: state)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_current_runtime_incarnation", lambda: "mihomo-7")
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_receipt_snapshot_matches", lambda _s: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda _s: True)
+    monkeypatch.setattr(
+        mihomo_reconcile, "_native_udp_policy_proof",
+        lambda: calls.__setitem__("proof", calls["proof"] + 1) or {
+            "ok": True, "native_top_level_rules_match": True,
+            "selector_membership_matches": True, "guarded_rules_match": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_runtime.restart_mihomo_container",
+        lambda **_kw: calls.__setitem__("restart", calls["restart"] + 1) or {"ok": True},
+    )
+
+    result = xray_subscription_service._apply_staged_mihomo_candidate(
+        str(staged), digest, candidate_input_fingerprint=fingerprint,
+        runtime_noop_proof_required=True,
+    )
+
+    assert result["ok"] is True
+    assert result["stage"] == "unchanged"
+    assert result["runtime_verified"] is True
+    assert calls == {"proof": 1, "restart": 0}
+
+
+def test_staged_semantic_noop_fails_closed_when_runtime_proof_is_stale(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+    from fwrouter_api.services import xray_subscription_service
+
+    active = tmp_path / "active.yaml"
+    staged = tmp_path / "staged.yaml"
+    payload = b"proven active representative"
+    active.write_bytes(payload)
+    staged.write_bytes(payload)
+    digest = __import__("hashlib").sha256(payload).hexdigest()
+    fingerprint = {"hash": "a" * 64, "payload": {}}
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: str(active))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda *_a: fingerprint)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_load_state", lambda: {
+        "active_config_hash": digest, "runtime_incarnation": "old-instance",
+    })
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_current_runtime_incarnation", lambda: "new-instance")
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_receipt_snapshot_matches", lambda _s: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda _s: True)
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", lambda: {"ok": True})
+
+    result = xray_subscription_service._apply_staged_mihomo_candidate(
+        str(staged), digest, candidate_input_fingerprint=fingerprint,
+        runtime_noop_proof_required=True,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "runtime_readback"
+    assert result["error_code"] == "MIHOMO_SEMANTIC_NOOP_RUNTIME_UNVERIFIED"
+    assert result["container"]["action"] == "none"
+
+
+def test_final_semantic_reuse_uses_current_transition_proof(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+    from fwrouter_api.services import xray_subscription_service
+
+    active = tmp_path / "active.yaml"
+    staged = tmp_path / "staged.yaml"
+    payload = b"transition representative"
+    active.write_bytes(payload)
+    staged.write_bytes(payload)
+    digest = __import__("hashlib").sha256(payload).hexdigest()
+    fingerprint = {"hash": "a" * 64, "payload": {}}
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: str(active))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda *_a: fingerprint)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_current_runtime_incarnation", lambda: "transition-instance")
+    monkeypatch.setattr(
+        mihomo_reconcile, "_native_udp_policy_proof", lambda: {
+            "ok": True, "native_top_level_rules_match": True,
+            "selector_membership_matches": True, "guarded_rules_match": True,
+        },
+    )
+
+    result = xray_subscription_service._apply_staged_mihomo_candidate(
+        str(staged), digest, candidate_input_fingerprint=fingerprint,
+        runtime_noop_proof_required=True,
+        runtime_noop_transition_proof={"sha256": digest, "incarnation": "transition-instance"},
+    )
+
+    assert result["ok"] is True
+    assert result["runtime_verified"] is True
